@@ -19,7 +19,6 @@ import { settingsStore, type RecorderSettings } from './modules/settings/store'
 import {
   getActiveLogSession,
   initializeLogger,
-  logDebug,
   logError,
   logInfo,
   logWarn,
@@ -414,24 +413,6 @@ function App() {
     await refreshAndClearErrors()
   }
 
-  const handleOpenDeveloperOverlay = useCallback(async () => {
-    setDeveloperOverlayMode('tables')
-    setDeveloperOverlayOpen(true)
-    setDeveloperOverlayLoading(true)
-    try {
-      await Promise.all([loadDeveloperTables(), loadLogSessions()])
-    } catch (error) {
-      console.error('[UI] Failed to load developer data', error)
-      setDeveloperTables([])
-      setSelectedDeveloperTable(null)
-      await logError('Developer overlay failed to load', {
-        error: error instanceof Error ? error.message : String(error),
-      })
-    } finally {
-      setDeveloperOverlayLoading(false)
-    }
-  }, [loadDeveloperTables, loadLogSessions])
-
   const handleCloseDeveloperOverlay = () => {
     setDeveloperOverlayOpen(false)
     setDeveloperTables([])
@@ -457,15 +438,24 @@ function App() {
   }
 
   const loadDeveloperTables = useCallback(async () => {
-    const [sessions, chunks] = await Promise.all([
-      manifestService.listSessions(),
-      manifestService.getChunksForInspection(),
-    ])
-    setDeveloperTables([
-      { name: 'sessions', rows: sessions.map((row) => ({ ...row })) },
-      { name: 'chunks', rows: chunks },
-    ])
-    setSelectedDeveloperTable((prev) => prev ?? 'sessions')
+    try {
+      const [sessions, chunks] = await Promise.all([
+        manifestService.listSessions(),
+        manifestService.getChunksForInspection(),
+      ])
+      setDeveloperTables([
+        { name: 'sessions', rows: sessions.map((row) => ({ ...row })) },
+        { name: 'chunks', rows: chunks },
+      ])
+      setSelectedDeveloperTable((prev) => prev ?? 'sessions')
+    } catch (error) {
+      console.error('[UI] Failed to load developer tables', error)
+      setDeveloperTables([])
+      setSelectedDeveloperTable('sessions')
+      await logError('Developer table load failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
   }, [])
 
   const handleSelectLogSession = useCallback(
@@ -482,11 +472,20 @@ function App() {
   )
 
   const loadLogSessions = useCallback(async () => {
-    const sessions = await manifestService.listLogSessions()
-    setLogSessions(sessions)
-    const current = getActiveLogSession()
-    const preferred = current ?? sessions[0] ?? null
-    await handleSelectLogSession(preferred)
+    try {
+      const sessions = await manifestService.listLogSessions()
+      setLogSessions(sessions)
+      const current = getActiveLogSession()
+      const preferred = current ?? sessions[0] ?? null
+      await handleSelectLogSession(preferred)
+    } catch (error) {
+      console.error('[UI] Failed to load log sessions', error)
+      setLogSessions([])
+      await handleSelectLogSession(null)
+      await logError('Log session load failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
   }, [handleSelectLogSession])
 
   const handleLogSessionNav = useCallback(
@@ -501,6 +500,25 @@ function App() {
     },
     [handleSelectLogSession, logSessions, selectedLogSession],
   )
+
+  const handleOpenDeveloperOverlay = useCallback(async () => {
+    setDeveloperOverlayMode('tables')
+    setDeveloperOverlayOpen(true)
+    setDeveloperOverlayLoading(true)
+    try {
+      await loadDeveloperTables()
+      await loadLogSessions()
+    } catch (error) {
+      console.error('[UI] Failed to load developer data', error)
+      setDeveloperTables([])
+      setSelectedDeveloperTable(null)
+      await logError('Developer overlay failed to load', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setDeveloperOverlayLoading(false)
+    }
+  }, [loadDeveloperTables, loadLogSessions])
 
   const bufferLabel = `${formatDataSize(bufferTotals.totalBytes)} / ${formatDataSize(bufferTotals.limitBytes)}`
   const playbackProgress = audioState.duration > 0 ? (audioState.position / audioState.duration) * 100 : 0
@@ -783,7 +801,8 @@ function App() {
                   className={developerOverlayMode === 'tables' ? 'is-selected' : ''}
                   onClick={() => {
                     setDeveloperOverlayMode('tables')
-                    void loadDeveloperTables()
+                    setDeveloperOverlayLoading(true)
+                    void loadDeveloperTables().finally(() => setDeveloperOverlayLoading(false))
                   }}
                 >
                   IndexedDB
@@ -793,101 +812,102 @@ function App() {
                   className={developerOverlayMode === 'logs' ? 'is-selected' : ''}
                   onClick={() => {
                     setDeveloperOverlayMode('logs')
-                    void loadLogSessions()
+                    setDeveloperOverlayLoading(true)
+                    void loadLogSessions().finally(() => setDeveloperOverlayLoading(false))
                   }}
                 >
                   Logs
                 </button>
               </div>
-            {developerOverlayMode === 'tables' ? (
-              <div className="dev-panel-body">
-                <div className="dev-table-buttons">
-                  {developerTables.map((table) => (
-                    <button
-                      key={table.name}
-                      type="button"
-                      className={selectedDeveloperTable === table.name ? 'is-selected' : ''}
-                      onClick={() => setSelectedDeveloperTable(table.name)}
-                    >
-                      {table.name}
-                      <span className="dev-table-count">{table.rows.length}</span>
-                    </button>
-                  ))}
-                </div>
-                <div className="dev-table-rows">
-                  {developerOverlayLoading ? (
-                    <p>Loading…</p>
-                  ) : selectedDeveloperTable ? (
-                    developerTables
-                      .find((table) => table.name === selectedDeveloperTable)
-                      ?.rows.map((row, index) => (
-                        <pre key={index}>{JSON.stringify(row, null, 2)}</pre>
-                      )) ?? <p>No rows.</p>
-                  ) : (
-                    <p>Select a table to inspect rows.</p>
-                  )}
-                </div>
-              </div>
-            ) : (
-              <div className="dev-log-body">
-                <div className="dev-log-header">
-                  <button
-                    type="button"
-                    onClick={() => void handleLogSessionNav(-1)}
-                    disabled={!selectedLogSession || logSessions.findIndex((s) => s.id === selectedLogSession.id) === logSessions.length - 1}
-                  >
-                    ←
-                  </button>
-                  <select
-                    value={selectedLogSession?.id ?? ''}
-                    onChange={(event) => {
-                      const next = logSessions.find((session) => session.id === event.target.value) ?? null
-                      void handleSelectLogSession(next)
-                    }}
-                  >
-                    {logSessions.length === 0 ? <option value="">No sessions</option> : null}
-                    {logSessions.map((session) => (
-                      <option key={session.id} value={session.id}>
-                        {new Date(session.startedAt).toLocaleString()}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={() => void handleLogSessionNav(1)}
-                    disabled={!selectedLogSession || logSessions.findIndex((s) => s.id === selectedLogSession.id) <= 0}
-                  >
-                    →
-                  </button>
-                </div>
-                <div className="dev-log-entries">
-                  {developerOverlayLoading ? (
-                    <p>Loading…</p>
-                  ) : !selectedLogSession ? (
-                    <p>No log sessions found.</p>
-                  ) : logEntries.length === 0 ? (
-                    <p>No entries for this session.</p>
-                  ) : (
-                    logEntries.map((entry) => (
-                      <article
-                        key={entry.id ?? `${entry.timestamp}`}
-                        className={`dev-log-entry level-${entry.level}`}
+              {developerOverlayMode === 'tables' ? (
+                <div className="dev-panel-body">
+                  <div className="dev-table-buttons">
+                    {developerTables.map((table) => (
+                      <button
+                        key={table.name}
+                        type="button"
+                        className={selectedDeveloperTable === table.name ? 'is-selected' : ''}
+                        onClick={() => setSelectedDeveloperTable(table.name)}
                       >
-                        <header>
-                          <span>{new Date(entry.timestamp).toLocaleTimeString()}</span>
-                          <span>{entry.level.toUpperCase()}</span>
-                        </header>
-                        <p>{entry.message}</p>
-                        {entry.details ? <pre>{JSON.stringify(entry.details, null, 2)}</pre> : null}
-                      </article>
-                    ))
-                  )}
+                        {table.name}
+                        <span className="dev-table-count">{table.rows.length}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div className="dev-table-rows">
+                    {developerOverlayLoading ? (
+                      <p>Loading…</p>
+                    ) : selectedDeveloperTable ? (
+                      developerTables
+                        .find((table) => table.name === selectedDeveloperTable)
+                        ?.rows.map((row, index) => (
+                          <pre key={index}>{JSON.stringify(row, null, 2)}</pre>
+                        )) ?? <p>No rows.</p>
+                    ) : (
+                      <p>Select a table to inspect rows.</p>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )}
+              ) : (
+                <div className="dev-log-body">
+                  <div className="dev-log-header">
+                    <button
+                      type="button"
+                      onClick={() => void handleLogSessionNav(-1)}
+                      disabled={!selectedLogSession || logSessions.findIndex((s) => s.id === selectedLogSession.id) === logSessions.length - 1}
+                    >
+                      ←
+                    </button>
+                    <select
+                      value={selectedLogSession?.id ?? ''}
+                      onChange={(event) => {
+                        const next = logSessions.find((session) => session.id === event.target.value) ?? null
+                        void handleSelectLogSession(next)
+                      }}
+                    >
+                      {logSessions.length === 0 ? <option value="">No sessions</option> : null}
+                      {logSessions.map((session) => (
+                        <option key={session.id} value={session.id}>
+                          {new Date(session.startedAt).toLocaleString()}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => void handleLogSessionNav(1)}
+                      disabled={!selectedLogSession || logSessions.findIndex((s) => s.id === selectedLogSession.id) <= 0}
+                    >
+                      →
+                    </button>
+                  </div>
+                  <div className="dev-log-entries">
+                    {developerOverlayLoading ? (
+                      <p>Loading…</p>
+                    ) : !selectedLogSession ? (
+                      <p>No log sessions found.</p>
+                    ) : logEntries.length === 0 ? (
+                      <p>No entries for this session.</p>
+                    ) : (
+                      logEntries.map((entry) => (
+                        <article
+                          key={entry.id ?? `${entry.timestamp}`}
+                          className={`dev-log-entry level-${entry.level}`}
+                        >
+                          <header>
+                            <span>{new Date(entry.timestamp).toLocaleTimeString()}</span>
+                            <span>{entry.level.toUpperCase()}</span>
+                          </header>
+                          <p>{entry.message}</p>
+                          {entry.details ? <pre>{JSON.stringify(entry.details, null, 2)}</pre> : null}
+                        </article>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
     </div>
   )
 }

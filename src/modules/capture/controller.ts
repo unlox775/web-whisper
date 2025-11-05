@@ -129,7 +129,7 @@ class BrowserCaptureController implements CaptureController {
         if (data && data.size === 0) {
           void logWarn('Received empty audio chunk', {
             sessionId: this.#sessionId,
-            seq,
+            seq: this.#chunkSeq,
           })
         }
         return
