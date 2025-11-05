@@ -48,7 +48,7 @@ export default defineConfig({
   ],
   base: './',
   build: {
-    outDir: 'docs',
+    outDir: 'pwa-public',
     emptyOutDir: true,
   },
 })
