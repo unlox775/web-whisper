@@ -1,0 +1,2 @@
+[2025-11-05T22:04Z] Prompt
+Okay. I would like you to rename the docs directory to documentation and then move the PWA dash public folder to docs. Evidently the GitHub actions that's built into GitHub. I just want to use that. And yeah, we need to use the slash docs folder that exists already. So we need to move that back. Just move to slash documentation instead. And move PWA dash public to slash docs. Then let's get working on it. See if you can get that minimum viable product completed.

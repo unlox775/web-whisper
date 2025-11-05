@@ -4,7 +4,7 @@ This file documents how we keep human + agent collaboration transparent and audi
 
 ## Spec & Prompt Logging
 
-- Every material update must add a pair of files under `docs/spec/`:
+- Every material update must add a pair of files under `documentation/spec/`:
   - `YYYYMMDD-HHMMSS_slug.md` — Markdown changelog describing what changed, what remains undone, and any follow-up actions.
   - `YYYYMMDD-HHMMSS_slug-PROMPT.txt` — Plaintext transcript of the user prompt(s) that triggered the work, including subsequent clarifications in the same session.
 - Use 24-hour UTC timestamps (retrieved via `date -u +%Y%m%d-%H%M%S`) to keep ordering unambiguous.
@@ -17,12 +17,12 @@ This file documents how we keep human + agent collaboration transparent and audi
 
 ## Status Reporting
 
-- `docs/README.md` holds the live traffic-light view of feature readiness. Update it whenever a status meaningfully changes.
-- Architecture and deeper design notes live under `docs/` (e.g., `docs/architecture.md`).
+- `documentation/README.md` holds the live traffic-light view of feature readiness. Update it whenever a status meaningfully changes.
+- Architecture and deeper design notes live under `documentation/` (e.g., `documentation/architecture.md`).
 
 ## Source Layout Conventions
 
-- Build artifacts intended for GitHub Pages live in `pwa-public/`.
+- Build artifacts intended for GitHub Pages live in `docs/`.
 - Runtime source follows `src/modules/<domain>/` for core services (capture, analysis, manifest, upload, transcription, settings).
 - Unit and integration tests live under `test/`, with audio fixtures under `test/fixtures/audio/`.
 

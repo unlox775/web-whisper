@@ -34,6 +34,27 @@
   align-items: stretch;
 }
 
+.alert-banner {
+  background: rgba(248, 113, 113, 0.18);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  color: #fecaca;
+  border-radius: 0.9rem;
+  padding: 0.65rem 0.9rem;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+
+.alert-banner button {
+  border-radius: 0.6rem;
+  border: 1px solid rgba(248, 113, 113, 0.6);
+  background: rgba(248, 113, 113, 0.25);
+  color: inherit;
+  font-weight: 600;
+  padding: 0.3rem 0.7rem;
+}
+
 .buffer-card {
   min-width: 10rem;
   padding: 0.65rem 0.9rem;
@@ -403,6 +424,36 @@
   margin: 0;
   color: #fca5a5;
   font-size: 0.82rem;
+}
+
+.detail-chunks {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.detail-chunks h3 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.chunk-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.chunk-list li {
+  display: grid;
+  grid-template-columns: 60px 1fr 90px;
+  font-size: 0.8rem;
+  color: #cbd5f5;
+  background: rgba(15, 23, 42, 0.55);
+  padding: 0.4rem 0.6rem;
+  border-radius: 0.6rem;
+  border: 1px solid rgba(94, 234, 212, 0.12);
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 960px) {
