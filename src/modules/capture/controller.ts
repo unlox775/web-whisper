@@ -16,6 +16,7 @@ export interface CaptureStateSnapshot {
   lastChunkAt: number | null
   bytesBuffered: number
   mimeType: string | null
+  chunksRecorded: number
   error?: string
 }
 
@@ -25,6 +26,7 @@ export interface CaptureController {
   stop(): Promise<void>
   flushPending(): Promise<void>
   attachAnalysisPort(port: MessagePort): void
+  subscribe(listener: (state: CaptureStateSnapshot) => void): () => void
 }
 
 const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
@@ -64,6 +66,7 @@ class BrowserCaptureController implements CaptureController {
   #analysisPort: MessagePort | null = null
   #persistQueue: Promise<void> = Promise.resolve()
   #lastChunkEndMs = 0
+  #listeners = new Set<(state: CaptureStateSnapshot) => void>()
   #state: CaptureStateSnapshot = {
     sessionId: null,
     state: 'idle',
@@ -71,6 +74,7 @@ class BrowserCaptureController implements CaptureController {
     lastChunkAt: null,
     bytesBuffered: 0,
     mimeType: null,
+    chunksRecorded: 0,
   }
 
   get state(): CaptureStateSnapshot {
@@ -79,6 +83,7 @@ class BrowserCaptureController implements CaptureController {
 
   #setState(patch: Partial<CaptureStateSnapshot>) {
     this.#state = { ...this.#state, ...patch }
+    this.#listeners.forEach((listener) => listener(this.#state))
   }
 
   async start(options: CaptureStartOptions): Promise<void> {
@@ -128,7 +133,11 @@ class BrowserCaptureController implements CaptureController {
           ),
         )
         .then(() => {
-          this.#setState({ lastChunkAt: Date.now(), bytesBuffered: this.#state.bytesBuffered + data.size })
+          this.#setState({
+            lastChunkAt: Date.now(),
+            bytesBuffered: this.#state.bytesBuffered + data.size,
+            chunksRecorded: this.#state.chunksRecorded + 1,
+          })
         })
         .catch((error) => {
           console.error('[CaptureController] Failed to persist chunk', error)
@@ -159,6 +168,7 @@ class BrowserCaptureController implements CaptureController {
       mimeType,
       bytesBuffered: 0,
       lastChunkAt: null,
+      chunksRecorded: 0,
     })
   }
 
@@ -181,7 +191,7 @@ class BrowserCaptureController implements CaptureController {
         updatedAt: Date.now(),
       })
     }
-    this.#setState({ state: 'idle' })
+    this.#setState({ state: 'idle', chunksRecorded: 0, bytesBuffered: 0 })
   }
 
   async flushPending(): Promise<void> {
@@ -202,6 +212,12 @@ class BrowserCaptureController implements CaptureController {
       this.#analysisPort.close()
       this.#analysisPort = null
     }
+  }
+
+  subscribe(listener: (state: CaptureStateSnapshot) => void): () => void {
+    this.#listeners.add(listener)
+    listener(this.#state)
+    return () => this.#listeners.delete(listener)
   }
 }
 

@@ -13,7 +13,18 @@ import {
   type ChunkRecord,
   type SessionRecord,
 } from './modules/storage/manifest'
-import { settingsStore } from './modules/settings/store'
+import { settingsStore, type RecorderSettings } from './modules/settings/store'
+
+type DeveloperTable = {
+  name: string
+  rows: Array<Record<string, unknown>>
+}
+
+type AudioState = {
+  playing: boolean
+  duration: number
+  position: number
+}
 
 const SIMULATED_STREAM = [
   'Holding a steady floor — last snip landed cleanly.',
@@ -29,7 +40,7 @@ const STATUS_META: Record<SessionRecord['status'], { label: string; pillClass: s
 }
 
 const MB = 1024 * 1024
-const BUFFER_LIMIT_BYTES = 200 * MB
+const DEFAULT_STORAGE_LIMIT_BYTES = 200 * MB
 
 const formatClock = (timestamp: number) =>
   new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp))
@@ -49,23 +60,58 @@ const formatDuration = (durationMs: number) => {
   return `${remainingMinutes}m ${seconds.toString().padStart(2, '0')}s`
 }
 
-const toMbLabel = (bytes: number) => `${(bytes / MB).toFixed(1)} MB`
+const formatDataSize = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  const formatter = new Intl.NumberFormat(undefined, {
+    maximumSignificantDigits: 4,
+    minimumSignificantDigits: 1,
+  })
+  return `${formatter.format(value)} ${units[unitIndex]}`
+}
+
+const formatTimecode = (seconds: number) => {
+  if (!Number.isFinite(seconds)) return '0:00'
+  const clamped = Math.max(0, seconds)
+  const mins = Math.floor(clamped / 60)
+  const secs = Math.floor(clamped % 60)
+  return `${mins}:${secs.toString().padStart(2, '0')}`
+}
 
 function App() {
+  const [settings, setSettings] = useState<RecorderSettings | null>(null)
   const [recordings, setRecordings] = useState<SessionRecord[]>([])
   const [selectedRecordingId, setSelectedRecordingId] = useState<string | null>(null)
   const [chunkMetadata, setChunkMetadata] = useState<ChunkRecord[]>([])
-  const [isRecording, setIsRecording] = useState(false)
+  const [captureState, setCaptureState] = useState(captureController.state)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
-  const [bufferTotals, setBufferTotals] = useState<{ totalBytes: number; limitBytes: number }>(
-    () => ({ totalBytes: 0, limitBytes: BUFFER_LIMIT_BYTES }),
-  )
+  const [bufferTotals, setBufferTotals] = useState<{ totalBytes: number; limitBytes: number }>({
+    totalBytes: 0,
+    limitBytes: DEFAULT_STORAGE_LIMIT_BYTES,
+  })
   const [transcriptionLines, setTranscriptionLines] = useState<string[]>(SIMULATED_STREAM.slice(0, 2))
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isDeveloperOverlayOpen, setDeveloperOverlayOpen] = useState(false)
+  const [developerOverlayLoading, setDeveloperOverlayLoading] = useState(false)
+  const [developerTables, setDeveloperTables] = useState<DeveloperTable[]>([])
+  const [selectedDeveloperTable, setSelectedDeveloperTable] = useState<string | null>(null)
+  const [debugDetailsOpen, setDebugDetailsOpen] = useState(false)
+  const [isLoadingPlayback, setIsLoadingPlayback] = useState(false)
+  const [playbackError, setPlaybackError] = useState<string | null>(null)
+  const [audioState, setAudioState] = useState<AudioState>({ playing: false, duration: 0, position: 0 })
+
   const streamCursor = useRef(1)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const audioUrlRef = useRef<string | null>(null)
-  const [isLoadingPlayback, setIsLoadingPlayback] = useState(false)
-  const [playbackError, setPlaybackError] = useState<string | null>(null)
+
+  const developerMode = settings?.developerMode ?? false
+  const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
 
   const loadSessions = useCallback(async () => {
     await manifestService.init()
@@ -74,7 +120,14 @@ function App() {
       manifestService.storageTotals(),
     ])
     setRecordings(sessions)
-    setBufferTotals({ totalBytes: totals.totalBytes, limitBytes: BUFFER_LIMIT_BYTES })
+    setBufferTotals({ totalBytes: totals.totalBytes, limitBytes: storageLimitBytes })
+  }, [storageLimitBytes])
+
+  useEffect(() => settingsStore.subscribe((value) => setSettings({ ...value })), [])
+
+  useEffect(() => {
+    const unsubscribe = captureController.subscribe((state) => setCaptureState({ ...state }))
+    return unsubscribe
   }, [])
 
   useEffect(() => {
@@ -82,7 +135,7 @@ function App() {
   }, [loadSessions])
 
   useEffect(() => {
-    if (!isRecording) {
+    if (!captureState.sessionId || captureState.state !== 'recording') {
       return
     }
     const interval = window.setInterval(() => {
@@ -90,14 +143,15 @@ function App() {
       const nextLine = SIMULATED_STREAM[streamCursor.current]
       setTranscriptionLines((prev) => [...prev.slice(-2), nextLine])
       void loadSessions()
-    }, 3500)
+    }, 3200)
     return () => window.clearInterval(interval)
-  }, [isRecording, loadSessions])
+  }, [captureState.sessionId, captureState.state, loadSessions])
 
   useEffect(() => {
     let cancelled = false
     if (!selectedRecordingId) {
       setChunkMetadata([])
+      setDebugDetailsOpen(false)
       return
     }
     ;(async () => {
@@ -110,6 +164,40 @@ function App() {
       cancelled = true
     }
   }, [selectedRecordingId])
+
+  useEffect(() => {
+    const audio = audioRef.current
+    if (!audio) return
+
+    const handleTime = () => setAudioState((prev) => ({ ...prev, position: audio.currentTime }))
+    const handleDuration = () =>
+      setAudioState((prev) => ({ ...prev, duration: Number.isFinite(audio.duration) ? audio.duration : 0 }))
+    const handlePlay = () => setAudioState((prev) => ({ ...prev, playing: true }))
+    const handlePause = () => setAudioState((prev) => ({ ...prev, playing: false }))
+    const handleEnded = () =>
+      setAudioState((prev) => ({ ...prev, playing: false, position: audio.duration || prev.position }))
+
+    audio.addEventListener('timeupdate', handleTime)
+    audio.addEventListener('durationchange', handleDuration)
+    audio.addEventListener('play', handlePlay)
+    audio.addEventListener('pause', handlePause)
+    audio.addEventListener('ended', handleEnded)
+
+    return () => {
+      audio.removeEventListener('timeupdate', handleTime)
+      audio.removeEventListener('durationchange', handleDuration)
+      audio.removeEventListener('play', handlePlay)
+      audio.removeEventListener('pause', handlePause)
+      audio.removeEventListener('ended', handleEnded)
+    }
+  }, [selectedRecordingId])
+
+  useEffect(() => {
+    if (!developerMode) {
+      setDeveloperOverlayOpen(false)
+      setDebugDetailsOpen(false)
+    }
+  }, [developerMode])
 
   useEffect(() => {
     return () => {
@@ -131,11 +219,11 @@ function App() {
   }, [loadSessions])
 
   const startRecording = useCallback(async () => {
-    if (isRecording) return
+    if (captureState.state === 'recording') return
     let sessionId = ''
     try {
       setErrorMessage(null)
-      const settings = await settingsStore.get()
+      const activeSettings = await settingsStore.get()
       sessionId = window.crypto?.randomUUID?.() ?? `session-${Date.now()}`
       const now = Date.now()
       await manifestService.createSession({
@@ -156,10 +244,9 @@ function App() {
       })
       await captureController.start({
         sessionId,
-        targetBitrate: settings.targetBitrate,
+        targetBitrate: activeSettings.targetBitrate,
         chunkDurationMs: 4000,
       })
-      setIsRecording(true)
       await loadSessions()
     } catch (error) {
       console.error('[UI] Failed to start recording', error)
@@ -173,20 +260,19 @@ function App() {
       await loadSessions()
       setErrorMessage(error instanceof Error ? error.message : String(error))
     }
-  }, [isRecording, loadSessions])
+  }, [captureState.state, loadSessions])
 
   const stopRecording = useCallback(async () => {
-    if (!isRecording) return
+    if (captureState.state !== 'recording') return
     try {
       await captureController.stop()
     } catch (error) {
       console.error('[UI] Failed to stop recording', error)
       setErrorMessage(error instanceof Error ? error.message : String(error))
     } finally {
-      setIsRecording(false)
       await loadSessions()
     }
-  }, [isRecording, loadSessions])
+  }, [captureState.state, loadSessions])
 
   const handleRetry = async (event: MouseEvent<HTMLButtonElement>, record: SessionRecord) => {
     event.stopPropagation()
@@ -195,49 +281,65 @@ function App() {
   }
 
   const handleRecordToggle = async () => {
-    if (isRecording) {
+    if (captureState.state === 'recording') {
       await stopRecording()
     } else {
       await startRecording()
     }
   }
 
-  const handlePlay = async () => {
+  const preparePlaybackSource = useCallback(async () => {
+    if (!selectedRecording) return false
+    const mime = selectedRecording.mimeType ?? 'audio/mp4'
+    const blob = await manifestService.buildSessionBlob(selectedRecording.id, mime)
+    if (!blob) {
+      throw new Error('No audio available yet. Keep recording to capture chunks.')
+    }
+    if (audioUrlRef.current) {
+      URL.revokeObjectURL(audioUrlRef.current)
+    }
+    const url = URL.createObjectURL(blob)
+    audioUrlRef.current = url
+    const audio = audioRef.current
+    if (audio) {
+      audio.src = url
+      audio.currentTime = 0
+      setAudioState({ playing: false, duration: Number.isFinite(audio.duration) ? audio.duration : 0, position: 0 })
+    }
+    return true
+  }, [selectedRecording])
+
+  const handlePlaybackToggle = useCallback(async () => {
     if (!selectedRecording) return
     setPlaybackError(null)
     setIsLoadingPlayback(true)
     try {
-      const blob = await manifestService.buildSessionBlob(
-        selectedRecording.id,
-        selectedRecording.mimeType ?? 'audio/mp4',
-      )
-      if (!blob) {
-        throw new Error('No audio available yet. Keep recording to capture chunks.')
+      if (!audioUrlRef.current) {
+        await preparePlaybackSource()
       }
-      if (audioUrlRef.current) {
-        URL.revokeObjectURL(audioUrlRef.current)
-      }
-      const url = URL.createObjectURL(blob)
-      audioUrlRef.current = url
       const audio = audioRef.current
-      if (audio) {
-        audio.src = url
-        audio.play().catch((error) => {
-          console.error('[UI] Playback failed', error)
-          setPlaybackError('Unable to start playback. Tap play again or check output device.')
-        })
+      if (!audio) {
+        throw new Error('Audio element unavailable')
+      }
+      if (audio.paused) {
+        await audio.play()
+      } else {
+        audio.pause()
       }
     } catch (error) {
-      console.error('[UI] Failed to build playback blob', error)
+      console.error('[UI] Playback toggle failed', error)
       setPlaybackError(error instanceof Error ? error.message : String(error))
     } finally {
       setIsLoadingPlayback(false)
     }
-  }
+  }, [preparePlaybackSource, selectedRecording])
 
   const handleCloseDetail = async () => {
     setSelectedRecordingId(null)
     setChunkMetadata([])
+    setDebugDetailsOpen(false)
+    setPlaybackError(null)
+    setAudioState({ playing: false, duration: 0, position: 0 })
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current)
       audioUrlRef.current = null
@@ -249,7 +351,51 @@ function App() {
     await refreshAndClearErrors()
   }
 
-  const bufferLabel = `${(bufferTotals.totalBytes / MB).toFixed(1)} / ${(bufferTotals.limitBytes / MB).toFixed(0)} MB`
+  const handleOpenDeveloperOverlay = useCallback(async () => {
+    setDeveloperOverlayOpen(true)
+    setDeveloperOverlayLoading(true)
+    try {
+      const sessions = await manifestService.listSessions()
+      const chunkBatches = await Promise.all(
+        sessions.map((session) => manifestService.getChunkMetadata(session.id))
+      )
+      const chunkRows = chunkBatches.flat()
+      setDeveloperTables([
+        { name: 'sessions', rows: sessions.map((row) => ({ ...row })) },
+        { name: 'chunks', rows: chunkRows.map((row) => ({ ...row })) },
+      ])
+      setSelectedDeveloperTable('sessions')
+    } catch (error) {
+      console.error('[UI] Failed to load developer data', error)
+      setDeveloperTables([])
+      setSelectedDeveloperTable(null)
+    } finally {
+      setDeveloperOverlayLoading(false)
+    }
+  }, [])
+
+  const handleCloseDeveloperOverlay = () => {
+    setDeveloperOverlayOpen(false)
+    setDeveloperTables([])
+    setSelectedDeveloperTable(null)
+  }
+
+  const handleStorageLimitChange = async (value: string) => {
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric) || numeric <= 0) return
+    await settingsStore.set({ storageLimitBytes: Math.round(numeric * MB) })
+  }
+
+  const handleDeveloperToggle = async (enabled: boolean) => {
+    await settingsStore.set({ developerMode: enabled })
+  }
+
+  const handleGroqKeyChange = async (value: string) => {
+    await settingsStore.set({ groqApiKey: value })
+  }
+
+  const bufferLabel = `${formatDataSize(bufferTotals.totalBytes)} / ${formatDataSize(bufferTotals.limitBytes)}`
+  const playbackProgress = audioState.duration > 0 ? (audioState.position / audioState.duration) * 100 : 0
 
   return (
     <div className="app-shell">
@@ -263,11 +409,35 @@ function App() {
             <p className="buffer-label">Buffered locally</p>
             <p className="buffer-value">{bufferLabel}</p>
           </div>
-          <button className="settings-button" type="button" disabled>
-            Settings (soon)
+          {developerMode ? (
+            <button
+              className="dev-trigger"
+              type="button"
+              onClick={handleOpenDeveloperOverlay}
+              aria-label="Open developer console"
+            >
+              🐞
+            </button>
+          ) : null}
+          <button
+            className="settings-button"
+            type="button"
+            onClick={() => setIsSettingsOpen(true)}
+          >
+            Settings
           </button>
         </div>
       </header>
+
+      {developerMode && captureState.state === 'recording' ? (
+        <div className="dev-strip" role="status" aria-live="polite">
+          <span>Chunks recorded: {captureState.chunksRecorded}</span>
+          <span>Buffered: {formatDataSize(captureState.bytesBuffered)}</span>
+          {captureState.lastChunkAt ? (
+            <span>Last chunk: {formatClock(captureState.lastChunkAt)}</span>
+          ) : null}
+        </div>
+      ) : null}
 
       {errorMessage ? (
         <div className="alert-banner" role="alert">
@@ -283,6 +453,8 @@ function App() {
           <ul className="session-list">
             {recordings.map((session) => {
               const statusMeta = STATUS_META[session.status]
+              const durationLabel = formatDuration(session.durationMs)
+              const notes = session.notes ?? 'Transcription pending…'
               return (
                 <li key={session.id}>
                   <article
@@ -300,14 +472,14 @@ function App() {
                     <header className="session-topline">
                       <span className={`session-pill ${statusMeta.pillClass}`}>{statusMeta.label}</span>
                       <span className="session-times">
-                        {formatClock(session.updatedAt)} @ {formatDate(session.startedAt)} {formatClock(session.startedAt)}
+                        Started {formatDate(session.startedAt)} {formatClock(session.startedAt)}
                       </span>
                     </header>
-                    <h2 className="session-title">{session.title}</h2>
-                    <p className="session-preview">{session.notes ?? 'Transcription pending…'}</p>
+                    <h2 className="session-title">{durationLabel}</h2>
+                    <p className="session-preview">{notes}</p>
                     <footer className="session-footer">
                       <span className="session-meta">
-                        {formatDuration(session.durationMs)} · {toMbLabel(session.totalBytes)}
+                        Updated {formatClock(session.updatedAt)} · {formatDataSize(session.totalBytes)}
                       </span>
                       {session.status === 'error' ? (
                         <button className="session-retry" type="button" onClick={(event) => void handleRetry(event, session)}>
@@ -328,15 +500,15 @@ function App() {
           <div className="controls-card">
             <h2>Capture</h2>
             <button
-              className={`record-toggle ${isRecording ? 'record-toggle-stop' : 'record-toggle-start'}`}
+              className={`record-toggle ${captureState.state === 'recording' ? 'record-toggle-stop' : 'record-toggle-start'}`}
               type="button"
               onClick={handleRecordToggle}
-              aria-pressed={isRecording}
+              aria-pressed={captureState.state === 'recording'}
             >
-              {isRecording ? 'Stop recording' : 'Start recording'}
+              {captureState.state === 'recording' ? 'Stop recording' : 'Start recording'}
             </button>
             <p className="controls-copy">
-              Recorder {isRecording ? 'running — chunks saving every 4 s.' : 'idle — tap start to begin a durable session.'}
+              Recorder {captureState.state === 'recording' ? 'running — chunks saving every 4 s.' : 'idle — tap start to begin a durable session.'}
             </p>
           </div>
         </aside>
@@ -365,11 +537,24 @@ function App() {
             <header className="detail-header">
               <div>
                 <p className="detail-label">Recording</p>
-                <h2 id="recording-detail-title">{selectedRecording.title}</h2>
+                <h2 id="recording-detail-title">{formatDuration(selectedRecording.durationMs)}</h2>
               </div>
-              <button className="detail-close" type="button" onClick={handleCloseDetail}>
-                Close
-              </button>
+              <div className="detail-actions">
+                {developerMode ? (
+                  <button
+                    className={`detail-debug-toggle ${debugDetailsOpen ? 'is-active' : ''}`}
+                    type="button"
+                    onClick={() => setDebugDetailsOpen((prev) => !prev)}
+                    aria-pressed={debugDetailsOpen}
+                    aria-label={debugDetailsOpen ? 'Hide developer details' : 'Show developer details'}
+                  >
+                    🐞
+                  </button>
+                ) : null}
+                <button className="detail-close" type="button" onClick={handleCloseDetail}>
+                  Close
+                </button>
+              </div>
             </header>
             <div className="detail-body">
               <div className="detail-summary">
@@ -378,38 +563,139 @@ function App() {
                   {formatClock(selectedRecording.updatedAt)}
                 </p>
                 <p>
-                  <strong>Length:</strong> {formatDuration(selectedRecording.durationMs)} · {selectedRecording.chunkCount} chunks ·{' '}
-                  {toMbLabel(selectedRecording.totalBytes)}
+                  <strong>Chunks:</strong> {selectedRecording.chunkCount}
+                </p>
+                <p>
+                  <strong>Size:</strong> {formatDataSize(selectedRecording.totalBytes)}
                 </p>
                 <p>
                   <strong>Format:</strong> {selectedRecording.mimeType ?? 'pending'}
                 </p>
               </div>
-              <button className="detail-play" type="button" onClick={handlePlay} disabled={isLoadingPlayback}>
-                {isLoadingPlayback ? 'Preparing…' : 'Play'}
-              </button>
+              <div className="playback-controls">
+                <button
+                  className="playback-button"
+                  type="button"
+                  onClick={handlePlaybackToggle}
+                  disabled={isLoadingPlayback || selectedRecording.chunkCount === 0}
+                  aria-pressed={audioState.playing}
+                >
+                  {isLoadingPlayback ? '…' : audioState.playing ? '⏸' : '▶'}
+                </button>
+                <div className="playback-progress" aria-hidden="true">
+                  <div className="playback-progress-bar" style={{ width: `${playbackProgress}%` }} />
+                </div>
+                <span className="playback-timestamps">
+                  {formatTimecode(audioState.position)} / {formatTimecode(audioState.duration)}
+                </span>
+              </div>
               {playbackError ? <p className="detail-notes" role="alert">{playbackError}</p> : null}
               <div className="detail-transcription">
                 <h3>Transcription</h3>
                 <p className="detail-transcription-placeholder">Not yet implemented — will stream from Groq once wired.</p>
               </div>
-              <div className="detail-chunks">
-                <h3>Chunks</h3>
-                {chunkMetadata.length === 0 ? (
-                  <p className="detail-transcription-placeholder">No chunks persisted yet.</p>
+              {developerMode && debugDetailsOpen ? (
+                <div className="detail-chunks">
+                  <h3>Chunks</h3>
+                  {chunkMetadata.length === 0 ? (
+                    <p className="detail-transcription-placeholder">No chunks persisted yet.</p>
+                  ) : (
+                    <ul className="chunk-list">
+                      {chunkMetadata.map((chunk) => (
+                        <li key={chunk.id}>
+                          <span>#{chunk.seq + 1}</span>
+                          <span>{formatDuration(chunk.endMs - chunk.startMs)}</span>
+                          <span>{formatDataSize(chunk.byteLength)}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              ) : null}
+              {selectedRecording.notes ? <p className="detail-notes">{selectedRecording.notes}</p> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {isSettingsOpen ? (
+        <div className="settings-overlay" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+          <div className="settings-dialog">
+            <header className="settings-header">
+              <h2 id="settings-title">Settings</h2>
+              <button type="button" className="settings-close" onClick={() => setIsSettingsOpen(false)}>
+                Close
+              </button>
+            </header>
+            <div className="settings-body">
+              <label className="settings-field">
+                <span>Groq API key</span>
+                <input
+                  type="text"
+                  value={settings?.groqApiKey ?? ''}
+                  onChange={(event) => void handleGroqKeyChange(event.target.value)}
+                  placeholder="sk-…"
+                  autoComplete="off"
+                />
+              </label>
+              <label className="settings-field settings-checkbox">
+                <input
+                  type="checkbox"
+                  checked={developerMode}
+                  onChange={(event) => void handleDeveloperToggle(event.target.checked)}
+                />
+                <span>Enable developer mode</span>
+              </label>
+              <label className="settings-field">
+                <span>Storage cap (MB)</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={Math.round(storageLimitBytes / MB)}
+                  onChange={(event) => void handleStorageLimitChange(event.target.value)}
+                />
+              </label>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {developerMode && isDeveloperOverlayOpen ? (
+        <div className="dev-overlay" role="dialog" aria-modal="true" aria-labelledby="dev-console-title">
+          <div className="dev-panel">
+            <header className="dev-panel-header">
+              <h2 id="dev-console-title">IndexedDB Inspector</h2>
+              <button type="button" className="dev-close" onClick={handleCloseDeveloperOverlay}>
+                Close
+              </button>
+            </header>
+            <div className="dev-panel-body">
+              <div className="dev-table-buttons">
+                {developerTables.map((table) => (
+                  <button
+                    key={table.name}
+                    type="button"
+                    className={selectedDeveloperTable === table.name ? 'is-selected' : ''}
+                    onClick={() => setSelectedDeveloperTable(table.name)}
+                  >
+                    {table.name}
+                    <span className="dev-table-count">{table.rows.length}</span>
+                  </button>
+                ))}
+              </div>
+              <div className="dev-table-rows">
+                {developerOverlayLoading ? (
+                  <p>Loading…</p>
+                ) : selectedDeveloperTable ? (
+                  developerTables
+                    .find((table) => table.name === selectedDeveloperTable)
+                    ?.rows.map((row, index) => (
+                      <pre key={index}>{JSON.stringify(row, null, 2)}</pre>
+                    )) ?? <p>No rows.</p>
                 ) : (
-                  <ul className="chunk-list">
-                    {chunkMetadata.map((chunk) => (
-                      <li key={chunk.id}>
-                        <span>#{chunk.seq + 1}</span>
-                        <span>{formatDuration(chunk.endMs - chunk.startMs)}</span>
-                        <span>{toMbLabel(chunk.byteLength)}</span>
-                      </li>
-                    ))}
-                  </ul>
+                  <p>Select a table to inspect rows.</p>
                 )}
               </div>
-              {selectedRecording.notes ? <p className="detail-notes">{selectedRecording.notes}</p> : null}
             </div>
           </div>
         </div>

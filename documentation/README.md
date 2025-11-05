@@ -10,15 +10,15 @@ This document tracks the real-world readiness of core capabilities. Status is in
 | Recording playback | 🟨 In progress | Combined chunk playback available; needs waveform scrubber & buffering polish. |
 | Adaptive snip logic | 🟥 Not implemented | DSP/VAD analysis module not wired; snip timing currently conceptual. |
 | Live transcription | 🟥 Not implemented | UI simulates streaming text; no Groq/Whisper integration yet. |
-| Settings & Groq key intake | 🟥 Not implemented | Settings drawer placeholder disabled. |
+| Settings & Groq key intake | 🟨 In progress | Settings modal persists Groq key + developer storage limits; integration pending. |
 | Telemetry & safeguards | 🟥 Not implemented | Offline, low-storage, and device-change handling TBD. |
 | Spec + prompt logging | 🟩 Ready | `documentation/spec/` entries created per session; prompt transcripts stored alongside specs. |
 
 ## Current Focus
 
-- Harden the MVP capture loop: monitor recorder health, surface chunk progress, and prep for AudioWorklet analysis tee.
-- Build out IndexedDB manifest helpers for uploader/transcription workers and flesh out retry ergonomics.
-- Document iteration progress under `documentation/spec/` and keep the status board honest as features flip.
+- Wire the AudioWorklet analysis tee, adaptive snip heuristics, and diagnostics surfaced via developer mode.
+- Build the uploader worker with retry/backoff plus UI affordances for recovery and attention states.
+- Connect the stored Groq API key to the transcription flow and surface transcript retries in the detail view.
 
 ## Upcoming Milestones
 
