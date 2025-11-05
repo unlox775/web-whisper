@@ -46,7 +46,7 @@ const SIMULATED_STREAM = [
 const STATUS_META: Record<SessionRecord['status'], { label: string; pillClass: string }> = {
   recording: { label: 'Recording', pillClass: 'pill-progress' },
   ready: { label: 'Ready', pillClass: 'pill-synced' },
-  error: { label: 'Needs action', pillClass: 'pill-attention' },
+  error: { label: 'Transcription failed', pillClass: 'pill-attention' },
 }
 
 const MB = 1024 * 1024

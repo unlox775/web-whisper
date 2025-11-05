@@ -223,6 +223,13 @@ class BrowserCaptureController implements CaptureController {
     this.#setState({ state: 'stopping' })
     const recorder = this.#mediaRecorder
     if (recorder.state !== 'inactive') {
+      if (recorder.state === 'recording') {
+        try {
+          recorder.requestData()
+        } catch (error) {
+          console.warn('[CaptureController] requestData failed before stop', error)
+        }
+      }
       recorder.stop()
     }
     await this.flushPending()

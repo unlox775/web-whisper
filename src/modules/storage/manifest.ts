@@ -231,22 +231,44 @@ class IndexedDBManifestService implements ManifestService {
 
   async reconcileDanglingSessions(): Promise<void> {
     const db = await getDB()
-    const tx = db.transaction('sessions', 'readwrite')
-    const store = tx.objectStore('sessions')
-    const sessions = await store.getAll()
+    const tx = db.transaction(['sessions', 'chunks'], 'readwrite')
+    const sessionStore = tx.objectStore('sessions')
+    const chunkStore = tx.objectStore('chunks')
+    const sessions = await sessionStore.getAll()
     const now = Date.now()
-    await Promise.all(
-      sessions
-        .filter((session) => session.status === 'recording')
-        .map((session) =>
-          store.put({
-            ...session,
-            status: 'error',
-            notes: 'Recording ended unexpectedly.',
-            updatedAt: now,
-          }),
-        ),
-    )
+
+    for (const session of sessions) {
+      if (session.status !== 'recording') continue
+
+      const chunks = await chunkStore.index('by-session').getAll(session.id)
+      if (chunks.length === 0) {
+        await sessionStore.put({
+          ...session,
+          status: 'error',
+          notes: 'No audio captured (session interrupted).',
+          updatedAt: now,
+          totalBytes: 0,
+          chunkCount: 0,
+          durationMs: 0,
+        })
+      } else {
+        const totalBytes = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+        const durationMs = Math.max(
+          session.durationMs,
+          Math.max(...chunks.map((chunk) => chunk.endMs)) - session.startedAt,
+        )
+        await sessionStore.put({
+          ...session,
+          status: 'ready',
+          notes: session.notes,
+          updatedAt: now,
+          totalBytes,
+          chunkCount: chunks.length,
+          durationMs,
+        })
+      }
+    }
+
     await tx.done
   }
 

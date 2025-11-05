@@ -24,7 +24,7 @@ web-whisper is a Progressive Web App (PWA) that captures long-form audio directl
 - Live chunk counter + buffer usage while recording.
 - Bug toggles inside each session for chunk listings (size, format, duration).
 - Developer console with:
-  - IndexedDB inspector (sessions & chunk metadata, blob columns noted as “binary omitted”).
+  - IndexedDB inspector (sessions & chunk metadata; binary blobs noted as “binary omitted”).
   - Session-by-session logs (“recorder started”, “chunk persisted”, warnings/errors, etc.).
 
 ## Current Architecture (MVP)
@@ -37,7 +37,7 @@ web-whisper is a Progressive Web App (PWA) that captures long-form audio directl
 ### Roadmap
 
 - AudioWorklet analysis (RMS/ZCR, adaptive snip heuristics).
-- Upload worker with retry/backoff and network-aware UX.
+- Sync layer for future sharing (optional; current scope keeps everything local).
 - Whisper integration (Groq, 30 s windows, overlap, transcript retries).
 - Storage cap enforcement & retention policies.
 
