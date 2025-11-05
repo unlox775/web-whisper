@@ -10,10 +10,21 @@ import './App.css'
 import { captureController } from './modules/capture/controller'
 import {
   manifestService,
+  type LogEntryRecord,
+  type LogSessionRecord,
   type ChunkRecord,
   type SessionRecord,
 } from './modules/storage/manifest'
 import { settingsStore, type RecorderSettings } from './modules/settings/store'
+import {
+  getActiveLogSession,
+  initializeLogger,
+  logDebug,
+  logError,
+  logInfo,
+  logWarn,
+  shutdownLogger,
+} from './modules/logging/logger'
 
 type DeveloperTable = {
   name: string
@@ -101,6 +112,10 @@ function App() {
   const [developerOverlayLoading, setDeveloperOverlayLoading] = useState(false)
   const [developerTables, setDeveloperTables] = useState<DeveloperTable[]>([])
   const [selectedDeveloperTable, setSelectedDeveloperTable] = useState<string | null>(null)
+  const [developerOverlayMode, setDeveloperOverlayMode] = useState<'tables' | 'logs'>('tables')
+  const [logSessions, setLogSessions] = useState<LogSessionRecord[]>([])
+  const [selectedLogSession, setSelectedLogSession] = useState<LogSessionRecord | null>(null)
+  const [logEntries, setLogEntries] = useState<LogEntryRecord[]>([])
   const [debugDetailsOpen, setDebugDetailsOpen] = useState(false)
   const [isLoadingPlayback, setIsLoadingPlayback] = useState(false)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
@@ -124,6 +139,17 @@ function App() {
   }, [storageLimitBytes])
 
   useEffect(() => settingsStore.subscribe((value) => setSettings({ ...value })), [])
+
+  useEffect(() => {
+    void initializeLogger()
+    return () => {
+      void shutdownLogger()
+    }
+  }, [])
+
+  useEffect(() => {
+    void manifestService.reconcileDanglingSessions()
+  }, [])
 
   useEffect(() => {
     const unsubscribe = captureController.subscribe((state) => setCaptureState({ ...state }))
@@ -196,6 +222,12 @@ function App() {
     if (!developerMode) {
       setDeveloperOverlayOpen(false)
       setDebugDetailsOpen(false)
+      setDeveloperTables([])
+      setSelectedDeveloperTable(null)
+      setDeveloperOverlayMode('tables')
+      setLogSessions([])
+      setSelectedLogSession(null)
+      setLogEntries([])
     }
   }, [developerMode])
 
@@ -222,6 +254,7 @@ function App() {
     if (captureState.state === 'recording') return
     let sessionId = ''
     try {
+      await logInfo('Recorder start requested', { previousState: captureState.state })
       setErrorMessage(null)
       const activeSettings = await settingsStore.get()
       sessionId = window.crypto?.randomUUID?.() ?? `session-${Date.now()}`
@@ -247,9 +280,18 @@ function App() {
         targetBitrate: activeSettings.targetBitrate,
         chunkDurationMs: 4000,
       })
+      await logInfo('Recorder started', {
+        sessionId,
+        targetBitrate: activeSettings.targetBitrate,
+        chunkDurationMs: 4000,
+      })
       await loadSessions()
     } catch (error) {
       console.error('[UI] Failed to start recording', error)
+      await logError('Recorder failed to start', {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      })
       if (sessionId) {
         await manifestService.updateSession(sessionId, {
           status: 'error',
@@ -265,19 +307,26 @@ function App() {
   const stopRecording = useCallback(async () => {
     if (captureState.state !== 'recording') return
     try {
+      await logInfo('Recorder stop requested', { sessionId: captureState.sessionId })
       await captureController.stop()
+      await logInfo('Recorder stopped', { sessionId: captureState.sessionId })
     } catch (error) {
       console.error('[UI] Failed to stop recording', error)
       setErrorMessage(error instanceof Error ? error.message : String(error))
+      await logError('Recorder failed to stop', {
+        sessionId: captureState.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      })
     } finally {
       await loadSessions()
     }
-  }, [captureState.state, loadSessions])
+  }, [captureState.sessionId, captureState.state, loadSessions])
 
   const handleRetry = async (event: MouseEvent<HTMLButtonElement>, record: SessionRecord) => {
     event.stopPropagation()
     console.info('[UI] retry placeholder', record.id)
     setErrorMessage('Retry logic will arrive with uploader implementation.')
+    await logWarn('Manual retry requested', { sessionId: record.id })
   }
 
   const handleRecordToggle = async () => {
@@ -295,6 +344,11 @@ function App() {
     if (!blob) {
       throw new Error('No audio available yet. Keep recording to capture chunks.')
     }
+    await logInfo('Playback source prepared', {
+      sessionId: selectedRecording.id,
+      blobSize: blob.size,
+      blobType: blob.type,
+    })
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current)
     }
@@ -323,12 +377,18 @@ function App() {
       }
       if (audio.paused) {
         await audio.play()
+        await logInfo('Playback started', { sessionId: selectedRecording.id })
       } else {
         audio.pause()
+        await logInfo('Playback paused', { sessionId: selectedRecording.id })
       }
     } catch (error) {
       console.error('[UI] Playback toggle failed', error)
       setPlaybackError(error instanceof Error ? error.message : String(error))
+      await logError('Playback toggle failed', {
+        sessionId: selectedRecording.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
     } finally {
       setIsLoadingPlayback(false)
     }
@@ -340,6 +400,9 @@ function App() {
     setDebugDetailsOpen(false)
     setPlaybackError(null)
     setAudioState({ playing: false, duration: 0, position: 0 })
+    if (selectedRecordingId) {
+      await logInfo('Detail view closed', { sessionId: selectedRecordingId })
+    }
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current)
       audioUrlRef.current = null
@@ -352,32 +415,31 @@ function App() {
   }
 
   const handleOpenDeveloperOverlay = useCallback(async () => {
+    setDeveloperOverlayMode('tables')
     setDeveloperOverlayOpen(true)
     setDeveloperOverlayLoading(true)
     try {
-      const sessions = await manifestService.listSessions()
-      const chunkBatches = await Promise.all(
-        sessions.map((session) => manifestService.getChunkMetadata(session.id))
-      )
-      const chunkRows = chunkBatches.flat()
-      setDeveloperTables([
-        { name: 'sessions', rows: sessions.map((row) => ({ ...row })) },
-        { name: 'chunks', rows: chunkRows.map((row) => ({ ...row })) },
-      ])
-      setSelectedDeveloperTable('sessions')
+      await Promise.all([loadDeveloperTables(), loadLogSessions()])
     } catch (error) {
       console.error('[UI] Failed to load developer data', error)
       setDeveloperTables([])
       setSelectedDeveloperTable(null)
+      await logError('Developer overlay failed to load', {
+        error: error instanceof Error ? error.message : String(error),
+      })
     } finally {
       setDeveloperOverlayLoading(false)
     }
-  }, [])
+  }, [loadDeveloperTables, loadLogSessions])
 
   const handleCloseDeveloperOverlay = () => {
     setDeveloperOverlayOpen(false)
     setDeveloperTables([])
     setSelectedDeveloperTable(null)
+    setDeveloperOverlayMode('tables')
+    setLogSessions([])
+    setSelectedLogSession(null)
+    setLogEntries([])
   }
 
   const handleStorageLimitChange = async (value: string) => {
@@ -393,6 +455,52 @@ function App() {
   const handleGroqKeyChange = async (value: string) => {
     await settingsStore.set({ groqApiKey: value })
   }
+
+  const loadDeveloperTables = useCallback(async () => {
+    const [sessions, chunks] = await Promise.all([
+      manifestService.listSessions(),
+      manifestService.getChunksForInspection(),
+    ])
+    setDeveloperTables([
+      { name: 'sessions', rows: sessions.map((row) => ({ ...row })) },
+      { name: 'chunks', rows: chunks },
+    ])
+    setSelectedDeveloperTable((prev) => prev ?? 'sessions')
+  }, [])
+
+  const handleSelectLogSession = useCallback(
+    async (session: LogSessionRecord | null) => {
+      setSelectedLogSession(session)
+      if (session) {
+        const entries = await manifestService.getLogEntries(session.id)
+        setLogEntries(entries)
+      } else {
+        setLogEntries([])
+      }
+    },
+    [],
+  )
+
+  const loadLogSessions = useCallback(async () => {
+    const sessions = await manifestService.listLogSessions()
+    setLogSessions(sessions)
+    const current = getActiveLogSession()
+    const preferred = current ?? sessions[0] ?? null
+    await handleSelectLogSession(preferred)
+  }, [handleSelectLogSession])
+
+  const handleLogSessionNav = useCallback(
+    async (direction: -1 | 1) => {
+      if (!selectedLogSession) return
+      const index = logSessions.findIndex((session) => session.id === selectedLogSession.id)
+      if (index === -1) return
+      const next = logSessions[index + direction]
+      if (next) {
+        await handleSelectLogSession(next)
+      }
+    },
+    [handleSelectLogSession, logSessions, selectedLogSession],
+  )
 
   const bufferLabel = `${formatDataSize(bufferTotals.totalBytes)} / ${formatDataSize(bufferTotals.limitBytes)}`
   const playbackProgress = audioState.duration > 0 ? (audioState.position / audioState.duration) * 100 : 0
@@ -660,43 +768,123 @@ function App() {
         </div>
       ) : null}
 
-      {developerMode && isDeveloperOverlayOpen ? (
-        <div className="dev-overlay" role="dialog" aria-modal="true" aria-labelledby="dev-console-title">
-          <div className="dev-panel">
-            <header className="dev-panel-header">
-              <h2 id="dev-console-title">IndexedDB Inspector</h2>
-              <button type="button" className="dev-close" onClick={handleCloseDeveloperOverlay}>
-                Close
-              </button>
-            </header>
-            <div className="dev-panel-body">
-              <div className="dev-table-buttons">
-                {developerTables.map((table) => (
+        {developerMode && isDeveloperOverlayOpen ? (
+          <div className="dev-overlay" role="dialog" aria-modal="true" aria-labelledby="dev-console-title">
+            <div className="dev-panel">
+              <header className="dev-panel-header">
+                <h2 id="dev-console-title">Developer Console</h2>
+                <button type="button" className="dev-close" onClick={handleCloseDeveloperOverlay}>
+                  Close
+                </button>
+              </header>
+              <div className="dev-panel-toolbar">
+                <button
+                  type="button"
+                  className={developerOverlayMode === 'tables' ? 'is-selected' : ''}
+                  onClick={() => {
+                    setDeveloperOverlayMode('tables')
+                    void loadDeveloperTables()
+                  }}
+                >
+                  IndexedDB
+                </button>
+                <button
+                  type="button"
+                  className={developerOverlayMode === 'logs' ? 'is-selected' : ''}
+                  onClick={() => {
+                    setDeveloperOverlayMode('logs')
+                    void loadLogSessions()
+                  }}
+                >
+                  Logs
+                </button>
+              </div>
+            {developerOverlayMode === 'tables' ? (
+              <div className="dev-panel-body">
+                <div className="dev-table-buttons">
+                  {developerTables.map((table) => (
+                    <button
+                      key={table.name}
+                      type="button"
+                      className={selectedDeveloperTable === table.name ? 'is-selected' : ''}
+                      onClick={() => setSelectedDeveloperTable(table.name)}
+                    >
+                      {table.name}
+                      <span className="dev-table-count">{table.rows.length}</span>
+                    </button>
+                  ))}
+                </div>
+                <div className="dev-table-rows">
+                  {developerOverlayLoading ? (
+                    <p>Loading…</p>
+                  ) : selectedDeveloperTable ? (
+                    developerTables
+                      .find((table) => table.name === selectedDeveloperTable)
+                      ?.rows.map((row, index) => (
+                        <pre key={index}>{JSON.stringify(row, null, 2)}</pre>
+                      )) ?? <p>No rows.</p>
+                  ) : (
+                    <p>Select a table to inspect rows.</p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="dev-log-body">
+                <div className="dev-log-header">
                   <button
-                    key={table.name}
                     type="button"
-                    className={selectedDeveloperTable === table.name ? 'is-selected' : ''}
-                    onClick={() => setSelectedDeveloperTable(table.name)}
+                    onClick={() => void handleLogSessionNav(-1)}
+                    disabled={!selectedLogSession || logSessions.findIndex((s) => s.id === selectedLogSession.id) === logSessions.length - 1}
                   >
-                    {table.name}
-                    <span className="dev-table-count">{table.rows.length}</span>
+                    ←
                   </button>
-                ))}
+                  <select
+                    value={selectedLogSession?.id ?? ''}
+                    onChange={(event) => {
+                      const next = logSessions.find((session) => session.id === event.target.value) ?? null
+                      void handleSelectLogSession(next)
+                    }}
+                  >
+                    {logSessions.length === 0 ? <option value="">No sessions</option> : null}
+                    {logSessions.map((session) => (
+                      <option key={session.id} value={session.id}>
+                        {new Date(session.startedAt).toLocaleString()}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => void handleLogSessionNav(1)}
+                    disabled={!selectedLogSession || logSessions.findIndex((s) => s.id === selectedLogSession.id) <= 0}
+                  >
+                    →
+                  </button>
+                </div>
+                <div className="dev-log-entries">
+                  {developerOverlayLoading ? (
+                    <p>Loading…</p>
+                  ) : !selectedLogSession ? (
+                    <p>No log sessions found.</p>
+                  ) : logEntries.length === 0 ? (
+                    <p>No entries for this session.</p>
+                  ) : (
+                    logEntries.map((entry) => (
+                      <article
+                        key={entry.id ?? `${entry.timestamp}`}
+                        className={`dev-log-entry level-${entry.level}`}
+                      >
+                        <header>
+                          <span>{new Date(entry.timestamp).toLocaleTimeString()}</span>
+                          <span>{entry.level.toUpperCase()}</span>
+                        </header>
+                        <p>{entry.message}</p>
+                        {entry.details ? <pre>{JSON.stringify(entry.details, null, 2)}</pre> : null}
+                      </article>
+                    ))
+                  )}
+                </div>
               </div>
-              <div className="dev-table-rows">
-                {developerOverlayLoading ? (
-                  <p>Loading…</p>
-                ) : selectedDeveloperTable ? (
-                  developerTables
-                    .find((table) => table.name === selectedDeveloperTable)
-                    ?.rows.map((row, index) => (
-                      <pre key={index}>{JSON.stringify(row, null, 2)}</pre>
-                    )) ?? <p>No rows.</p>
-                ) : (
-                  <p>Select a table to inspect rows.</p>
-                )}
-              </div>
-            </div>
+            )}
           </div>
         </div>
       ) : null}

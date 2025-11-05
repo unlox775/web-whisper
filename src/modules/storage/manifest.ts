@@ -40,24 +40,56 @@ interface DurableRecorderDB extends DBSchema {
     value: StoredChunk
     indexes: { 'by-session': string }
   }
+  logSessions: {
+    key: string
+    value: LogSessionRecord
+    indexes: { 'by-started': number }
+  }
+  logEntries: {
+    key: number
+    value: LogEntryRecord
+    indexes: { 'by-session': string; 'by-timestamp': number }
+  }
+}
+
+export interface LogSessionRecord {
+  id: string
+  startedAt: number
+  endedAt?: number
+}
+
+export interface LogEntryRecord {
+  id?: number
+  sessionId: string
+  timestamp: number
+  level: 'debug' | 'info' | 'warn' | 'error'
+  message: string
+  details?: Record<string, unknown>
 }
 
 const DB_NAME = 'durable-audio-recorder'
-const DB_VERSION = 1
+const DB_VERSION = 2
+const MAX_LOG_SESSIONS = 50
 
 let dbPromise: Promise<IDBPDatabase<DurableRecorderDB>> | null = null
 
 async function getDB(): Promise<IDBPDatabase<DurableRecorderDB>> {
   if (!dbPromise) {
     dbPromise = openDB<DurableRecorderDB>(DB_NAME, DB_VERSION, {
-      upgrade(db) {
-        if (!db.objectStoreNames.contains('sessions')) {
+      upgrade(db, oldVersion) {
+        if (oldVersion < 1) {
           const sessions = db.createObjectStore('sessions', { keyPath: 'id' })
           sessions.createIndex('by-updated', 'updatedAt')
-        }
-        if (!db.objectStoreNames.contains('chunks')) {
           const chunks = db.createObjectStore('chunks', { keyPath: 'id' })
           chunks.createIndex('by-session', 'sessionId')
+        }
+
+        if (oldVersion < 2) {
+          const logSessions = db.createObjectStore('logSessions', { keyPath: 'id' })
+          logSessions.createIndex('by-started', 'startedAt')
+          const logEntries = db.createObjectStore('logEntries', { keyPath: 'id', autoIncrement: true })
+          logEntries.createIndex('by-session', 'sessionId')
+          logEntries.createIndex('by-timestamp', 'timestamp')
         }
       },
     })
@@ -76,6 +108,13 @@ export interface ManifestService {
   buildSessionBlob(sessionId: string, mimeType: string): Promise<Blob | null>
   deleteSession(sessionId: string): Promise<void>
   storageTotals(): Promise<{ totalBytes: number }>
+  reconcileDanglingSessions(): Promise<void>
+  getChunksForInspection(): Promise<Array<Record<string, unknown>>>
+  createLogSession(): Promise<LogSessionRecord>
+  finishLogSession(id: string): Promise<void>
+  appendLogEntry(entry: Omit<LogEntryRecord, 'id'>): Promise<void>
+  listLogSessions(): Promise<LogSessionRecord[]>
+  getLogEntries(sessionId: string, limit?: number): Promise<LogEntryRecord[]>
 }
 
 class IndexedDBManifestService implements ManifestService {
@@ -188,6 +227,98 @@ class IndexedDBManifestService implements ManifestService {
       cursor = await cursor.continue()
     }
     return { totalBytes }
+  }
+
+  async reconcileDanglingSessions(): Promise<void> {
+    const db = await getDB()
+    const tx = db.transaction('sessions', 'readwrite')
+    const store = tx.objectStore('sessions')
+    const sessions = await store.getAll()
+    const now = Date.now()
+    await Promise.all(
+      sessions
+        .filter((session) => session.status === 'recording')
+        .map((session) =>
+          store.put({
+            ...session,
+            status: 'error',
+            notes: 'Recording ended unexpectedly.',
+            updatedAt: now,
+          }),
+        ),
+    )
+    await tx.done
+  }
+
+  async getChunksForInspection(): Promise<Array<Record<string, unknown>>> {
+    const db = await getDB()
+    const chunks = await db.transaction('chunks').store.getAll()
+    return chunks.map(({ blob, ...rest }) => ({
+      ...rest,
+      blobSize: blob.size,
+      blobType: blob.type,
+      blob: '[binary omitted]',
+    }))
+  }
+
+  async createLogSession(): Promise<LogSessionRecord> {
+    const db = await getDB()
+    const tx = db.transaction(['logSessions', 'logEntries'], 'readwrite')
+    const logSessions = tx.objectStore('logSessions')
+    const id = crypto.randomUUID()
+    const session: LogSessionRecord = {
+      id,
+      startedAt: Date.now(),
+    }
+    await logSessions.put(session)
+
+    const existing = await logSessions.getAll()
+    if (existing.length > MAX_LOG_SESSIONS) {
+      const sorted = existing.sort((a, b) => a.startedAt - b.startedAt)
+      const overflow = sorted.slice(0, existing.length - MAX_LOG_SESSIONS)
+      const logEntries = tx.objectStore('logEntries')
+      for (const s of overflow) {
+        await logSessions.delete(s.id)
+        for (let cursor = await logEntries.index('by-session').openCursor(s.id); cursor; cursor = await cursor.continue()) {
+          await cursor.delete()
+        }
+      }
+    }
+
+    await tx.done
+    return session
+  }
+
+  async finishLogSession(id: string): Promise<void> {
+    const db = await getDB()
+    const store = db.transaction('logSessions', 'readwrite').objectStore('logSessions')
+    const record = await store.get(id)
+    if (record) {
+      record.endedAt = Date.now()
+      await store.put(record)
+    }
+  }
+
+  async appendLogEntry(entry: Omit<LogEntryRecord, 'id'>): Promise<void> {
+    const db = await getDB()
+    const store = db.transaction('logEntries', 'readwrite').objectStore('logEntries')
+    await store.add({ ...entry })
+  }
+
+  async listLogSessions(): Promise<LogSessionRecord[]> {
+    const db = await getDB()
+    const sessions = await db.transaction('logSessions').store.getAll()
+    return sessions.sort((a, b) => b.startedAt - a.startedAt)
+  }
+
+  async getLogEntries(sessionId: string, limit = 250): Promise<LogEntryRecord[]> {
+    const db = await getDB()
+    const index = db.transaction('logEntries').store.index('by-session')
+    const entries: LogEntryRecord[] = []
+    for (let cursor = await index.openCursor(sessionId, 'prev'); cursor && entries.length < limit; cursor = await cursor.continue()) {
+      entries.push(cursor.value)
+    }
+    return entries.sort((a, b) => a.timestamp - b.timestamp)
   }
 }
 

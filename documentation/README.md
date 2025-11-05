@@ -27,3 +27,7 @@ This document tracks the real-world readiness of core capabilities. Status is in
 3. **Transcription Integration** — settings flow for Groq API key, 30-second batching, and retry controls on the session detail view.
 
 Refer to `documentation/spec/` for iteration-by-iteration breakdowns and prompt transcripts.
+
+## iOS Microphone Permissions
+
+- iOS currently prompts on every launch of a standalone PWA when requesting `getUserMedia`. To minimise prompts, open **Settings → Safari → Microphone** and ensure “Allow” is selected. If the PWA still prompts, grant access when asked—the browser does not persist the choice for installed PWAs yet.

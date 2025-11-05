@@ -661,6 +661,28 @@
   padding: 0.35rem 0.9rem;
 }
 
+.dev-panel-toolbar {
+  display: flex;
+  gap: 0.6rem;
+  padding: 0.75rem 1.25rem;
+  border-bottom: 1px solid rgba(94, 234, 212, 0.12);
+}
+
+.dev-panel-toolbar button {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.55);
+  color: #cbd5f5;
+  padding: 0.45rem 0.85rem;
+  font-weight: 600;
+}
+
+.dev-panel-toolbar button.is-selected {
+  border-color: rgba(94, 234, 212, 0.6);
+  background: rgba(94, 234, 212, 0.18);
+  color: #5eead4;
+}
+
 .dev-panel-body {
   display: grid;
   grid-template-columns: 200px 1fr;
@@ -716,6 +738,81 @@
   line-height: 1.4;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+.dev-log-body {
+  display: flex;
+  flex-direction: column;
+  padding: 1rem 1.25rem;
+  gap: 0.75rem;
+  min-height: 0;
+}
+
+.dev-log-header {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.dev-log-header select {
+  flex: 1;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  background: rgba(15, 23, 42, 0.55);
+  color: #cbd5f5;
+  padding: 0.45rem 0.6rem;
+}
+
+.dev-log-entries {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.dev-log-entry {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.55);
+  padding: 0.65rem 0.75rem;
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+}
+
+.dev-log-entry header {
+  display: flex;
+  justify-content: space-between;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+}
+
+.dev-log-entry pre {
+  margin: 0;
+  padding: 0.5rem;
+  border-radius: 0.6rem;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(94, 234, 212, 0.08);
+  white-space: pre-wrap;
+  font-size: 0.7rem;
+}
+
+.dev-log-entry.level-info {
+  border-color: rgba(94, 234, 212, 0.35);
+}
+
+.dev-log-entry.level-warn {
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(253, 224, 71, 0.12);
+}
+
+.dev-log-entry.level-error {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.dev-log-entry.level-debug {
+  opacity: 0.8;
 }
 
 @media (max-width: 960px) {
