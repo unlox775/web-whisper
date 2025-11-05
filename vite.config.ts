@@ -9,9 +9,9 @@ export default defineConfig({
     VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['pwa-192x192.svg', 'pwa-512x512.svg'],
-      manifest: {
-        name: 'Durable Audio Recorder',
-        short_name: 'Recorder',
+        manifest: {
+          name: 'web-whisper',
+          short_name: 'web-whisper',
         start_url: '.',
         display: 'standalone',
         background_color: '#0f172a',

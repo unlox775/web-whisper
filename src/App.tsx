@@ -689,14 +689,14 @@ function App() {
                   {formatClock(selectedRecording.updatedAt)}
                 </p>
                 <p>
-                  <strong>Chunks:</strong> {selectedRecording.chunkCount}
-                </p>
-                <p>
                   <strong>Size:</strong> {formatDataSize(selectedRecording.totalBytes)}
                 </p>
-                <p>
-                  <strong>Format:</strong> {selectedRecording.mimeType ?? 'pending'}
-                </p>
+                {developerMode && debugDetailsOpen ? (
+                  <p>
+                    <strong>Format:</strong> {selectedRecording.mimeType ?? 'pending'} ·{' '}
+                    <strong>Chunks:</strong> {selectedRecording.chunkCount}
+                  </p>
+                ) : null}
               </div>
               <div className="playback-controls">
                 <button
@@ -715,29 +715,31 @@ function App() {
                   {formatTimecode(audioState.position)} / {formatTimecode(audioState.duration)}
                 </span>
               </div>
-              {playbackError ? <p className="detail-notes" role="alert">{playbackError}</p> : null}
-              <div className="detail-transcription">
-                <h3>Transcription</h3>
-                <p className="detail-transcription-placeholder">Not yet implemented — will stream from Groq once wired.</p>
-              </div>
-              {developerMode && debugDetailsOpen ? (
-                <div className="detail-chunks">
-                  <h3>Chunks</h3>
-                  {chunkMetadata.length === 0 ? (
-                    <p className="detail-transcription-placeholder">No chunks persisted yet.</p>
-                  ) : (
-                    <ul className="chunk-list">
-                      {chunkMetadata.map((chunk) => (
-                        <li key={chunk.id}>
-                          <span>#{chunk.seq + 1}</span>
-                          <span>{formatDuration(chunk.endMs - chunk.startMs)}</span>
-                          <span>{formatDataSize(chunk.byteLength)}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+                {playbackError ? <p className="detail-notes" role="alert">{playbackError}</p> : null}
+                <div className="detail-transcription">
+                  <h3>Transcription</h3>
+                  <p className="detail-transcription-placeholder">Not yet implemented — will stream from Groq once wired.</p>
                 </div>
-              ) : null}
+                {developerMode && debugDetailsOpen ? (
+                  <div className="detail-chunks">
+                    <h3>
+                      Chunks ({selectedRecording.chunkCount}) · {selectedRecording.mimeType ?? 'pending'}
+                    </h3>
+                    {chunkMetadata.length === 0 ? (
+                      <p className="detail-transcription-placeholder">No chunks persisted yet.</p>
+                    ) : (
+                      <ul className="chunk-list">
+                        {chunkMetadata.map((chunk) => (
+                          <li key={chunk.id}>
+                            <span>#{chunk.seq + 1}</span>
+                            <span>{formatDuration(chunk.endMs - chunk.startMs)}</span>
+                            <span>{formatDataSize(chunk.byteLength)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                ) : null}
               {selectedRecording.notes ? <p className="detail-notes">{selectedRecording.notes}</p> : null}
             </div>
           </div>
