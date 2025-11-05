@@ -1,0 +1,11 @@
+# Dependencies
+node_modules/
+
+# Editor directories and files
+.idea/
+.vscode/
+*.log
+
+# Build artifacts (docs is intentional output)
+dist/
+.DS_Store
