@@ -94,6 +94,31 @@ const formatTimecode = (seconds: number) => {
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
+const LOG_TIME_BASE_OPTIONS: Intl.DateTimeFormatOptions = {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hour12: false,
+}
+
+const preciseLogTimeFormatter = (() => {
+  try {
+    return new Intl.DateTimeFormat(undefined, {
+      ...LOG_TIME_BASE_OPTIONS,
+      fractionalSecondDigits: 2,
+    } as Intl.DateTimeFormatOptions)
+  } catch {
+    return null
+  }
+})()
+
+const fallbackLogTimeFormatter = new Intl.DateTimeFormat(undefined, LOG_TIME_BASE_OPTIONS)
+
+const formatLogTime = (timestamp: number) => {
+  const formatter = preciseLogTimeFormatter ?? fallbackLogTimeFormatter
+  return formatter.format(new Date(timestamp))
+}
+
 function App() {
   const [settings, setSettings] = useState<RecorderSettings | null>(null)
   const [recordings, setRecordings] = useState<SessionRecord[]>([])
@@ -576,48 +601,46 @@ function App() {
 
       <main className="content-grid">
         <section className="session-section" aria-label="Recording sessions">
-          <ul className="session-list">
-            {recordings.map((session) => {
-              const statusMeta = STATUS_META[session.status]
-              const durationLabel = formatDuration(session.durationMs)
-              const notes = session.notes ?? 'Transcription pending…'
-              return (
-                <li key={session.id}>
-                  <article
-                    className="session-card"
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setSelectedRecordingId(session.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        setSelectedRecordingId(session.id)
-                      }
-                    }}
-                  >
-                    <header className="session-topline">
-                      <span className={`session-pill ${statusMeta.pillClass}`}>{statusMeta.label}</span>
-                      <span className="session-times">
-                        Started {formatDate(session.startedAt)} {formatClock(session.startedAt)}
-                      </span>
-                    </header>
-                    <h2 className="session-title">{durationLabel}</h2>
-                    <p className="session-preview">{notes}</p>
-                    <footer className="session-footer">
-                      <span className="session-meta">
-                        Updated {formatClock(session.updatedAt)} · {formatDataSize(session.totalBytes)}
-                      </span>
-                      {session.status === 'error' ? (
-                        <button className="session-retry" type="button" onClick={(event) => void handleRetry(event, session)}>
-                          Retry
-                        </button>
-                      ) : (
-                        <span className="session-chunks">{session.chunkCount} chunks</span>
-                      )}
-                    </footer>
-                  </article>
-                </li>
-              )
+            <ul className="session-list">
+              {recordings.map((session) => {
+                const statusMeta = STATUS_META[session.status]
+                const durationLabel = formatDuration(session.durationMs)
+                const notes = session.notes ?? 'Transcription pending…'
+                return (
+                  <li key={session.id}>
+                    <article
+                      className="session-card"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedRecordingId(session.id)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter' || event.key === ' ') {
+                          event.preventDefault()
+                          setSelectedRecordingId(session.id)
+                        }
+                      }}
+                    >
+                      <header className="session-topline">
+                        <span className={`session-pill ${statusMeta.pillClass}`}>{statusMeta.label}</span>
+                        <span className="session-times">
+                          Started {formatDate(session.startedAt)} {formatClock(session.startedAt)}
+                        </span>
+                      </header>
+                      <h2 className="session-title">{durationLabel}</h2>
+                      <p className="session-preview">{notes}</p>
+                      <footer className="session-footer">
+                        <span className="session-meta">
+                          Updated {formatClock(session.updatedAt)} · {formatDataSize(session.totalBytes)}
+                        </span>
+                        {session.status === 'error' ? (
+                          <button className="session-retry" type="button" onClick={(event) => void handleRetry(event, session)}>
+                            Retry
+                          </button>
+                        ) : null}
+                      </footer>
+                    </article>
+                  </li>
+                )
             })}
           </ul>
         </section>
@@ -821,92 +844,100 @@ function App() {
                   Logs
                 </button>
               </div>
-              {developerOverlayMode === 'tables' ? (
-                <div className="dev-panel-body">
-                  <div className="dev-table-buttons">
-                    {developerTables.map((table) => (
-                      <button
-                        key={table.name}
-                        type="button"
-                        className={selectedDeveloperTable === table.name ? 'is-selected' : ''}
-                        onClick={() => setSelectedDeveloperTable(table.name)}
-                      >
-                        {table.name}
-                        <span className="dev-table-count">{table.rows.length}</span>
-                      </button>
-                    ))}
-                  </div>
-                  <div className="dev-table-rows">
-                    {developerOverlayLoading ? (
-                      <p>Loading…</p>
-                    ) : selectedDeveloperTable ? (
-                      developerTables
-                        .find((table) => table.name === selectedDeveloperTable)
-                        ?.rows.map((row, index) => (
-                          <pre key={index}>{JSON.stringify(row, null, 2)}</pre>
-                        )) ?? <p>No rows.</p>
-                    ) : (
-                      <p>Select a table to inspect rows.</p>
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="dev-log-body">
-                  <div className="dev-log-header">
-                    <button
-                      type="button"
-                      onClick={() => void handleLogSessionNav(-1)}
-                      disabled={!selectedLogSession || logSessions.findIndex((s) => s.id === selectedLogSession.id) === logSessions.length - 1}
-                    >
-                      ←
-                    </button>
-                    <select
-                      value={selectedLogSession?.id ?? ''}
-                      onChange={(event) => {
-                        const next = logSessions.find((session) => session.id === event.target.value) ?? null
-                        void handleSelectLogSession(next)
-                      }}
-                    >
-                      {logSessions.length === 0 ? <option value="">No sessions</option> : null}
-                      {logSessions.map((session) => (
-                        <option key={session.id} value={session.id}>
-                          {new Date(session.startedAt).toLocaleString()}
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      onClick={() => void handleLogSessionNav(1)}
-                      disabled={!selectedLogSession || logSessions.findIndex((s) => s.id === selectedLogSession.id) <= 0}
-                    >
-                      →
-                    </button>
-                  </div>
-                  <div className="dev-log-entries">
-                    {developerOverlayLoading ? (
-                      <p>Loading…</p>
-                    ) : !selectedLogSession ? (
-                      <p>No log sessions found.</p>
-                    ) : logEntries.length === 0 ? (
-                      <p>No entries for this session.</p>
-                    ) : (
-                      logEntries.map((entry) => (
-                        <article
-                          key={entry.id ?? `${entry.timestamp}`}
-                          className={`dev-log-entry level-${entry.level}`}
+                {developerOverlayMode === 'tables' ? (
+                  <div className="dev-panel-body">
+                    <div className="dev-table-buttons">
+                      {developerTables.map((table) => (
+                        <button
+                          key={table.name}
+                          type="button"
+                          className={selectedDeveloperTable === table.name ? 'is-selected' : ''}
+                          onClick={() => setSelectedDeveloperTable(table.name)}
                         >
-                          <header>
-                            <span>{new Date(entry.timestamp).toLocaleTimeString()}</span>
-                            <span>{entry.level.toUpperCase()}</span>
-                          </header>
-                          <p>{entry.message}</p>
-                          {entry.details ? <pre>{JSON.stringify(entry.details, null, 2)}</pre> : null}
-                        </article>
-                      ))
-                    )}
+                          {table.name}
+                          <span className="dev-table-count">{table.rows.length}</span>
+                        </button>
+                      ))}
+                    </div>
+                    <div className="dev-table-rows">
+                      {developerOverlayLoading ? (
+                        <p>Loading…</p>
+                      ) : selectedDeveloperTable ? (
+                        developerTables
+                          .find((table) => table.name === selectedDeveloperTable)
+                          ?.rows.map((row, index) => (
+                            <pre key={index}>{JSON.stringify(row, null, 2)}</pre>
+                          )) ?? <p>No rows.</p>
+                      ) : (
+                        <p>Select a table to inspect rows.</p>
+                      )}
+                    </div>
                   </div>
-                </div>
-              )}
+                ) : (
+                  <div className="dev-log-body">
+                    <div className="dev-log-header">
+                      <button
+                        type="button"
+                        onClick={() => void handleLogSessionNav(-1)}
+                        disabled={!selectedLogSession || logSessions.findIndex((s) => s.id === selectedLogSession.id) === logSessions.length - 1}
+                      >
+                        ←
+                      </button>
+                      <select
+                        value={selectedLogSession?.id ?? ''}
+                        onChange={(event) => {
+                          const next = logSessions.find((session) => session.id === event.target.value) ?? null
+                          void handleSelectLogSession(next)
+                        }}
+                      >
+                        {logSessions.length === 0 ? <option value="">No sessions</option> : null}
+                        {logSessions.map((session) => (
+                          <option key={session.id} value={session.id}>
+                            {new Date(session.startedAt).toLocaleString()}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => void handleLogSessionNav(1)}
+                        disabled={!selectedLogSession || logSessions.findIndex((s) => s.id === selectedLogSession.id) <= 0}
+                      >
+                        →
+                      </button>
+                    </div>
+                    <div className="dev-log-entries">
+                      {developerOverlayLoading ? (
+                        <p>Loading…</p>
+                      ) : !selectedLogSession ? (
+                        <p>No log sessions found.</p>
+                      ) : logEntries.length === 0 ? (
+                        <p>No entries for this session.</p>
+                      ) : (
+                        logEntries.map((entry) => (
+                          <article
+                            key={entry.id ?? `${entry.timestamp}`}
+                            className={`dev-log-entry level-${entry.level}`}
+                          >
+                            <header>
+                              <span className="dev-log-message">{entry.message}</span>
+                              <span className="dev-log-meta">
+                                <span className="dev-log-level">{entry.level.toUpperCase()}</span>
+                                <time dateTime={new Date(entry.timestamp).toISOString()}>{formatLogTime(entry.timestamp)}</time>
+                              </span>
+                            </header>
+                            {entry.details ? (
+                              <code className="dev-log-details">
+                                {typeof entry.details === 'string'
+                                  ? entry.details
+                                  : JSON.stringify(entry.details)}
+                              </code>
+                            ) : null}
+                          </article>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
             </div>
           </div>
         ) : null}

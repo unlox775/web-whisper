@@ -59,7 +59,7 @@ function selectMimeType(preferred?: string): string {
   throw new Error('No supported audio mime type for MediaRecorder')
 }
 
-class BrowserCaptureController implements CaptureController {
+  class BrowserCaptureController implements CaptureController {
   #mediaRecorder: MediaRecorder | null = null
   #stream: MediaStream | null = null
   #sessionId: string | null = null
@@ -67,6 +67,7 @@ class BrowserCaptureController implements CaptureController {
   #analysisPort: MessagePort | null = null
   #persistQueue: Promise<void> = Promise.resolve()
   #lastChunkEndMs = 0
+  #chunkDurationMs = 0
   #listeners = new Set<(state: CaptureStateSnapshot) => void>()
   #state: CaptureStateSnapshot = {
     sessionId: null,
@@ -116,68 +117,75 @@ class BrowserCaptureController implements CaptureController {
       audioBitsPerSecond: options.targetBitrate,
     })
 
-    this.#stream = stream
-    this.#mediaRecorder = recorder
-    this.#sessionId = options.sessionId
-    this.#chunkSeq = 0
-    const startedAt = Date.now()
-    this.#lastChunkEndMs = startedAt
+      this.#stream = stream
+      this.#mediaRecorder = recorder
+      this.#sessionId = options.sessionId
+      this.#chunkDurationMs = options.chunkDurationMs
+      this.#chunkSeq = 0
+      const startedAt = Date.now()
+      this.#lastChunkEndMs = startedAt
 
-    recorder.addEventListener('dataavailable', (event) => {
-      const data = event.data
-      if (!data || data.size === 0 || !this.#sessionId) {
-        if (data && data.size === 0) {
-          void logWarn('Received empty audio chunk', {
-            sessionId: this.#sessionId,
-            seq: this.#chunkSeq,
-          })
+      recorder.addEventListener('dataavailable', (event) => {
+        const data = event.data
+        if (!data || data.size === 0 || !this.#sessionId) {
+          if (data && data.size === 0) {
+            void logWarn('Received empty audio chunk', {
+              sessionId: this.#sessionId,
+              seq: this.#chunkSeq,
+            })
+          }
+          return
         }
-        return
-      }
-      const seq = this.#chunkSeq++
-      const chunkStart = this.#lastChunkEndMs
-      const chunkEnd = Date.now()
-      this.#lastChunkEndMs = chunkEnd
-      void logDebug('Chunk captured', {
-        sessionId: this.#sessionId,
-        seq,
-        size: data.size,
-      })
-      this.#persistQueue = this.#persistQueue
-        .then(() =>
-          manifestService.appendChunk(
-            {
-              id: `${this.#sessionId}-chunk-${seq}`,
-              sessionId: this.#sessionId!,
+        const seq = this.#chunkSeq++
+        const chunkStart = this.#lastChunkEndMs
+        const hasTimecode = typeof event.timecode === 'number' && Number.isFinite(event.timecode)
+        const timecodeEnd = hasTimecode ? startedAt + event.timecode : Date.now()
+        const fallbackIncrement = Math.max(32, Math.min(this.#chunkDurationMs || 1000, 500))
+        const chunkEnd = timecodeEnd > chunkStart ? timecodeEnd : chunkStart + fallbackIncrement
+        this.#lastChunkEndMs = chunkEnd
+        void logDebug('Chunk captured', {
+          sessionId: this.#sessionId,
+          seq,
+          size: data.size,
+          durationMs: chunkEnd - chunkStart,
+        })
+        this.#persistQueue = this.#persistQueue
+          .then(() =>
+            manifestService.appendChunk(
+              {
+                id: `${this.#sessionId}-chunk-${seq}`,
+                sessionId: this.#sessionId!,
+                seq,
+                startMs: chunkStart,
+                endMs: chunkEnd,
+              },
+              data,
+            ),
+          )
+          .then(() => {
+            this.#setState({
+              lastChunkAt: chunkEnd,
+              bytesBuffered: this.#state.bytesBuffered + data.size,
+              chunksRecorded: this.#state.chunksRecorded + 1,
+            })
+            void logInfo('Chunk persisted', {
+              sessionId: this.#sessionId,
               seq,
+              size: data.size,
               startMs: chunkStart,
               endMs: chunkEnd,
-            },
-            data,
-          ),
-        )
-        .then(() => {
-          this.#setState({
-            lastChunkAt: Date.now(),
-            bytesBuffered: this.#state.bytesBuffered + data.size,
-            chunksRecorded: this.#state.chunksRecorded + 1,
+            })
           })
-          void logInfo('Chunk persisted', {
-            sessionId: this.#sessionId,
-            seq,
-            size: data.size,
+          .catch((error) => {
+            console.error('[CaptureController] Failed to persist chunk', error)
+            this.#setState({ state: 'error', error: error instanceof Error ? error.message : String(error) })
+            void logError('Chunk persistence failed', {
+              sessionId: this.#sessionId,
+              seq,
+              error: error instanceof Error ? error.message : String(error),
+            })
           })
-        })
-        .catch((error) => {
-          console.error('[CaptureController] Failed to persist chunk', error)
-          this.#setState({ state: 'error', error: error instanceof Error ? error.message : String(error) })
-          void logError('Chunk persistence failed', {
-            sessionId: this.#sessionId,
-            seq,
-            error: error instanceof Error ? error.message : String(error),
-          })
-        })
-    })
+      })
 
     recorder.addEventListener('stop', () => {
       this.#cleanupStream()
@@ -222,20 +230,35 @@ class BrowserCaptureController implements CaptureController {
     }
     this.#setState({ state: 'stopping' })
     const recorder = this.#mediaRecorder
+    let finalFlushPromise: Promise<void> | null = null
     if (recorder.state !== 'inactive') {
       if (recorder.state === 'recording') {
-        try {
-          recorder.requestData()
-        } catch (error) {
-          console.warn('[CaptureController] requestData failed before stop', error)
-        }
+        finalFlushPromise = new Promise((resolve) => {
+          const timeout: ReturnType<typeof setTimeout> = setTimeout(resolve, 750)
+          const handler = () => {
+            clearTimeout(timeout)
+            resolve()
+          }
+          recorder.addEventListener('dataavailable', handler, { once: true })
+          try {
+            recorder.requestData()
+          } catch (error) {
+            clearTimeout(timeout)
+            console.warn('[CaptureController] requestData failed before stop', error)
+            resolve()
+          }
+        })
       }
       recorder.stop()
+    }
+    if (finalFlushPromise) {
+      await finalFlushPromise
     }
     await this.flushPending()
     const sessionId = this.#sessionId
     this.#sessionId = null
     this.#mediaRecorder = null
+    this.#chunkDurationMs = 0
     if (sessionId) {
       await manifestService.updateSession(sessionId, {
         status: 'ready',
