@@ -1,4 +1,4 @@
-**ALWAYS PREPEND NEW USER PROMPTS TO THE ACTIVE PROMPT LOG BEFORE MAKING CHANGES.**
+**ALWAYS APPEND NEW USER PROMPTS TO THE ACTIVE PROMPT LOG BEFORE MAKING CHANGES.**
 
 # Collaboration Playbook
 
@@ -6,13 +6,13 @@ This file documents how we keep human + agent collaboration transparent and audi
 
 ## Spec & Prompt Logging
 
-- Maintain a single active spec/prompt pair for the current effort (presently `20251105-210414_mvp-foundation.*`).
-- Every material update must append to that pair under `documentation/spec/`:
+- Maintain the spec/prompt pairs the user requests under `documentation/spec/` (e.g., `20251105-210414_mvp-foundation.*`).
+- Every material update must append to the corresponding pair under `documentation/spec/`:
   - `YYYYMMDD-HHMMSS_slug.md` — living Markdown changelog describing what changed, what remains undone, and any follow-up actions.
-  - `YYYYMMDD-HHMMSS_slug-PROMPT.txt` — plaintext transcript capturing **every** user prompt or follow-up, prepended newest-first.
+  - `YYYYMMDD-HHMMSS_slug-PROMPT.txt` — plaintext transcript capturing **every** user prompt or follow-up, appended newest-last and kept verbatim (no formatting edits).
 - Use 24-hour UTC timestamps (retrieved via `date -u +%Y%m%d-%H%M%S`) to keep ordering unambiguous.
 - Slugs should be short and hyphenated (e.g., `mvp-foundation`, `capture-loop`).
-- For each new instruction, prepend a new section to the prompt log with timestamp + raw transcript before writing code.
+- For each new instruction, append the raw transcript to the prompt log before writing code.
 - Spec files should clearly list:
   - ✅ Done (call out tangible code or configuration changes)
   - 🚧 In progress / placeholders

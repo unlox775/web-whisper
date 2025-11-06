@@ -5,7 +5,6 @@ import {
   useRef,
   useState,
 } from 'react'
-import type { MouseEvent } from 'react'
 import './App.css'
 import { captureController } from './modules/capture/controller'
 import {
@@ -21,7 +20,6 @@ import {
   initializeLogger,
   logError,
   logInfo,
-  logWarn,
   shutdownLogger,
 } from './modules/logging/logger'
 
@@ -59,7 +57,7 @@ const SIMULATED_STREAM = [
 const STATUS_META: Record<SessionRecord['status'], { label: string; pillClass: string }> = {
   recording: { label: 'Recording', pillClass: 'pill-progress' },
   ready: { label: 'Ready', pillClass: 'pill-synced' },
-  error: { label: 'Transcription failed', pillClass: 'pill-attention' },
+  error: { label: 'Error', pillClass: 'pill-attention' },
 }
 
 const MB = 1024 * 1024
@@ -178,6 +176,10 @@ function App() {
     limitBytes: DEFAULT_STORAGE_LIMIT_BYTES,
   })
   const [transcriptionLines, setTranscriptionLines] = useState<string[]>(SIMULATED_STREAM.slice(0, 2))
+  const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null)
+  const [isTranscriptionMounted, setTranscriptionMounted] = useState(false)
+  const [isTranscriptionVisible, setTranscriptionVisible] = useState(false)
+  const [recordingElapsedMs, setRecordingElapsedMs] = useState(0)
   const [chunkPlayingId, setChunkPlayingId] = useState<string | null>(null)
   const [playbackVolume, setPlaybackVolume] = useState(1)
   const [isVolumeSliderOpen, setVolumeSliderOpen] = useState(false)
@@ -194,12 +196,15 @@ function App() {
   const [isLoadingPlayback, setIsLoadingPlayback] = useState(false)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
   const [audioState, setAudioState] = useState<AudioState>({ playing: false, duration: 0, position: 0 })
+  const [selectedRecordingDurationMs, setSelectedRecordingDurationMs] = useState<number | null>(null)
 
   const streamCursor = useRef(1)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const audioUrlRef = useRef<string | null>(null)
   const chunkUrlMapRef = useRef<Map<string, string>>(new Map())
   const chunkAudioRef = useRef<Map<string, HTMLAudioElement>>(new Map())
+  const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
+  const sessionsInitializedRef = useRef(false)
 
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
@@ -210,6 +215,29 @@ function App() {
       manifestService.listSessions(),
       manifestService.storageTotals(),
     ])
+
+    const previousMap = sessionUpdatesRef.current
+    let highlightCandidate: SessionRecord | null = null
+    if (sessionsInitializedRef.current) {
+      for (const session of sessions) {
+        if (session.status !== 'ready' || session.chunkCount === 0) continue
+        if (!previousMap.has(session.id)) continue
+        const previousUpdatedAt = previousMap.get(session.id)
+        if (previousUpdatedAt !== undefined && previousUpdatedAt !== session.updatedAt) {
+          if (!highlightCandidate || session.updatedAt > highlightCandidate.updatedAt) {
+            highlightCandidate = session
+          }
+        }
+      }
+    }
+
+    sessionUpdatesRef.current = new Map(sessions.map((session) => [session.id, session.updatedAt]))
+    if (!sessionsInitializedRef.current) {
+      sessionsInitializedRef.current = true
+    } else if (highlightCandidate) {
+      setHighlightedSessionId(highlightCandidate.id)
+    }
+
     setRecordings(sessions)
     setBufferTotals({ totalBytes: totals.totalBytes, limitBytes: storageLimitBytes })
   }, [storageLimitBytes])
@@ -248,6 +276,75 @@ function App() {
     }, 3200)
     return () => window.clearInterval(interval)
   }, [captureState.sessionId, captureState.state, loadSessions])
+
+  useEffect(() => {
+    if (captureState.state === 'recording' && captureState.startedAt) {
+      const tick = () => setRecordingElapsedMs(Date.now() - captureState.startedAt!)
+      tick()
+      const interval = window.setInterval(tick, 250)
+      return () => window.clearInterval(interval)
+    }
+    setRecordingElapsedMs(0)
+    return () => {}
+  }, [captureState.state, captureState.startedAt])
+
+  useEffect(() => {
+    if (captureState.state === 'recording') {
+      setTranscriptionMounted(true)
+      setTranscriptionLines(SIMULATED_STREAM.slice(0, 2))
+      streamCursor.current = 1
+      requestAnimationFrame(() => setTranscriptionVisible(true))
+    } else {
+      setTranscriptionVisible(false)
+    }
+  }, [captureState.state])
+
+  useEffect(() => {
+    if (!highlightedSessionId) {
+      return
+    }
+    const timeout = window.setTimeout(() => setHighlightedSessionId(null), 2400)
+    return () => window.clearTimeout(timeout)
+  }, [highlightedSessionId])
+
+  useEffect(() => {
+    if (isTranscriptionVisible) {
+      return
+    }
+    if (!isTranscriptionMounted) {
+      return
+    }
+    const timeout = window.setTimeout(() => setTranscriptionMounted(false), 400)
+    return () => window.clearTimeout(timeout)
+  }, [isTranscriptionMounted, isTranscriptionVisible])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('ontouchstart' in window)) {
+      return
+    }
+
+    const preventMultiTouch = (event: TouchEvent) => {
+      if (event.touches.length > 1) {
+        event.preventDefault()
+      }
+    }
+
+    const preventGesture = (event: Event) => {
+      event.preventDefault()
+    }
+
+    document.addEventListener('touchmove', preventMultiTouch, { passive: false })
+    document.addEventListener('gesturestart' as any, preventGesture as EventListener)
+    document.addEventListener('gesturechange' as any, preventGesture as EventListener)
+    document.addEventListener('gestureend' as any, preventGesture as EventListener)
+
+    return () => {
+      document.removeEventListener('touchmove', preventMultiTouch)
+      document.removeEventListener('gesturestart' as any, preventGesture as EventListener)
+      document.removeEventListener('gesturechange' as any, preventGesture as EventListener)
+      document.removeEventListener('gestureend' as any, preventGesture as EventListener)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -313,12 +410,6 @@ function App() {
       }
     })
 
-    chunkData.forEach((chunk) => {
-      if (!urlMap.has(chunk.id)) {
-        urlMap.set(chunk.id, URL.createObjectURL(chunk.blob))
-      }
-    })
-
     setChunkPlayingId((prev) => (prev && currentIds.has(prev) ? prev : null))
   }, [chunkData])
 
@@ -375,6 +466,76 @@ function App() {
     () => recordings.find((session) => session.id === selectedRecordingId) ?? null,
     [recordings, selectedRecordingId],
   )
+
+  useEffect(() => {
+    if (!selectedRecording) {
+      setSelectedRecordingDurationMs(null)
+      return
+    }
+    setSelectedRecordingDurationMs(selectedRecording.durationMs)
+  }, [selectedRecording])
+
+    const isHeaderSegment = useCallback((chunk: StoredChunk) => {
+      const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
+      return chunk.seq === 0 && (durationMs <= 10 || chunk.byteLength < 4096)
+    }, [])
+
+    const headerChunk = useMemo(() => chunkData.find(isHeaderSegment) ?? null, [chunkData, isHeaderSegment])
+
+    const playableChunkCount = useMemo(
+      () => chunkData.filter((chunk) => !isHeaderSegment(chunk)).length,
+      [chunkData, isHeaderSegment],
+    )
+
+    const createChunkCompositeBlob = useCallback(
+      (chunk: StoredChunk) => {
+        const mimeType = chunk.blob.type || selectedRecording?.mimeType || 'audio/mp4'
+        if (!headerChunk || headerChunk.id === chunk.id) {
+          return chunk.blob
+        }
+        const isMp4Like = /mp4|m4a/i.test(mimeType)
+        if (!isMp4Like) {
+          return chunk.blob
+        }
+        return new Blob([headerChunk.blob, chunk.blob], { type: mimeType })
+      },
+      [headerChunk, selectedRecording?.mimeType],
+    )
+
+    const ensureChunkPlaybackUrl = useCallback(
+      (chunk: StoredChunk) => {
+        const map = chunkUrlMapRef.current
+        const existing = map.get(chunk.id)
+        if (existing) {
+          return existing
+        }
+        const blob = createChunkCompositeBlob(chunk)
+        const url = URL.createObjectURL(blob)
+        map.set(chunk.id, url)
+        return url
+      },
+      [createChunkCompositeBlob],
+    )
+
+    const handleChunkDownload = useCallback(
+      (chunk: StoredChunk) => {
+        const url = ensureChunkPlaybackUrl(chunk)
+        if (!url) {
+          return
+        }
+        const baseDate = selectedRecording?.startedAt ?? chunk.startMs ?? Date.now()
+        const iso = new Date(baseDate).toISOString().replace(/[:.]/g, '-')
+        const seqLabel = String(chunk.seq + 1).padStart(2, '0')
+        const link = document.createElement('a')
+        link.href = url
+        link.download = `${iso}_chunk-${seqLabel}.mp4`
+        link.rel = 'noopener'
+        document.body.appendChild(link)
+        link.click()
+        document.body.removeChild(link)
+      },
+      [ensureChunkPlaybackUrl, selectedRecording?.startedAt],
+    )
 
   const refreshAndClearErrors = useCallback(async () => {
     setErrorMessage(null)
@@ -453,13 +614,6 @@ function App() {
     }
   }, [captureState.sessionId, captureState.state, loadSessions])
 
-  const handleRetry = async (event: MouseEvent<HTMLButtonElement>, record: SessionRecord) => {
-    event.stopPropagation()
-    console.info('[UI] retry placeholder', record.id)
-    setErrorMessage('Retry logic will arrive with uploader implementation.')
-    await logWarn('Manual retry requested', { sessionId: record.id })
-  }
-
   const handleRecordToggle = async () => {
     if (captureState.state === 'recording') {
       await stopRecording()
@@ -468,31 +622,53 @@ function App() {
     }
   }
 
-  const preparePlaybackSource = useCallback(async () => {
-    if (!selectedRecording) return false
-    const mime = selectedRecording.mimeType ?? 'audio/mp4'
-    const blob = await manifestService.buildSessionBlob(selectedRecording.id, mime)
-    if (!blob) {
-      throw new Error('No audio available yet. Keep recording to capture chunks.')
+  const preparePlaybackSource = useCallback(
+    async (forceReload = false) => {
+      if (!selectedRecording) return false
+      const mime = selectedRecording.mimeType ?? 'audio/mp4'
+      const blob = await manifestService.buildSessionBlob(selectedRecording.id, mime)
+      if (!blob) {
+        throw new Error('No audio available yet. Keep recording to capture chunks.')
+      }
+      await logInfo('Playback source prepared', {
+        sessionId: selectedRecording.id,
+        blobSize: blob.size,
+        blobType: blob.type,
+      })
+      if (audioUrlRef.current && !forceReload) {
+        return true
+      }
+      if (audioUrlRef.current) {
+        URL.revokeObjectURL(audioUrlRef.current)
+      }
+      const url = URL.createObjectURL(blob)
+      audioUrlRef.current = url
+      const audio = audioRef.current
+      if (audio) {
+        audio.src = url
+        audio.currentTime = 0
+        setAudioState({ playing: false, duration: Number.isFinite(audio.duration) ? audio.duration : 0, position: 0 })
+      }
+      return true
+    },
+    [selectedRecording],
+  )
+
+  useEffect(() => {
+    if (!selectedRecording || selectedRecording.status === 'recording' || selectedRecording.chunkCount === 0) {
+      return
     }
-    await logInfo('Playback source prepared', {
-      sessionId: selectedRecording.id,
-      blobSize: blob.size,
-      blobType: blob.type,
+    void preparePlaybackSource(true).catch((error) => {
+      console.error('[UI] Failed to prepare playback on detail open', error)
     })
-    if (audioUrlRef.current) {
-      URL.revokeObjectURL(audioUrlRef.current)
-    }
-    const url = URL.createObjectURL(blob)
-    audioUrlRef.current = url
-    const audio = audioRef.current
-    if (audio) {
-      audio.src = url
-      audio.currentTime = 0
-      setAudioState({ playing: false, duration: Number.isFinite(audio.duration) ? audio.duration : 0, position: 0 })
-    }
-    return true
-  }, [selectedRecording])
+  }, [
+    preparePlaybackSource,
+    selectedRecording,
+    selectedRecording?.id,
+    selectedRecording?.updatedAt,
+    selectedRecording?.chunkCount,
+    selectedRecording?.status,
+  ])
 
   const handlePlaybackToggle = useCallback(async () => {
     if (!selectedRecording) return
@@ -534,6 +710,7 @@ function App() {
     setVolumeSliderOpen(false)
     setSelectedRecordingId(null)
     setChunkData([])
+    setSelectedRecordingDurationMs(null)
     setDebugDetailsOpen(false)
     setPlaybackError(null)
     setAudioState({ playing: false, duration: 0, position: 0 })
@@ -575,55 +752,57 @@ function App() {
     await settingsStore.set({ groqApiKey: value })
   }
 
-  const handleChunkPlayToggle = useCallback(
-    async (chunk: StoredChunk) => {
-      const { id } = chunk
-      const urlMap = chunkUrlMapRef.current
-      const audioMap = chunkAudioRef.current
-      const existingAudio = audioMap.get(id)
+    const handleChunkPlayToggle = useCallback(
+      async (chunk: StoredChunk) => {
+        const { id } = chunk
+        const audioMap = chunkAudioRef.current
+        const existingAudio = audioMap.get(id)
 
-      if (chunkPlayingId === id) {
-        existingAudio?.pause()
-        if (existingAudio) {
-          existingAudio.currentTime = 0
-          audioMap.delete(id)
+        if (chunkPlayingId === id) {
+          existingAudio?.pause()
+          if (existingAudio) {
+            existingAudio.currentTime = 0
+            audioMap.delete(id)
+          }
+          setChunkPlayingId(null)
+          return
         }
-        setChunkPlayingId(null)
-        return
-      }
 
-      audioMap.forEach((audio, audioId) => {
-        audio.pause()
+        audioMap.forEach((audio, audioId) => {
+          audio.pause()
+          audio.currentTime = 0
+          if (audioId !== id) {
+            audioMap.delete(audioId)
+          }
+        })
+
+        const url = ensureChunkPlaybackUrl(chunk)
+        if (!url) {
+          console.error('[UI] Missing chunk URL for playback', id)
+          return
+        }
+
+        const audio = existingAudio ?? new Audio()
+        if (audio.src !== url) {
+          audio.src = url
+        }
+        audio.volume = playbackVolume
+        audioMap.set(id, audio)
         audio.currentTime = 0
-        if (audioId !== id) {
-          audioMap.delete(audioId)
-        }
-      })
-
-      const url = urlMap.get(id)
-      if (!url) {
-        console.error('[UI] Missing chunk URL for playback', id)
-        return
-      }
-
-      const audio = existingAudio ?? new Audio(url)
-      audio.volume = playbackVolume
-      audioMap.set(id, audio)
-      audio.currentTime = 0
-      try {
-        await audio.play()
-        setChunkPlayingId(id)
-        audio.onended = () => {
-          setChunkPlayingId((prev) => (prev === id ? null : prev))
+        try {
+          await audio.play()
+          setChunkPlayingId(id)
+          audio.onended = () => {
+            setChunkPlayingId((prev) => (prev === id ? null : prev))
+            audioMap.delete(id)
+          }
+        } catch (error) {
+          console.error('[UI] Failed to play chunk', error)
           audioMap.delete(id)
         }
-      } catch (error) {
-        console.error('[UI] Failed to play chunk', error)
-        audioMap.delete(id)
-      }
-    },
-    [chunkPlayingId, playbackVolume],
-  )
+      },
+      [chunkPlayingId, ensureChunkPlaybackUrl, playbackVolume],
+    )
 
     const loadDeveloperTables = useCallback(async () => {
       try {
@@ -709,16 +888,28 @@ function App() {
   }, [loadDeveloperTables, loadLogSessions])
 
   const bufferLabel = `${formatDataSize(bufferTotals.totalBytes)} / ${formatDataSize(bufferTotals.limitBytes)}`
-  const playbackProgress = audioState.duration > 0 ? (audioState.position / audioState.duration) * 100 : 0
+  const displayDurationMs = selectedRecording && selectedRecording.id === captureState.sessionId && captureState.state === 'recording'
+    ? recordingElapsedMs
+    : selectedRecordingDurationMs ?? selectedRecording?.durationMs ?? 0
+  const resolvedPlaybackDurationSeconds = selectedRecordingDurationMs !== null
+    ? Math.max(selectedRecordingDurationMs / 1000, audioState.duration)
+    : Math.max(displayDurationMs / 1000, audioState.duration)
+  const playbackProgress = resolvedPlaybackDurationSeconds > 0
+    ? (audioState.position / resolvedPlaybackDurationSeconds) * 100
+    : 0
+    const effectiveChunkCount = Math.max(
+      0,
+      captureState.chunksRecorded - (captureState.chunksRecorded > 0 ? 1 : 0),
+    )
+    const hasInitSegment = captureState.chunksRecorded > 0
 
   return (
-    <div className="app-shell">
+      <div className="app-shell">
         <header className="app-header">
           <div className="brand">
             <h1>Web Whisper</h1>
-            <p className="brand-subtitle">Durable on-device capture with room to grow.</p>
           </div>
-        <div className="header-controls">
+          <div className="header-controls">
           <div className="buffer-card" role="status" aria-live="polite">
             <p className="buffer-label">Buffered locally</p>
             <p className="buffer-value">{bufferLabel}</p>
@@ -740,18 +931,21 @@ function App() {
           >
             Settings
           </button>
-        </div>
-      </header>
+          </div>
+        </header>
 
-      {developerMode && captureState.state === 'recording' ? (
-        <div className="dev-strip" role="status" aria-live="polite">
-          <span>Chunks recorded: {captureState.chunksRecorded}</span>
-          <span>Buffered: {formatDataSize(captureState.bytesBuffered)}</span>
-          {captureState.lastChunkAt ? (
-            <span>Last chunk: {formatClock(captureState.lastChunkAt)}</span>
-          ) : null}
-        </div>
-      ) : null}
+        {developerMode && captureState.state === 'recording' ? (
+          <div className="dev-strip" role="status" aria-live="polite">
+            <span>
+              Segments: {effectiveChunkCount}
+              {hasInitSegment ? ' + init' : ''}
+            </span>
+            <span>Buffered: {formatDataSize(captureState.bytesBuffered)}</span>
+            {captureState.lastChunkAt ? (
+              <span>Last chunk: {formatClock(captureState.lastChunkAt)}</span>
+            ) : null}
+          </div>
+        ) : null}
 
       {errorMessage ? (
         <div className="alert-banner" role="alert">
@@ -762,17 +956,30 @@ function App() {
         </div>
       ) : null}
 
-      <main className="content-grid">
+        <main className="content-grid">
         <section className="session-section" aria-label="Recording sessions">
             <ul className="session-list">
-              {recordings.map((session) => {
+                {recordings.map((session) => {
                 const statusMeta = STATUS_META[session.status]
-                const durationLabel = formatSessionDuration(session.durationMs)
+                const isActiveRecording = session.id === captureState.sessionId && captureState.state === 'recording'
+                const durationLabel = isActiveRecording
+                  ? formatTimecode(Math.floor(Math.max(recordingElapsedMs, 0) / 1000))
+                  : formatSessionDuration(session.durationMs)
                 const notes = session.notes ?? 'Transcription pending…'
+                const metadataLabel = `${formatSessionDateTime(session.startedAt)} · ${formatCompactDataSize(session.totalBytes)}`
+                const isHighlighted = session.id === highlightedSessionId
+                const cardClasses = ['session-card']
+                if (isHighlighted) {
+                  cardClasses.push('is-new')
+                }
+                if (session.status === 'error') {
+                  cardClasses.push('has-error')
+                }
+                const previewText = isActiveRecording ? 'Recording in progress…' : notes
                 return (
                   <li key={session.id}>
                     <article
-                      className="session-card"
+                      className={cardClasses.join(' ')}
                       role="button"
                       tabIndex={0}
                       onClick={() => setSelectedRecordingId(session.id)}
@@ -783,21 +990,16 @@ function App() {
                         }
                       }}
                     >
-                      <header className="session-topline">
-                        <div className="session-topline-left">
-                          <span className={`session-pill ${statusMeta.pillClass}`}>{statusMeta.label}</span>
-                          <span className="session-duration-label">{durationLabel}</span>
-                        </div>
-                        {session.status === 'error' ? (
-                          <button className="session-retry" type="button" onClick={(event) => void handleRetry(event, session)}>
-                            Retry
-                          </button>
-                        ) : null}
-                      </header>
-                      <p className="session-detail">
-                        {formatSessionDateTime(session.startedAt)} — {formatCompactDataSize(session.totalBytes)}
-                      </p>
-                      <p className="session-preview">{notes}</p>
+                        <header className="session-topline">
+                          <div className="session-topline-left">
+                            <span className={`session-pill ${statusMeta.pillClass}`}>{statusMeta.label}</span>
+                            <span className="session-duration-label">{durationLabel}</span>
+                          </div>
+                          <div className="session-topline-right">
+                            <span className="session-meta">{metadataLabel}</span>
+                          </div>
+                        </header>
+                        <p className="session-preview">{previewText}</p>
                     </article>
                   </li>
                 )
@@ -817,37 +1019,59 @@ function App() {
               {captureState.state === 'recording' ? 'Stop recording' : 'Start recording'}
             </button>
             <p className="controls-copy">
-              Recorder {captureState.state === 'recording' ? 'running — chunks saving every 4 s.' : 'idle — tap start to begin a durable session.'}
+              {captureState.state === 'recording'
+                ? `Recording — ${formatTimecode(Math.floor(Math.max(recordingElapsedMs, 0) / 1000))} elapsed`
+                : 'Recorder idle — tap start to begin a durable session.'}
             </p>
           </div>
         </aside>
       </main>
 
-      <section className="transcription-panel" aria-live="polite" aria-label="Live transcription preview">
-        <header className="transcription-header">
-          <h2>Live transcription (simulated)</h2>
-          <span className="transcription-meta">Real streaming will appear here once Groq integration lands.</span>
-        </header>
-        <div className="transcription-stream">
-          {transcriptionLines.map((line, index) => (
-            <p key={`${index}-${line.slice(0, 12)}`} className="transcription-line">
-              {line}
-            </p>
-          ))}
-          <div className="transcription-fade" aria-hidden="true" />
-        </div>
-      </section>
+        {isTranscriptionMounted ? (
+          <section
+            className={`transcription-panel${isTranscriptionVisible ? ' is-visible' : ''}`}
+            aria-live="polite"
+            aria-label="Live transcription preview"
+          >
+            <header className="transcription-header">
+              <h2>Live transcription (simulated)</h2>
+              <span className="transcription-meta">Real streaming will appear here once Groq integration lands.</span>
+            </header>
+            <div className="transcription-stream">
+              {transcriptionLines.map((line, index) => (
+                <p key={`${index}-${line.slice(0, 12)}`} className="transcription-line">
+                  {line}
+                </p>
+              ))}
+              <div className="transcription-fade" aria-hidden="true" />
+            </div>
+          </section>
+        ) : null}
 
       <audio ref={audioRef} hidden preload="none" />
 
-      {selectedRecording ? (
-        <div className="detail-overlay" role="dialog" aria-modal="true" aria-labelledby="recording-detail-title">
-          <div className="detail-panel">
+        {selectedRecording ? (
+          <div
+            className="detail-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="recording-detail-title"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) {
+                void handleCloseDetail()
+              }
+            }}
+          >
+            <div className="detail-panel" onClick={(event) => event.stopPropagation()}>
             <header className="detail-header">
-              <div>
-                <p className="detail-label">Recording</p>
-                <h2 id="recording-detail-title">{formatDuration(selectedRecording.durationMs)}</h2>
-              </div>
+                <div>
+                  <p className="detail-label">
+                    {selectedRecording.id === captureState.sessionId && captureState.state === 'recording'
+                      ? 'Recording in progress'
+                      : 'Recorded session'}
+                  </p>
+                  <h2 id="recording-detail-title">{formatDuration(displayDurationMs)}</h2>
+                </div>
               <div className="detail-actions">
                 {developerMode ? (
                   <button
@@ -877,7 +1101,8 @@ function App() {
                 {developerMode && debugDetailsOpen ? (
                   <p>
                     <strong>Format:</strong> {selectedRecording.mimeType ?? 'pending'} ·{' '}
-                    <strong>Chunks:</strong> {selectedRecording.chunkCount}
+                    <strong>Chunks:</strong> {playableChunkCount}
+                    {headerChunk ? ' + init' : ''}
                   </p>
                 ) : null}
               </div>
@@ -894,9 +1119,9 @@ function App() {
                 <div className="playback-progress" aria-hidden="true">
                   <div className="playback-progress-bar" style={{ width: `${playbackProgress}%` }} />
                 </div>
-                <span className="playback-timestamps">
-                  {formatTimecode(audioState.position)} / {formatTimecode(audioState.duration)}
-                </span>
+                  <span className="playback-timestamps">
+                    {formatTimecode(audioState.position)} / {formatTimecode(resolvedPlaybackDurationSeconds)}
+                  </span>
                 <div className={`volume-control ${isVolumeSliderOpen ? 'is-open' : ''}`}>
                   <button
                     type="button"
@@ -928,7 +1153,7 @@ function App() {
                 {developerMode && debugDetailsOpen ? (
                   <div className="detail-chunks">
                     <h3>
-                      Chunks ({selectedRecording.chunkCount}) · {selectedRecording.mimeType ?? 'pending'}
+                      Chunks ({playableChunkCount}{headerChunk ? ' + init' : ''}) · {selectedRecording.mimeType ?? 'pending'}
                     </h3>
                     {chunkData.length === 0 ? (
                       <p className="detail-transcription-placeholder">No chunks persisted yet.</p>
@@ -938,9 +1163,9 @@ function App() {
                           const durationSeconds = Math.max(0, (chunk.endMs - chunk.startMs) / 1000)
                           const decimalPlaces = durationSeconds < 10 ? 2 : 1
                           const durationLabel = `${durationSeconds.toFixed(decimalPlaces)} s`
-                          const isHeaderChunk = chunk.seq === 0 && (durationSeconds < 0.01 || chunk.byteLength < 2048)
+                          const header = isHeaderSegment(chunk)
                           return (
-                            <li key={chunk.id} className={`chunk-item ${isHeaderChunk ? 'header-chunk' : ''}`}>
+                            <li key={chunk.id} className={`chunk-item ${header ? 'header-chunk' : ''}`}>
                               <button
                                 type="button"
                                 className={`chunk-play ${chunkPlayingId === chunk.id ? 'is-playing' : ''}`}
@@ -953,7 +1178,15 @@ function App() {
                               <span>#{chunk.seq + 1}</span>
                               <span>{durationLabel}</span>
                               <span>{formatDataSize(chunk.byteLength)}</span>
-                              {isHeaderChunk ? <span className="chunk-flag">init segment</span> : null}
+                              <button
+                                type="button"
+                                className="chunk-download"
+                                onClick={() => handleChunkDownload(chunk)}
+                                aria-label={`Download chunk ${chunk.seq + 1}`}
+                              >
+                                ⬇
+                              </button>
+                              {header ? <span className="chunk-flag">init segment</span> : null}
                             </li>
                           )
                         })}
@@ -967,9 +1200,19 @@ function App() {
         </div>
       ) : null}
 
-      {isSettingsOpen ? (
-        <div className="settings-overlay" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-          <div className="settings-dialog">
+        {isSettingsOpen ? (
+          <div
+            className="settings-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-title"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) {
+                setIsSettingsOpen(false)
+              }
+            }}
+          >
+            <div className="settings-dialog" onClick={(event) => event.stopPropagation()}>
             <header className="settings-header">
               <h2 id="settings-title">Settings</h2>
               <button type="button" className="settings-close" onClick={() => setIsSettingsOpen(false)}>
@@ -1009,9 +1252,19 @@ function App() {
         </div>
       ) : null}
 
-        {developerMode && isDeveloperOverlayOpen ? (
-          <div className="dev-overlay" role="dialog" aria-modal="true" aria-labelledby="dev-console-title">
-            <div className="dev-panel">
+          {developerMode && isDeveloperOverlayOpen ? (
+            <div
+              className="dev-overlay"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="dev-console-title"
+              onClick={(event) => {
+                if (event.target === event.currentTarget) {
+                  handleCloseDeveloperOverlay()
+                }
+              }}
+            >
+              <div className="dev-panel" onClick={(event) => event.stopPropagation()}>
               <header className="dev-panel-header">
                 <h2 id="dev-console-title">Developer Console</h2>
                 <button type="button" className="dev-close" onClick={handleCloseDeveloperOverlay}>
