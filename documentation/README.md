@@ -1,3 +1,14 @@
+# Web Whisper Capture Documentation Hub
+
+Welcome to the technical documentation hub for the capture pipeline powering Web Whisper. This directory expands on the high-level specification (`documentation/spec/20251106-031710_capture-refinement.md`) with deep dives that assume no prior knowledge of audio engineering or browser media APIs. You will find:
+
+- `technology.md` – a friendly primer on the pieces the browser provides (MediaStream, MediaRecorder, Blob, etc.) and how they relate to PCM audio samples.
+- `pcm-walkthrough.md` – a middle-school-level explanation of what Pulse-Code Modulation is, how samples are buffered, and why AAC/MP4 “init segments” exist.
+- `libraries.md` – an inventory of the modules, classes, and functions in this repository, with guidance on how they collaborate during a recording session.
+- `capture-flow.md` – a chronological walkthrough from the moment the user hits “Start” until the recorder is cleaned up, including event sequences, threading considerations, and timing heuristics.
+- `debugging.md` – practical guidance on reading the in-app developer console, interpreting new log messages, and verifying chunk metadata.
+
+Each document links out to relevant public resources (MDN, Wikipedia, W3C) so you can explore deeper background material without leaving this repository. Start with `technology.md` if you are new to browser audio capture, then follow the links in that document to progress through the full capture lifecycle.
 # Project Status — Durable Audio Recorder PWA
 
 This document tracks the real-world readiness of core capabilities. Status is intentionally blunt so we keep honest about what works today.
