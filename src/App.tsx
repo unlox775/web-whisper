@@ -12,7 +12,7 @@ import {
   manifestService,
   type LogEntryRecord,
   type LogSessionRecord,
-  type ChunkRecord,
+  type StoredChunk,
   type SessionRecord,
 } from './modules/storage/manifest'
 import { settingsStore, type RecorderSettings } from './modules/settings/store'
@@ -99,6 +99,40 @@ const formatDataSize = (bytes: number) => {
   return `${formatter.format(value)} ${units[unitIndex]}`
 }
 
+const formatCompactDataSize = (bytes: number) => {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unitIndex = 0
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024
+    unitIndex += 1
+  }
+  return `${Math.round(value)} ${units[unitIndex]}`
+}
+
+const formatSessionDuration = (durationMs: number) => {
+  const totalSeconds = Math.max(0, Math.round(durationMs / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`
+  }
+  if (minutes > 0) {
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`
+  }
+  return `0:${seconds.toString().padStart(2, '0')}`
+}
+
+const formatSessionDateTime = (timestamp: number) =>
+  new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  }).format(new Date(timestamp))
+
 const formatTimecode = (seconds: number) => {
   if (!Number.isFinite(seconds)) return '0:00'
   const clamped = Math.max(0, seconds)
@@ -136,7 +170,7 @@ function App() {
   const [settings, setSettings] = useState<RecorderSettings | null>(null)
   const [recordings, setRecordings] = useState<SessionRecord[]>([])
   const [selectedRecordingId, setSelectedRecordingId] = useState<string | null>(null)
-  const [chunkMetadata, setChunkMetadata] = useState<ChunkRecord[]>([])
+  const [chunkData, setChunkData] = useState<StoredChunk[]>([])
   const [captureState, setCaptureState] = useState(captureController.state)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [bufferTotals, setBufferTotals] = useState<{ totalBytes: number; limitBytes: number }>({
@@ -144,6 +178,9 @@ function App() {
     limitBytes: DEFAULT_STORAGE_LIMIT_BYTES,
   })
   const [transcriptionLines, setTranscriptionLines] = useState<string[]>(SIMULATED_STREAM.slice(0, 2))
+  const [chunkPlayingId, setChunkPlayingId] = useState<string | null>(null)
+  const [playbackVolume, setPlaybackVolume] = useState(1)
+  const [isVolumeSliderOpen, setVolumeSliderOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isDeveloperOverlayOpen, setDeveloperOverlayOpen] = useState(false)
   const [developerOverlayLoading, setDeveloperOverlayLoading] = useState(false)
@@ -161,6 +198,8 @@ function App() {
   const streamCursor = useRef(1)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const audioUrlRef = useRef<string | null>(null)
+  const chunkUrlMapRef = useRef<Map<string, string>>(new Map())
+  const chunkAudioRef = useRef<Map<string, HTMLAudioElement>>(new Map())
 
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
@@ -213,14 +252,14 @@ function App() {
   useEffect(() => {
     let cancelled = false
     if (!selectedRecordingId) {
-      setChunkMetadata([])
+      setChunkData([])
       setDebugDetailsOpen(false)
       return
     }
     ;(async () => {
-      const metadata = await manifestService.getChunkMetadata(selectedRecordingId)
+      const metadata = await manifestService.getChunkData(selectedRecordingId)
       if (!cancelled) {
-        setChunkMetadata(metadata)
+        setChunkData(metadata)
       }
     })()
     return () => {
@@ -254,6 +293,61 @@ function App() {
       audio.removeEventListener('ended', handleEnded)
     }
   }, [selectedRecordingId])
+
+  useEffect(() => {
+    const urlMap = chunkUrlMapRef.current
+    const audioMap = chunkAudioRef.current
+    const currentIds = new Set(chunkData.map((chunk) => chunk.id))
+
+    Array.from(urlMap.entries()).forEach(([id, url]) => {
+      if (!currentIds.has(id)) {
+        URL.revokeObjectURL(url)
+        urlMap.delete(id)
+      }
+    })
+
+    audioMap.forEach((audio, id) => {
+      if (!currentIds.has(id)) {
+        audio.pause()
+        audioMap.delete(id)
+      }
+    })
+
+    chunkData.forEach((chunk) => {
+      if (!urlMap.has(chunk.id)) {
+        urlMap.set(chunk.id, URL.createObjectURL(chunk.blob))
+      }
+    })
+
+    setChunkPlayingId((prev) => (prev && currentIds.has(prev) ? prev : null))
+  }, [chunkData])
+
+  useEffect(() => {
+    return () => {
+      chunkAudioRef.current.forEach((audio) => audio.pause())
+      chunkAudioRef.current.clear()
+      chunkUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url))
+      chunkUrlMapRef.current.clear()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!debugDetailsOpen) {
+      chunkAudioRef.current.forEach((audio) => audio.pause())
+      chunkAudioRef.current.clear()
+      setChunkPlayingId(null)
+    }
+  }, [debugDetailsOpen])
+
+  useEffect(() => {
+    const mainAudio = audioRef.current
+    if (mainAudio) {
+      mainAudio.volume = playbackVolume
+    }
+    chunkAudioRef.current.forEach((audio) => {
+      audio.volume = playbackVolume
+    })
+  }, [playbackVolume])
 
   useEffect(() => {
     if (!developerMode) {
@@ -432,8 +526,14 @@ function App() {
   }, [preparePlaybackSource, selectedRecording])
 
   const handleCloseDetail = async () => {
+    chunkAudioRef.current.forEach((audio) => audio.pause())
+    chunkAudioRef.current.clear()
+    chunkUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url))
+    chunkUrlMapRef.current.clear()
+    setChunkPlayingId(null)
+    setVolumeSliderOpen(false)
     setSelectedRecordingId(null)
-    setChunkMetadata([])
+    setChunkData([])
     setDebugDetailsOpen(false)
     setPlaybackError(null)
     setAudioState({ playing: false, duration: 0, position: 0 })
@@ -474,6 +574,56 @@ function App() {
   const handleGroqKeyChange = async (value: string) => {
     await settingsStore.set({ groqApiKey: value })
   }
+
+  const handleChunkPlayToggle = useCallback(
+    async (chunk: StoredChunk) => {
+      const { id } = chunk
+      const urlMap = chunkUrlMapRef.current
+      const audioMap = chunkAudioRef.current
+      const existingAudio = audioMap.get(id)
+
+      if (chunkPlayingId === id) {
+        existingAudio?.pause()
+        if (existingAudio) {
+          existingAudio.currentTime = 0
+          audioMap.delete(id)
+        }
+        setChunkPlayingId(null)
+        return
+      }
+
+      audioMap.forEach((audio, audioId) => {
+        audio.pause()
+        audio.currentTime = 0
+        if (audioId !== id) {
+          audioMap.delete(audioId)
+        }
+      })
+
+      const url = urlMap.get(id)
+      if (!url) {
+        console.error('[UI] Missing chunk URL for playback', id)
+        return
+      }
+
+      const audio = existingAudio ?? new Audio(url)
+      audio.volume = playbackVolume
+      audioMap.set(id, audio)
+      audio.currentTime = 0
+      try {
+        await audio.play()
+        setChunkPlayingId(id)
+        audio.onended = () => {
+          setChunkPlayingId((prev) => (prev === id ? null : prev))
+          audioMap.delete(id)
+        }
+      } catch (error) {
+        console.error('[UI] Failed to play chunk', error)
+        audioMap.delete(id)
+      }
+    },
+    [chunkPlayingId, playbackVolume],
+  )
 
     const loadDeveloperTables = useCallback(async () => {
       try {
@@ -617,7 +767,7 @@ function App() {
             <ul className="session-list">
               {recordings.map((session) => {
                 const statusMeta = STATUS_META[session.status]
-                const durationLabel = formatDuration(session.durationMs)
+                const durationLabel = formatSessionDuration(session.durationMs)
                 const notes = session.notes ?? 'Transcription pending…'
                 return (
                   <li key={session.id}>
@@ -634,23 +784,20 @@ function App() {
                       }}
                     >
                       <header className="session-topline">
-                        <span className={`session-pill ${statusMeta.pillClass}`}>{statusMeta.label}</span>
-                        <span className="session-times">
-                          Started {formatDate(session.startedAt)} {formatClock(session.startedAt)}
-                        </span>
-                      </header>
-                      <h2 className="session-title">{durationLabel}</h2>
-                      <p className="session-preview">{notes}</p>
-                      <footer className="session-footer">
-                        <span className="session-meta">
-                          Updated {formatClock(session.updatedAt)} · {formatDataSize(session.totalBytes)}
-                        </span>
+                        <div className="session-topline-left">
+                          <span className={`session-pill ${statusMeta.pillClass}`}>{statusMeta.label}</span>
+                          <span className="session-duration-label">{durationLabel}</span>
+                        </div>
                         {session.status === 'error' ? (
                           <button className="session-retry" type="button" onClick={(event) => void handleRetry(event, session)}>
                             Retry
                           </button>
                         ) : null}
-                      </footer>
+                      </header>
+                      <p className="session-detail">
+                        {formatSessionDateTime(session.startedAt)} — {formatCompactDataSize(session.totalBytes)}
+                      </p>
+                      <p className="session-preview">{notes}</p>
                     </article>
                   </li>
                 )
@@ -750,6 +897,28 @@ function App() {
                 <span className="playback-timestamps">
                   {formatTimecode(audioState.position)} / {formatTimecode(audioState.duration)}
                 </span>
+                <div className={`volume-control ${isVolumeSliderOpen ? 'is-open' : ''}`}>
+                  <button
+                    type="button"
+                    className="volume-button"
+                    aria-pressed={isVolumeSliderOpen}
+                    aria-label={isVolumeSliderOpen ? 'Hide volume slider' : 'Show volume slider'}
+                    onClick={() => setVolumeSliderOpen((prev) => !prev)}
+                  >
+                    {playbackVolume === 0 ? '🔇' : playbackVolume < 0.5 ? '🔈' : '🔊'}
+                  </button>
+                  {isVolumeSliderOpen ? (
+                    <input
+                      className="volume-slider"
+                      type="range"
+                      min={0}
+                      max={100}
+                      value={Math.round(playbackVolume * 100)}
+                      onChange={(event) => setPlaybackVolume(Number(event.target.value) / 100)}
+                      aria-label="Playback volume"
+                    />
+                  ) : null}
+                </div>
               </div>
                 {playbackError ? <p className="detail-notes" role="alert">{playbackError}</p> : null}
                 <div className="detail-transcription">
@@ -761,17 +930,33 @@ function App() {
                     <h3>
                       Chunks ({selectedRecording.chunkCount}) · {selectedRecording.mimeType ?? 'pending'}
                     </h3>
-                    {chunkMetadata.length === 0 ? (
+                    {chunkData.length === 0 ? (
                       <p className="detail-transcription-placeholder">No chunks persisted yet.</p>
                     ) : (
                       <ul className="chunk-list">
-                        {chunkMetadata.map((chunk) => (
-                          <li key={chunk.id}>
-                            <span>#{chunk.seq + 1}</span>
-                            <span>{formatDuration(chunk.endMs - chunk.startMs)}</span>
-                            <span>{formatDataSize(chunk.byteLength)}</span>
-                          </li>
-                        ))}
+                        {chunkData.map((chunk) => {
+                          const durationSeconds = Math.max(0, (chunk.endMs - chunk.startMs) / 1000)
+                          const decimalPlaces = durationSeconds < 10 ? 2 : 1
+                          const durationLabel = `${durationSeconds.toFixed(decimalPlaces)} s`
+                          const isHeaderChunk = chunk.seq === 0 && (durationSeconds < 0.01 || chunk.byteLength < 2048)
+                          return (
+                            <li key={chunk.id} className={`chunk-item ${isHeaderChunk ? 'header-chunk' : ''}`}>
+                              <button
+                                type="button"
+                                className={`chunk-play ${chunkPlayingId === chunk.id ? 'is-playing' : ''}`}
+                                onClick={() => void handleChunkPlayToggle(chunk)}
+                                aria-pressed={chunkPlayingId === chunk.id}
+                                aria-label={chunkPlayingId === chunk.id ? `Pause chunk ${chunk.seq + 1}` : `Play chunk ${chunk.seq + 1}`}
+                              >
+                                {chunkPlayingId === chunk.id ? '⏸' : '▶'}
+                              </button>
+                              <span>#{chunk.seq + 1}</span>
+                              <span>{durationLabel}</span>
+                              <span>{formatDataSize(chunk.byteLength)}</span>
+                              {isHeaderChunk ? <span className="chunk-flag">init segment</span> : null}
+                            </li>
+                          )
+                        })}
                       </ul>
                     )}
                   </div>

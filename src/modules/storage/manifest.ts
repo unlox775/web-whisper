@@ -25,7 +25,7 @@ export interface ChunkRecord {
   createdAt: number
 }
 
-interface StoredChunk extends ChunkRecord {
+export interface StoredChunk extends ChunkRecord {
   blob: Blob
 }
 
@@ -105,6 +105,7 @@ export interface ManifestService {
   listSessions(): Promise<SessionRecord[]>
   getSession(sessionId: string): Promise<SessionRecord | null>
   getChunkMetadata(sessionId: string): Promise<ChunkRecord[]>
+  getChunkData(sessionId: string): Promise<StoredChunk[]>
   buildSessionBlob(sessionId: string, mimeType: string): Promise<Blob | null>
   deleteSession(sessionId: string): Promise<void>
   storageTotals(): Promise<{ totalBytes: number }>
@@ -191,6 +192,13 @@ class IndexedDBManifestService implements ManifestService {
     return chunks
       .map(({ blob: _blob, ...rest }) => rest)
       .sort((a, b) => a.seq - b.seq)
+  }
+
+  async getChunkData(sessionId: string): Promise<StoredChunk[]> {
+    const db = await getDB()
+    const index = db.transaction('chunks').store.index('by-session')
+    const chunks = await index.getAll(sessionId)
+    return chunks.sort((a, b) => a.seq - b.seq)
   }
 
   async buildSessionBlob(sessionId: string, mimeType: string): Promise<Blob | null> {

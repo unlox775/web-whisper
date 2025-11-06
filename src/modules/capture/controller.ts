@@ -140,14 +140,21 @@ function selectMimeType(preferred?: string): string {
         const chunkStart = this.#lastChunkEndMs
         const hasTimecode = typeof event.timecode === 'number' && Number.isFinite(event.timecode)
         const timecodeEnd = hasTimecode ? startedAt + event.timecode : Date.now()
+        const isFirstChunk = seq === 0
+        const isHeaderChunk = isFirstChunk && (!hasTimecode || event.timecode === 0 || data.size < 2048)
         const fallbackIncrement = Math.max(32, Math.min(this.#chunkDurationMs || 1000, 500))
-        const chunkEnd = timecodeEnd > chunkStart ? timecodeEnd : chunkStart + fallbackIncrement
+        const chunkEnd = isHeaderChunk
+          ? chunkStart
+          : timecodeEnd > chunkStart
+            ? timecodeEnd
+            : chunkStart + fallbackIncrement
         this.#lastChunkEndMs = chunkEnd
         void logDebug('Chunk captured', {
           sessionId: this.#sessionId,
           seq,
           size: data.size,
           durationMs: chunkEnd - chunkStart,
+          isHeaderChunk,
         })
         this.#persistQueue = this.#persistQueue
           .then(() =>

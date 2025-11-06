@@ -165,7 +165,7 @@
   display: flex;
   justify-content: space-between;
   gap: 0.75rem;
-  align-items: baseline;
+  align-items: center;
 }
 
 .session-pill {
@@ -192,17 +192,23 @@
   color: #fca5a5;
 }
 
-.session-times {
-  color: #94a3b8;
-  font-size: 0.78rem;
-  font-variant-numeric: tabular-nums;
+.session-topline-left {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
-.session-title {
+.session-duration-label {
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  color: #e2e8f0;
+}
+
+.session-detail {
   margin: 0;
-  font-size: 1.05rem;
-  font-weight: 600;
-  color: #f8fafc;
+  font-size: 0.8rem;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
 }
 
 .session-preview {
@@ -210,23 +216,6 @@
   color: #cbd5f5;
   font-size: 0.88rem;
   line-height: 1.35;
-}
-
-.session-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 0.75rem;
-  font-size: 0.78rem;
-  color: #8ca1c4;
-}
-
-.session-meta {
-  font-variant-numeric: tabular-nums;
-}
-
-.session-chunks {
-  color: #64748b;
 }
 
 .session-retry {
@@ -501,21 +490,96 @@
 }
 
 .chunk-list li {
-  display: grid;
-  grid-template-columns: 60px 1fr 90px;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
   font-size: 0.8rem;
   color: #cbd5f5;
   background: rgba(15, 23, 42, 0.55);
-  padding: 0.4rem 0.6rem;
+  padding: 0.45rem 0.6rem;
   border-radius: 0.6rem;
   border: 1px solid rgba(94, 234, 212, 0.12);
   font-variant-numeric: tabular-nums;
+}
+
+.chunk-item span {
+  min-width: 60px;
+}
+
+.chunk-item span:nth-of-type(2) {
+  flex: 1;
+}
+
+.chunk-item span:nth-of-type(3) {
+  min-width: 80px;
+  text-align: right;
+}
+
+.chunk-item.header-chunk {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
+.chunk-play {
+  border: none;
+  background: rgba(94, 234, 212, 0.12);
+  color: #5eead4;
+  border-radius: 999px;
+  width: 1.75rem;
+  height: 1.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  cursor: pointer;
+}
+
+.chunk-play.is-playing {
+  background: rgba(94, 234, 212, 0.35);
+  color: #0f172a;
+}
+
+.chunk-flag {
+  font-size: 0.7rem;
+  color: #fca5a5;
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  border-radius: 999px;
+  padding: 0.1rem 0.5rem;
+  background: rgba(248, 113, 113, 0.12);
 }
 
 .playback-controls {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+}
+
+.volume-control {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.volume-button {
+  border: none;
+  background: rgba(94, 234, 212, 0.12);
+  color: #5eead4;
+  border-radius: 999px;
+  width: 1.75rem;
+  height: 1.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.volume-control.is-open .volume-button {
+  background: rgba(94, 234, 212, 0.25);
+}
+
+.volume-slider {
+  margin-left: 0.5rem;
+  width: 100px;
+  accent-color: #5eead4;
 }
 
 .playback-button {
