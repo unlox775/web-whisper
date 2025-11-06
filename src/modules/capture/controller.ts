@@ -1,4 +1,4 @@
-import { manifestService } from '../storage/manifest'
+import { manifestService, type SessionRecord, type SessionStatus } from '../storage/manifest'
 import { logDebug, logError, logInfo, logWarn } from '../logging/logger'
 
 export type RecorderState = 'idle' | 'starting' | 'recording' | 'stopping' | 'error'
@@ -68,6 +68,7 @@ class BrowserCaptureController implements CaptureController {
   #persistQueue: Promise<void> = Promise.resolve()
   #lastChunkEndMs = 0
   #chunkDurationMs = 0
+  #mimeType: string | null = null
   #listeners = new Set<(state: CaptureStateSnapshot) => void>()
   #state: CaptureStateSnapshot = {
     sessionId: null,
@@ -117,90 +118,104 @@ class BrowserCaptureController implements CaptureController {
       audioBitsPerSecond: options.targetBitrate,
     })
 
-      this.#stream = stream
-      this.#mediaRecorder = recorder
-      this.#sessionId = options.sessionId
-      this.#chunkDurationMs = options.chunkDurationMs
-      this.#chunkSeq = 0
-      const startedAt = Date.now()
-      this.#lastChunkEndMs = startedAt
+    this.#stream = stream
+    this.#mediaRecorder = recorder
+    this.#sessionId = options.sessionId
+    this.#chunkDurationMs = options.chunkDurationMs
+    this.#chunkSeq = 0
+    this.#mimeType = mimeType
+    const startedAt = Date.now()
+    this.#lastChunkEndMs = startedAt
 
-      recorder.addEventListener('dataavailable', (event) => {
-        const data = event.data
-        if (!data || data.size === 0 || !this.#sessionId) {
-          if (data && data.size === 0) {
-            void logWarn('Received empty audio chunk', {
-              sessionId: this.#sessionId,
-              seq: this.#chunkSeq,
-            })
-          }
-          return
+    recorder.addEventListener('dataavailable', (event) => {
+      const data = event.data
+      if (!data || data.size === 0 || !this.#sessionId) {
+        if (data && data.size === 0) {
+          const trackStates =
+            this.#stream?.getAudioTracks().map((track) => ({
+              id: track.id,
+              enabled: track.enabled,
+              muted: track.muted,
+              readyState: track.readyState,
+            })) ?? []
+
+          void logWarn('Received empty audio chunk', {
+            sessionId: this.#sessionId,
+            seq: this.#chunkSeq,
+            mimeType: this.#mimeType,
+            recorderState: recorder.state,
+            timecode: typeof event.timecode === 'number' ? event.timecode : null,
+            trackStates,
+            requestedTimesliceMs: this.#chunkDurationMs,
+          })
         }
-        const seq = this.#chunkSeq++
-        const chunkStart = this.#lastChunkEndMs
-        const hasTimecode = typeof event.timecode === 'number' && Number.isFinite(event.timecode)
-        const timecodeEnd = hasTimecode ? startedAt + event.timecode : Date.now()
-        const isFirstChunk = seq === 0
-        const isHeaderChunk = isFirstChunk && (!hasTimecode || event.timecode === 0 || data.size < 2048)
-        const fallbackIncrement = Math.max(32, Math.min(this.#chunkDurationMs || 1000, 500))
-        const chunkEnd = isHeaderChunk
-          ? chunkStart
-          : timecodeEnd > chunkStart
-            ? timecodeEnd
-            : chunkStart + fallbackIncrement
-        this.#lastChunkEndMs = chunkEnd
-        void logDebug('Chunk captured', {
-          sessionId: this.#sessionId,
-          seq,
-          size: data.size,
-          durationMs: chunkEnd - chunkStart,
-          isHeaderChunk,
-        })
-        this.#persistQueue = this.#persistQueue
-          .then(() =>
-            manifestService.appendChunk(
-              {
-                id: `${this.#sessionId}-chunk-${seq}`,
-                sessionId: this.#sessionId!,
-                seq,
-                startMs: chunkStart,
-                endMs: chunkEnd,
-              },
-              data,
-            ),
-          )
-          .then(() => {
-            this.#setState({
-              lastChunkAt: chunkEnd,
-              bytesBuffered: this.#state.bytesBuffered + data.size,
-              chunksRecorded: this.#state.chunksRecorded + 1,
-            })
-            void logInfo('Chunk persisted', {
-              sessionId: this.#sessionId,
+        return
+      }
+      const seq = this.#chunkSeq++
+      const chunkStart = this.#lastChunkEndMs
+      const hasTimecode = typeof event.timecode === 'number' && Number.isFinite(event.timecode)
+      const timecodeEnd = hasTimecode ? startedAt + event.timecode : Date.now()
+      const isFirstChunk = seq === 0
+      const isHeaderChunk = isFirstChunk && (!hasTimecode || event.timecode === 0 || data.size < 2048)
+      const fallbackIncrement = Math.max(32, Math.min(this.#chunkDurationMs || 1000, 500))
+      const chunkEnd = isHeaderChunk
+        ? chunkStart
+        : timecodeEnd > chunkStart
+          ? timecodeEnd
+          : chunkStart + fallbackIncrement
+      this.#lastChunkEndMs = chunkEnd
+      void logDebug('Chunk captured', {
+        sessionId: this.#sessionId,
+        seq,
+        size: data.size,
+        durationMs: chunkEnd - chunkStart,
+        isHeaderChunk,
+      })
+      this.#persistQueue = this.#persistQueue
+        .then(() =>
+          manifestService.appendChunk(
+            {
+              id: `${this.#sessionId}-chunk-${seq}`,
+              sessionId: this.#sessionId!,
               seq,
-              size: data.size,
               startMs: chunkStart,
               endMs: chunkEnd,
-            })
+            },
+            data,
+          ),
+        )
+        .then(() => {
+          this.#setState({
+            lastChunkAt: chunkEnd,
+            bytesBuffered: this.#state.bytesBuffered + data.size,
+            chunksRecorded: this.#state.chunksRecorded + 1,
           })
-          .catch((error) => {
-            console.error('[CaptureController] Failed to persist chunk', error)
-            this.#setState({ state: 'error', error: error instanceof Error ? error.message : String(error) })
-            void logError('Chunk persistence failed', {
-              sessionId: this.#sessionId,
-              seq,
-              error: error instanceof Error ? error.message : String(error),
-            })
+          void logInfo('Chunk persisted', {
+            sessionId: this.#sessionId,
+            seq,
+            size: data.size,
+            startMs: chunkStart,
+            endMs: chunkEnd,
           })
-      })
+        })
+        .catch((error) => {
+          console.error('[CaptureController] Failed to persist chunk', error)
+          this.#setState({ state: 'error', error: error instanceof Error ? error.message : String(error) })
+          void logError('Chunk persistence failed', {
+            sessionId: this.#sessionId,
+            seq,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        })
+    })
 
-      recorder.addEventListener('stop', () => {
-        void logInfo('MediaRecorder stop event fired', { sessionId: this.#sessionId })
-        if (this.#state.state !== 'stopping') {
-          this.#cleanupStream()
-          this.#setState({ state: 'idle', sessionId: null, mimeType: null })
-        }
-      })
+    recorder.addEventListener('stop', () => {
+      void logInfo('MediaRecorder stop event fired', { sessionId: this.#sessionId })
+      if (this.#state.state !== 'stopping') {
+        this.#cleanupStream()
+        this.#setState({ state: 'idle', sessionId: null, mimeType: null })
+      }
+    })
 
     recorder.addEventListener('error', (event) => {
       console.error('[CaptureController] Recorder error', event)
@@ -259,18 +274,45 @@ class BrowserCaptureController implements CaptureController {
     }
 
     await this.flushPending()
+
+    let sessionNotes: string | undefined
+    if (sessionId) {
+      const chunkMetadata = await manifestService.getChunkMetadata(sessionId)
+      const hasPlayableChunk = chunkMetadata.some(
+        (chunk) => chunk.seq > 0 && chunk.byteLength > 0 && chunk.endMs > chunk.startMs,
+      )
+      const status: SessionStatus = hasPlayableChunk ? 'ready' : 'error'
+
+      if (!hasPlayableChunk) {
+        const totalBytes = chunkMetadata.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+        sessionNotes = chunkMetadata.length === 0
+          ? 'Error: no audio captured. Check microphone access and try again.'
+          : 'Error: captured audio contained no playable samples.'
+
+        await logError('Session completed without playable audio', {
+          sessionId,
+          chunkCount: chunkMetadata.length,
+          totalBytes,
+          mimeType: this.#mimeType,
+        })
+      }
+
+      const updatePatch: Partial<SessionRecord> = {
+        status,
+        updatedAt: Date.now(),
+      }
+      if (sessionNotes) {
+        updatePatch.notes = sessionNotes
+      }
+
+      await manifestService.updateSession(sessionId, updatePatch)
+    }
+
     this.#cleanupStream()
 
     this.#mediaRecorder = null
     this.#sessionId = null
     this.#chunkDurationMs = 0
-
-    if (sessionId) {
-      await manifestService.updateSession(sessionId, {
-        status: 'ready',
-        updatedAt: Date.now(),
-      })
-    }
 
     this.#setState({
       state: 'idle',
@@ -280,6 +322,7 @@ class BrowserCaptureController implements CaptureController {
       mimeType: null,
       chunksRecorded: 0,
       bytesBuffered: 0,
+      error: sessionNotes,
     })
   }
 
@@ -355,6 +398,7 @@ class BrowserCaptureController implements CaptureController {
       this.#analysisPort.close()
       this.#analysisPort = null
     }
+    this.#mimeType = null
   }
 
   subscribe(listener: (state: CaptureStateSnapshot) => void): () => void {

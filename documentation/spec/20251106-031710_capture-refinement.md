@@ -1,7 +1,7 @@
 # Capture Refinement & Chunk Integrity — Iteration Log
 
 **Prompt slug:** `capture-refinement`  
-**Last updated:** 2025-11-06 03:17 UTC
+**Last updated:** 2025-11-06 04:25 UTC
 
 ## Context
 
@@ -22,12 +22,29 @@
 - Added per-chunk download controls (developer mode) that emit timestamped filenames (e.g., `2025-11-06T03-17-05_chunk-02.mp4`).
 - Updated the developer strip to show `Segments: N + init`, reducing confusion about the synthetic first slice.
 - Tightened chunk debugging UI/CSS (`App.css`) to support the new download pill while keeping spacing consistent.
+- Session cards now surface timestamp/size metadata in the top-right corner, squeeze vertical padding, and pulse briefly when a recording transitions to `ready`.
+- Erroring sessions inherit a red accent and display the captured failure note in place of “Transcription pending…”.
+
+### Modal Interaction & Live View Polish
+- Clicking outside any overlay (detail drawer, settings, or developer console) now dismisses it—no more hunting for the close button on touch devices.
+- The transcription detail dialog exposes per-chunk download buttons and keeps developer metadata collapsed until toggled.
+- Recordings list becomes its own scroll region on narrow screens (`-webkit-overflow-scrolling: touch`), so long histories stay manageable on iPhone.
+- The simulated live-transcription panel only mounts while recording, fades away when capture stops, and resets its stream when a new session begins.
+
+### Mobile Interaction Guardrails
+- Disabled browser pinch-zoom via viewport directives plus gesture/touch listeners, preventing accidental zoom on iOS Safari.
+- Added an explicit viewport-fit directive so the layout hugs device-safe areas when installed as a PWA.
+
+### iOS Diagnostics & Session Health
+- When Safari delivers an empty `dataavailable`, the logger now captures recorder state, requested timeslice, timecode, and track readiness to help triage permission or encoder issues.
+- Post-stop reconciliation inspects persisted chunks; sessions without any playable audio are automatically marked `error` with a descriptive note and emit a log entry summarising chunk counts and total bytes.
 
 ## Outstanding Items
 
 - Verify the recorder flush across Safari/iOS once hardware access is available; current fix is based on Chromium semantics.
 - Volume perception issue remains under investigation—no gain adjustments were applied in this round.
 - Continue monitoring log sessions for “Final flush completed without non-empty chunk” warnings to detect edge cases.
+- Validate the new zero-audio classification on real iOS hardware and tune heuristics if header-only blobs surface.
 
 ## Technical Notes
 

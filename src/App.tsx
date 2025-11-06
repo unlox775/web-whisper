@@ -178,6 +178,9 @@ function App() {
     limitBytes: DEFAULT_STORAGE_LIMIT_BYTES,
   })
   const [transcriptionLines, setTranscriptionLines] = useState<string[]>(SIMULATED_STREAM.slice(0, 2))
+  const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null)
+  const [isTranscriptionMounted, setTranscriptionMounted] = useState(false)
+  const [isTranscriptionVisible, setTranscriptionVisible] = useState(false)
   const [chunkPlayingId, setChunkPlayingId] = useState<string | null>(null)
   const [playbackVolume, setPlaybackVolume] = useState(1)
   const [isVolumeSliderOpen, setVolumeSliderOpen] = useState(false)
@@ -200,6 +203,8 @@ function App() {
   const audioUrlRef = useRef<string | null>(null)
   const chunkUrlMapRef = useRef<Map<string, string>>(new Map())
   const chunkAudioRef = useRef<Map<string, HTMLAudioElement>>(new Map())
+  const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
+  const sessionsInitializedRef = useRef(false)
 
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
@@ -210,6 +215,29 @@ function App() {
       manifestService.listSessions(),
       manifestService.storageTotals(),
     ])
+
+    const previousMap = sessionUpdatesRef.current
+    let highlightCandidate: SessionRecord | null = null
+    if (sessionsInitializedRef.current) {
+      for (const session of sessions) {
+        if (session.status !== 'ready' || session.chunkCount === 0) continue
+        if (!previousMap.has(session.id)) continue
+        const previousUpdatedAt = previousMap.get(session.id)
+        if (previousUpdatedAt !== undefined && previousUpdatedAt !== session.updatedAt) {
+          if (!highlightCandidate || session.updatedAt > highlightCandidate.updatedAt) {
+            highlightCandidate = session
+          }
+        }
+      }
+    }
+
+    sessionUpdatesRef.current = new Map(sessions.map((session) => [session.id, session.updatedAt]))
+    if (!sessionsInitializedRef.current) {
+      sessionsInitializedRef.current = true
+    } else if (highlightCandidate) {
+      setHighlightedSessionId(highlightCandidate.id)
+    }
+
     setRecordings(sessions)
     setBufferTotals({ totalBytes: totals.totalBytes, limitBytes: storageLimitBytes })
   }, [storageLimitBytes])
@@ -248,6 +276,64 @@ function App() {
     }, 3200)
     return () => window.clearInterval(interval)
   }, [captureState.sessionId, captureState.state, loadSessions])
+
+  useEffect(() => {
+    if (captureState.state === 'recording') {
+      setTranscriptionMounted(true)
+      setTranscriptionLines(SIMULATED_STREAM.slice(0, 2))
+      streamCursor.current = 1
+      requestAnimationFrame(() => setTranscriptionVisible(true))
+    } else {
+      setTranscriptionVisible(false)
+    }
+  }, [captureState.state])
+
+  useEffect(() => {
+    if (!highlightedSessionId) {
+      return
+    }
+    const timeout = window.setTimeout(() => setHighlightedSessionId(null), 2400)
+    return () => window.clearTimeout(timeout)
+  }, [highlightedSessionId])
+
+  useEffect(() => {
+    if (isTranscriptionVisible) {
+      return
+    }
+    if (!isTranscriptionMounted) {
+      return
+    }
+    const timeout = window.setTimeout(() => setTranscriptionMounted(false), 400)
+    return () => window.clearTimeout(timeout)
+  }, [isTranscriptionMounted, isTranscriptionVisible])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !('ontouchstart' in window)) {
+      return
+    }
+
+    const preventMultiTouch = (event: TouchEvent) => {
+      if (event.touches.length > 1) {
+        event.preventDefault()
+      }
+    }
+
+    const preventGesture = (event: Event) => {
+      event.preventDefault()
+    }
+
+    document.addEventListener('touchmove', preventMultiTouch, { passive: false })
+    document.addEventListener('gesturestart' as any, preventGesture as EventListener)
+    document.addEventListener('gesturechange' as any, preventGesture as EventListener)
+    document.addEventListener('gestureend' as any, preventGesture as EventListener)
+
+    return () => {
+      document.removeEventListener('touchmove', preventMultiTouch)
+      document.removeEventListener('gesturestart' as any, preventGesture as EventListener)
+      document.removeEventListener('gesturechange' as any, preventGesture as EventListener)
+      document.removeEventListener('gestureend' as any, preventGesture as EventListener)
+    }
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -831,14 +917,23 @@ function App() {
       <main className="content-grid">
         <section className="session-section" aria-label="Recording sessions">
             <ul className="session-list">
-              {recordings.map((session) => {
+                {recordings.map((session) => {
                 const statusMeta = STATUS_META[session.status]
                 const durationLabel = formatSessionDuration(session.durationMs)
                 const notes = session.notes ?? 'Transcription pending…'
+                  const metadataLabel = `${formatSessionDateTime(session.startedAt)} · ${formatCompactDataSize(session.totalBytes)}`
+                  const isHighlighted = session.id === highlightedSessionId
+                  const cardClasses = ['session-card']
+                  if (isHighlighted) {
+                    cardClasses.push('is-new')
+                  }
+                  if (session.status === 'error') {
+                    cardClasses.push('has-error')
+                  }
                 return (
                   <li key={session.id}>
                     <article
-                      className="session-card"
+                        className={cardClasses.join(' ')}
                       role="button"
                       tabIndex={0}
                       onClick={() => setSelectedRecordingId(session.id)}
@@ -849,20 +944,20 @@ function App() {
                         }
                       }}
                     >
-                      <header className="session-topline">
-                        <div className="session-topline-left">
-                          <span className={`session-pill ${statusMeta.pillClass}`}>{statusMeta.label}</span>
-                          <span className="session-duration-label">{durationLabel}</span>
-                        </div>
-                        {session.status === 'error' ? (
-                          <button className="session-retry" type="button" onClick={(event) => void handleRetry(event, session)}>
-                            Retry
-                          </button>
-                        ) : null}
-                      </header>
-                      <p className="session-detail">
-                        {formatSessionDateTime(session.startedAt)} — {formatCompactDataSize(session.totalBytes)}
-                      </p>
+                        <header className="session-topline">
+                          <div className="session-topline-left">
+                            <span className={`session-pill ${statusMeta.pillClass}`}>{statusMeta.label}</span>
+                            <span className="session-duration-label">{durationLabel}</span>
+                          </div>
+                          <div className="session-topline-right">
+                            <span className="session-meta">{metadataLabel}</span>
+                            {session.status === 'error' ? (
+                              <button className="session-retry" type="button" onClick={(event) => void handleRetry(event, session)}>
+                                Retry
+                              </button>
+                            ) : null}
+                          </div>
+                        </header>
                       <p className="session-preview">{notes}</p>
                     </article>
                   </li>
@@ -889,26 +984,42 @@ function App() {
         </aside>
       </main>
 
-      <section className="transcription-panel" aria-live="polite" aria-label="Live transcription preview">
-        <header className="transcription-header">
-          <h2>Live transcription (simulated)</h2>
-          <span className="transcription-meta">Real streaming will appear here once Groq integration lands.</span>
-        </header>
-        <div className="transcription-stream">
-          {transcriptionLines.map((line, index) => (
-            <p key={`${index}-${line.slice(0, 12)}`} className="transcription-line">
-              {line}
-            </p>
-          ))}
-          <div className="transcription-fade" aria-hidden="true" />
-        </div>
-      </section>
+        {isTranscriptionMounted ? (
+          <section
+            className={`transcription-panel${isTranscriptionVisible ? ' is-visible' : ''}`}
+            aria-live="polite"
+            aria-label="Live transcription preview"
+          >
+            <header className="transcription-header">
+              <h2>Live transcription (simulated)</h2>
+              <span className="transcription-meta">Real streaming will appear here once Groq integration lands.</span>
+            </header>
+            <div className="transcription-stream">
+              {transcriptionLines.map((line, index) => (
+                <p key={`${index}-${line.slice(0, 12)}`} className="transcription-line">
+                  {line}
+                </p>
+              ))}
+              <div className="transcription-fade" aria-hidden="true" />
+            </div>
+          </section>
+        ) : null}
 
       <audio ref={audioRef} hidden preload="none" />
 
-      {selectedRecording ? (
-        <div className="detail-overlay" role="dialog" aria-modal="true" aria-labelledby="recording-detail-title">
-          <div className="detail-panel">
+        {selectedRecording ? (
+          <div
+            className="detail-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="recording-detail-title"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) {
+                void handleCloseDetail()
+              }
+            }}
+          >
+            <div className="detail-panel" onClick={(event) => event.stopPropagation()}>
             <header className="detail-header">
               <div>
                 <p className="detail-label">Recording</p>
@@ -1042,9 +1153,19 @@ function App() {
         </div>
       ) : null}
 
-      {isSettingsOpen ? (
-        <div className="settings-overlay" role="dialog" aria-modal="true" aria-labelledby="settings-title">
-          <div className="settings-dialog">
+        {isSettingsOpen ? (
+          <div
+            className="settings-overlay"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="settings-title"
+            onClick={(event) => {
+              if (event.target === event.currentTarget) {
+                setIsSettingsOpen(false)
+              }
+            }}
+          >
+            <div className="settings-dialog" onClick={(event) => event.stopPropagation()}>
             <header className="settings-header">
               <h2 id="settings-title">Settings</h2>
               <button type="button" className="settings-close" onClick={() => setIsSettingsOpen(false)}>
@@ -1084,9 +1205,19 @@ function App() {
         </div>
       ) : null}
 
-        {developerMode && isDeveloperOverlayOpen ? (
-          <div className="dev-overlay" role="dialog" aria-modal="true" aria-labelledby="dev-console-title">
-            <div className="dev-panel">
+          {developerMode && isDeveloperOverlayOpen ? (
+            <div
+              className="dev-overlay"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="dev-console-title"
+              onClick={(event) => {
+                if (event.target === event.currentTarget) {
+                  handleCloseDeveloperOverlay()
+                }
+              }}
+            >
+              <div className="dev-panel" onClick={(event) => event.stopPropagation()}>
               <header className="dev-panel-header">
                 <h2 id="dev-console-title">Developer Console</h2>
                 <button type="button" className="dev-close" onClick={handleCloseDeveloperOverlay}>
