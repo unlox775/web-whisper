@@ -10,8 +10,8 @@ export default defineConfig({
         registerType: 'autoUpdate',
         includeAssets: ['pwa-192x192.svg', 'pwa-512x512.svg'],
         manifest: {
-          name: 'web-whisper',
-          short_name: 'web-whisper',
+          name: 'Web Whisper',
+          short_name: 'Web Whisper',
           start_url: '.',
           display: 'standalone',
           background_color: '#0f172a',

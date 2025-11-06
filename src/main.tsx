@@ -4,6 +4,8 @@ import { registerSW } from 'virtual:pwa-register'
 import './index.css'
 import App from './App.tsx'
 
+document.title = 'Web Whisper'
+
 registerSW({ immediate: true })
 
 createRoot(document.getElementById('root')!).render(

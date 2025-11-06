@@ -550,11 +550,11 @@ function App() {
 
   return (
     <div className="app-shell">
-      <header className="app-header">
-        <div className="brand">
-          <h1>Durable Recorder</h1>
-          <p className="brand-subtitle">Continuous capture, chunked for resilience.</p>
-        </div>
+        <header className="app-header">
+          <div className="brand">
+            <h1>Web Whisper</h1>
+            <p className="brand-subtitle">Durable on-device capture with room to grow.</p>
+          </div>
         <div className="header-controls">
           <div className="buffer-card" role="status" aria-live="polite">
             <p className="buffer-label">Buffered locally</p>
