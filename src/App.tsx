@@ -30,6 +30,19 @@ type DeveloperTable = {
   rows: Array<Record<string, unknown>>
 }
 
+type ChunkInspectionRow = Record<string, unknown> & {
+  id?: string
+  sessionId?: string
+  seq?: number
+  startMs?: number
+  endMs?: number
+  blobSize?: number
+  verifiedByteLength?: number | null
+  sizeMismatch?: boolean
+  startIso?: string
+  endIso?: string
+}
+
 type AudioState = {
   playing: boolean
   duration: number
@@ -462,26 +475,26 @@ function App() {
     await settingsStore.set({ groqApiKey: value })
   }
 
-  const loadDeveloperTables = useCallback(async () => {
-    try {
-      const [sessions, chunks] = await Promise.all([
-        manifestService.listSessions(),
-        manifestService.getChunksForInspection(),
-      ])
-      setDeveloperTables([
-        { name: 'sessions', rows: sessions.map((row) => ({ ...row })) },
-        { name: 'chunks', rows: chunks },
-      ])
-      setSelectedDeveloperTable((prev) => prev ?? 'sessions')
-    } catch (error) {
-      console.error('[UI] Failed to load developer tables', error)
-      setDeveloperTables([])
-      setSelectedDeveloperTable('sessions')
-      await logError('Developer table load failed', {
-        error: error instanceof Error ? error.message : String(error),
-      })
-    }
-  }, [])
+    const loadDeveloperTables = useCallback(async () => {
+      try {
+        const [sessions, chunks] = await Promise.all([
+          manifestService.listSessions(),
+          manifestService.getChunksForInspection(),
+        ])
+        setDeveloperTables([
+          { name: 'sessions', rows: sessions.map((row) => ({ ...row })) },
+          { name: 'chunks', rows: chunks.map((row) => ({ ...row })) },
+        ])
+        setSelectedDeveloperTable((prev) => prev ?? 'sessions')
+      } catch (error) {
+        console.error('[UI] Failed to load developer tables', error)
+        setDeveloperTables([])
+        setSelectedDeveloperTable('sessions')
+        await logError('Developer table load failed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }, [])
 
   const handleSelectLogSession = useCallback(
     async (session: LogSessionRecord | null) => {
@@ -862,14 +875,42 @@ function App() {
                     <div className="dev-table-rows">
                       {developerOverlayLoading ? (
                         <p>Loading…</p>
-                      ) : selectedDeveloperTable ? (
-                        developerTables
-                          .find((table) => table.name === selectedDeveloperTable)
-                          ?.rows.map((row, index) => (
-                            <pre key={index}>{JSON.stringify(row, null, 2)}</pre>
-                          )) ?? <p>No rows.</p>
-                      ) : (
+                      ) : !selectedDeveloperTable ? (
                         <p>Select a table to inspect rows.</p>
+                      ) : (
+                        (() => {
+                          const activeTable = developerTables.find((table) => table.name === selectedDeveloperTable)
+                          if (!activeTable) return <p>No rows.</p>
+                          if (activeTable.rows.length === 0) return <p>No rows.</p>
+
+                          if (selectedDeveloperTable === 'chunks') {
+                            const chunkRows = activeTable.rows as ChunkInspectionRow[]
+                            return chunkRows.map((row, index) => {
+                              const key = typeof row.id === 'string' ? row.id : `${row.sessionId ?? 'chunk'}-${row.seq ?? index}`
+                              const blobSize = typeof row.blobSize === 'number' ? row.blobSize : null
+                              const verified = typeof row.verifiedByteLength === 'number' ? row.verifiedByteLength : null
+                              const blobLabel = blobSize !== null ? `${blobSize} B (${formatDataSize(blobSize)})` : 'unknown'
+                              const verifiedLabel = verified !== null ? `${verified} B (${formatDataSize(verified)})` : 'unverified'
+                              const mismatch = Boolean(row.sizeMismatch ?? (verified !== null && blobSize !== null && verified !== blobSize))
+                              return (
+                                <div key={key} className={`dev-table-chunk ${mismatch ? 'has-mismatch' : ''}`}>
+                                  <pre>{JSON.stringify(row, null, 2)}</pre>
+                                  <p className="dev-chunk-extra">
+                                    <span>blob.size: {blobLabel}</span>
+                                    <span>verified: {verifiedLabel}</span>
+                                    <span className={mismatch ? 'dev-chunk-warning' : 'dev-chunk-ok'}>
+                                      {mismatch ? '⚠ size mismatch' : '✓ sizes match'}
+                                    </span>
+                                  </p>
+                                </div>
+                              )
+                            })
+                          }
+
+                          return activeTable.rows.map((row, index) => (
+                            <pre key={index}>{JSON.stringify(row, null, 2)}</pre>
+                          ))
+                        })()
                       )}
                     </div>
                   </div>

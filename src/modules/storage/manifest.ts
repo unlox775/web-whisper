@@ -275,12 +275,34 @@ class IndexedDBManifestService implements ManifestService {
   async getChunksForInspection(): Promise<Array<Record<string, unknown>>> {
     const db = await getDB()
     const chunks = await db.transaction('chunks').store.getAll()
-    return chunks.map(({ blob, ...rest }) => ({
-      ...rest,
-      blobSize: blob.size,
-      blobType: blob.type,
-      blob: '[binary omitted]',
-    }))
+    const ordered = chunks.sort((a, b) => {
+      if (a.startMs !== b.startMs) return b.startMs - a.startMs
+      if (a.seq !== b.seq) return b.seq - a.seq
+      return (b.createdAt ?? 0) - (a.createdAt ?? 0)
+    })
+
+    return Promise.all(
+      ordered.map(async ({ blob, ...rest }) => {
+        let verifiedByteLength: number | null = null
+        try {
+          const buffer = await blob.arrayBuffer()
+          verifiedByteLength = buffer.byteLength
+        } catch (error) {
+          console.warn('[Manifest] Failed to read chunk blob for inspection', error)
+        }
+
+        return {
+          ...rest,
+          blobSize: blob.size,
+          blobType: blob.type,
+          verifiedByteLength,
+          sizeMismatch: verifiedByteLength !== null && verifiedByteLength !== blob.size,
+          startIso: new Date(rest.startMs).toISOString(),
+          endIso: new Date(rest.endMs).toISOString(),
+          blob: '[binary omitted]',
+        }
+      }),
+    )
   }
 
   async createLogSession(): Promise<LogSessionRecord> {

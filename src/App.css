@@ -742,6 +742,42 @@
   word-break: break-word;
 }
 
+.dev-table-chunk {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.dev-chunk-extra {
+  margin: 0;
+  font-size: 0.72rem;
+  color: rgba(203, 213, 255, 0.82);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.dev-chunk-extra span {
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(94, 234, 212, 0.12);
+  border-radius: 999px;
+  padding: 0.2rem 0.55rem;
+}
+
+.dev-chunk-warning {
+  border-color: rgba(248, 113, 113, 0.45);
+  color: #fca5a5;
+}
+
+.dev-chunk-ok {
+  border-color: rgba(94, 234, 212, 0.45);
+  color: #5eead4;
+}
+
+.dev-table-chunk.has-mismatch pre {
+  border-color: rgba(248, 113, 113, 0.35);
+}
+
 .dev-log-body {
   display: flex;
   flex-direction: column;
