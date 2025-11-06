@@ -67,3 +67,11 @@
   2. Only after the flush resolves is `recorder.stop()` issued, with an explicit promise to await the `stop` event.
   3. Persist queue is drained (`flushPending()`), then tracks/ports are torn down.
 - Warn-level log records when a timeout or stop event fires without audio so QA can correlate future anomalies.
+
+### Capture Timing Instrumentation
+
+- Each `dataavailable` is now inspected for a reliable `event.timecode`; when absent, we record the wall-clock delta (`Date.now() - chunkStart`) and emit `Chunk duration fallback applied` with the fallback length and recorder state.
+- `Chunk captured` debug logs now include `chunkStartMs`, `chunkEndMs`, and the raw timecode so we can correlate the stored timestamps with the wall-clock moments visible in the developer log overlay.
+- When `stop()` begins while the recorder is still active, we log `Flush initiated before stop` followed by `requestData issued for final flush`, making the flush timeline explicit.
+- After flushing and reconciling manifest data we log `Final flush produced chunk` (or the existing warning if nothing arrived) and finally `Session timing reconciled` with the recomputed `durationMs`, `totalBytes`, and chunk count so discrepancies are easy to spot.
+- These logs surface in the in-app developer console; the session list now reflects the recomputed `durationMs`, so any divergence between logs and UI can be tracked quickly.

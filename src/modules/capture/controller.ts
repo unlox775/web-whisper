@@ -153,9 +153,17 @@ class BrowserCaptureController implements CaptureController {
       }
       const seq = this.#chunkSeq++
       const chunkStart = this.#lastChunkEndMs
-      const hasTimecode = typeof event.timecode === 'number' && Number.isFinite(event.timecode)
-      const fallbackDuration = Math.max(32, Date.now() - chunkStart)
-      const chunkDuration = hasTimecode ? Math.max(0, event.timecode) : fallbackDuration
+        const hasTimecode = typeof event.timecode === 'number' && Number.isFinite(event.timecode)
+        const fallbackDuration = Math.max(32, Date.now() - chunkStart)
+        const chunkDuration = hasTimecode ? Math.max(0, event.timecode) : fallbackDuration
+        if (!hasTimecode) {
+          void logInfo('Chunk duration fallback applied', {
+            sessionId: this.#sessionId,
+            seq,
+            fallbackDuration,
+            recorderState: recorder.state,
+          })
+        }
       const isFirstChunk = seq === 0
       const isHeaderChunk = isFirstChunk && (!hasTimecode || event.timecode === 0 || data.size < 2048)
       const chunkEnd = isHeaderChunk ? chunkStart : chunkStart + chunkDuration
@@ -166,6 +174,9 @@ class BrowserCaptureController implements CaptureController {
         size: data.size,
         durationMs: chunkEnd - chunkStart,
         isHeaderChunk,
+          chunkStartMs: chunkStart,
+          chunkEndMs: chunkEnd,
+          timecode: hasTimecode ? event.timecode : null,
       })
       this.#persistQueue = this.#persistQueue
         .then(() =>
@@ -254,6 +265,10 @@ class BrowserCaptureController implements CaptureController {
     const sessionId = this.#sessionId
 
     if (recorder.state === 'recording') {
+      void logInfo('Flush initiated before stop', {
+        sessionId: sessionId ?? this.#sessionId,
+        recorderState: recorder.state,
+      })
       await this.#flushRecorder(recorder)
     }
 
@@ -307,6 +322,14 @@ class BrowserCaptureController implements CaptureController {
       }
 
       await manifestService.updateSession(sessionId, updatePatch)
+      await logInfo('Session timing reconciled', {
+        sessionId,
+        status,
+        durationMs,
+        totalBytes,
+        chunkCount: chunkMetadata.length,
+        hasPlayableChunk,
+      })
     }
 
     this.#cleanupStream()
@@ -366,6 +389,10 @@ class BrowserCaptureController implements CaptureController {
 
     try {
       recorder.requestData()
+      void logDebug('requestData issued for final flush', {
+        sessionId: this.#sessionId,
+        recorderState: recorder.state,
+      })
     } catch (error) {
       console.warn('[CaptureController] requestData failed during flush', error)
       return
@@ -377,6 +404,10 @@ class BrowserCaptureController implements CaptureController {
       await logWarn('Final flush completed without non-empty chunk', {
         sessionId: this.#sessionId,
         reason: resolvedByTimeout ? 'timeout' : 'stop-event',
+      })
+    } else {
+      await logInfo('Final flush produced chunk', {
+        sessionId: this.#sessionId,
       })
     }
   }
