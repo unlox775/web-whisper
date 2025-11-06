@@ -205,9 +205,6 @@ function App() {
   const chunkAudioRef = useRef<Map<string, HTMLAudioElement>>(new Map())
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
-  const appShellRef = useRef<HTMLDivElement | null>(null)
-  const sessionListRef = useRef<HTMLUListElement | null>(null)
-  const touchYRef = useRef<number | null>(null)
 
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
@@ -309,64 +306,6 @@ function App() {
     const timeout = window.setTimeout(() => setHighlightedSessionId(null), 2400)
     return () => window.clearTimeout(timeout)
   }, [highlightedSessionId])
-
-  useEffect(() => {
-    const shell = appShellRef.current
-    const list = sessionListRef.current
-    if (!shell || !list) {
-      return
-    }
-
-    const handleWheel = (event: WheelEvent) => {
-      if (event.defaultPrevented) return
-      if (!sessionListRef.current) return
-      const target = event.target as HTMLElement
-      if (!sessionListRef.current.contains(target)) {
-        sessionListRef.current.scrollBy({ top: event.deltaY, behavior: 'auto' })
-        event.preventDefault()
-      }
-    }
-
-    const handleTouchStart = (event: TouchEvent) => {
-      if (!sessionListRef.current) return
-      const target = event.target as HTMLElement
-      if (!sessionListRef.current.contains(target)) {
-        touchYRef.current = event.touches[0]?.clientY ?? null
-      } else {
-        touchYRef.current = null
-      }
-    }
-
-    const handleTouchMove = (event: TouchEvent) => {
-      if (touchYRef.current == null || !sessionListRef.current) return
-      const currentY = event.touches[0]?.clientY
-      if (currentY == null) return
-      const delta = touchYRef.current - currentY
-      if (delta !== 0) {
-        sessionListRef.current.scrollBy({ top: delta, behavior: 'auto' })
-        touchYRef.current = currentY
-        event.preventDefault()
-      }
-    }
-
-    const handleTouchEnd = () => {
-      touchYRef.current = null
-    }
-
-    shell.addEventListener('wheel', handleWheel, { passive: false })
-    shell.addEventListener('touchstart', handleTouchStart, { passive: true })
-    shell.addEventListener('touchmove', handleTouchMove, { passive: false })
-    shell.addEventListener('touchend', handleTouchEnd)
-    shell.addEventListener('touchcancel', handleTouchEnd)
-
-    return () => {
-      shell.removeEventListener('wheel', handleWheel as EventListener)
-      shell.removeEventListener('touchstart', handleTouchStart as EventListener)
-      shell.removeEventListener('touchmove', handleTouchMove as EventListener)
-      shell.removeEventListener('touchend', handleTouchEnd as EventListener)
-      shell.removeEventListener('touchcancel', handleTouchEnd as EventListener)
-    }
-  }, [])
 
   useEffect(() => {
     if (isTranscriptionVisible) {
@@ -965,7 +904,7 @@ function App() {
     const hasInitSegment = captureState.chunksRecorded > 0
 
   return (
-      <div className="app-shell" ref={appShellRef}>
+      <div className="app-shell">
         <header className="app-header">
           <div className="brand">
             <h1>Web Whisper</h1>
@@ -1018,8 +957,8 @@ function App() {
       ) : null}
 
         <main className="content-grid">
-          <section className="session-section" aria-label="Recording sessions">
-              <ul className="session-list" ref={sessionListRef}>
+        <section className="session-section" aria-label="Recording sessions">
+            <ul className="session-list">
                 {recordings.map((session) => {
                 const statusMeta = STATUS_META[session.status]
                 const isActiveRecording = session.id === captureState.sessionId && captureState.state === 'recording'

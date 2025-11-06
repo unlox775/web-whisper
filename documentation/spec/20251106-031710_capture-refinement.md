@@ -75,3 +75,35 @@
 - When `stop()` begins while the recorder is still active, we log `Flush initiated before stop` followed by `requestData issued for final flush`, making the flush timeline explicit.
 - After flushing and reconciling manifest data we log `Final flush produced chunk` (or the existing warning if nothing arrived) and finally `Session timing reconciled` with the recomputed `durationMs`, `totalBytes`, and chunk count so discrepancies are easy to spot.
 - These logs surface in the in-app developer console; the session list now reflects the recomputed `durationMs`, so any divergence between logs and UI can be tracked quickly.
+
+### Capture Architecture Walkthrough
+
+- **Core modules**
+  - `capture/controller.ts` exposes `BrowserCaptureController` with `start`, `stop`, `flushPending`, and listener management. It configures `MediaRecorder`, listens for recorder events, and owns runtime capture state.
+  - `storage/manifest.ts` persists sessions/chunks/logs via IndexedDB helpers such as `createSession`, `appendChunk`, `updateSession`, `buildSessionBlob`, and `getChunkMetadata`.
+  - `logging/logger.ts` initialises log sessions and provides `logInfo`/`logWarn`/`logDebug` wrappers that feed the developer console.
+  - `App.tsx` subscribes to controller snapshots, renders the capture UI, stitches playback blobs, and exposes developer tooling.
+
+- **Recording start sequence**
+  1. UI calls `manifestService.createSession` to seed the manifest, then invokes `captureController.start` with the session id, bitrate, and 4 s timeslice.
+  2. Controller requests microphone access, selects a supported AAC/WebM mime type, and creates a `MediaRecorder` instance pinned to the active stream.
+  3. Event listeners attach:
+     - `dataavailable` fires roughly every four seconds (or on explicit flush). The handler computes `startMs`/`endMs`, identifies header vs audio chunk, logs diagnostics, and persists via `manifestService.appendChunk`.
+     - `stop` releases microphone tracks and resets controller state when the recorder becomes inactive outside the explicit stop flow.
+     - `error` marks the controller as `error`, logging recorder state for debugging.
+  4. Controller snapshots (session id, byte count, chunk tally) propagate via `captureController.subscribe`, allowing `App.tsx` to update timers and developer HUD.
+
+- **Stop/flush sequence**
+  1. UI calls `captureController.stop`. If the recorder is still `recording`, we emit `logInfo('Flush initiated before stop')` and run `#flushRecorder`, which issues `recorder.requestData()` and waits for the trailing `dataavailable`.
+  2. Once the recorder becomes `inactive`, outstanding chunk writes are awaited, `manifestService.getChunkMetadata` is read back, and `manifestService.updateSession` is called with recomputed duration/byte totals. `Session timing reconciled` logs the authoritative figures.
+  3. Media tracks and message ports are closed in `#cleanupStream`, and the controller publishes a final snapshot so the UI can return to idle state.
+
+- **Data hand-off per chunk**
+  1. Recorder emits `Blob` (+ optional `timecode`).
+  2. Controller calculates chunk boundaries, sets header flag, and enqueues persistence.
+  3. `manifestService.appendChunk` stores metadata and updates the owning session’s running totals inside a transaction.
+  4. UI queries `manifestService.buildSessionBlob` when playback is needed, which concatenates the header chunk with audio chunks in sequence order.
+
+- **Supporting infrastructure**
+  - Logging (`logSessions`/`logEntries`) runs inside IndexedDB so the in-app developer console can show capture timelines without opening DevTools.
+  - No dedicated Web Workers are used yet; the promise chain inside `appendChunk` serialises writes so chunks can't interleave incorrectly. Future audio analysis worklets will hook into `captureController.attachAnalysisPort`.
