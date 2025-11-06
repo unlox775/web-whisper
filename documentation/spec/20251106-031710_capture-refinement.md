@@ -26,6 +26,7 @@
 - Erroring sessions inherit a red accent and display the captured failure note in place of “Transcription pending…”.
 - Active recordings now show a live timer (seconds since start) in both the capture control card and the session list, switching back to persisted duration once capture completes.
 - Playback modal preloads duration metadata so the scrubber displays total length immediately; header duration, list duration, and audio metadata now align.
+- Persisted session duration now re-computes from final chunk timestamps using real wall-clock fallbacks, eliminating the previous ~4 s underrun on partial timeslices.
 
 ### Modal Interaction & Live View Polish
 - Clicking outside any overlay (detail drawer, settings, or developer console) now dismisses it—no more hunting for the close button on touch devices.
@@ -33,6 +34,7 @@
 - Recordings list becomes its own scroll region on narrow screens (`-webkit-overflow-scrolling: touch`), so long histories stay manageable on iPhone.
 - The simulated live-transcription panel only mounts while recording, fades away when capture stops, and resets its stream when a new session begins.
 - Live transcription floats as a fixed overlay near the bottom of the viewport, ensuring it remains visible on mobile without manual scrolling; the session list gains bottom padding so entries remain accessible beneath the overlay.
+- The transcription stream itself became scrollable (with inertial scrolling on touch) so longer simulated text can be reviewed, while leaving the recordings list scrollable underneath.
 
 ### Mobile Interaction Guardrails
 - Disabled browser pinch-zoom via viewport directives plus gesture/touch listeners, preventing accidental zoom on iOS Safari.
