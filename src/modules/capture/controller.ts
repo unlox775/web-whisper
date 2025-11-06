@@ -154,15 +154,11 @@ class BrowserCaptureController implements CaptureController {
       const seq = this.#chunkSeq++
       const chunkStart = this.#lastChunkEndMs
       const hasTimecode = typeof event.timecode === 'number' && Number.isFinite(event.timecode)
-      const timecodeEnd = hasTimecode ? startedAt + event.timecode : 0
-      const fallbackEnd = Math.max(chunkStart + 32, Date.now())
+      const fallbackDuration = Math.max(32, Date.now() - chunkStart)
+      const chunkDuration = hasTimecode ? Math.max(0, event.timecode) : fallbackDuration
       const isFirstChunk = seq === 0
       const isHeaderChunk = isFirstChunk && (!hasTimecode || event.timecode === 0 || data.size < 2048)
-      const chunkEnd = isHeaderChunk
-        ? chunkStart
-        : hasTimecode && timecodeEnd > chunkStart
-          ? timecodeEnd
-          : fallbackEnd
+      const chunkEnd = isHeaderChunk ? chunkStart : chunkStart + chunkDuration
       this.#lastChunkEndMs = chunkEnd
       void logDebug('Chunk captured', {
         sessionId: this.#sessionId,
