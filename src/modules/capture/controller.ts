@@ -59,7 +59,7 @@ function selectMimeType(preferred?: string): string {
   throw new Error('No supported audio mime type for MediaRecorder')
 }
 
-  class BrowserCaptureController implements CaptureController {
+class BrowserCaptureController implements CaptureController {
   #mediaRecorder: MediaRecorder | null = null
   #stream: MediaStream | null = null
   #sessionId: string | null = null
@@ -194,11 +194,13 @@ function selectMimeType(preferred?: string): string {
           })
       })
 
-    recorder.addEventListener('stop', () => {
-      this.#cleanupStream()
-      this.#setState({ state: 'idle', sessionId: null, mimeType: null })
-      void logInfo('MediaRecorder stop event fired', { sessionId: this.#sessionId })
-    })
+      recorder.addEventListener('stop', () => {
+        void logInfo('MediaRecorder stop event fired', { sessionId: this.#sessionId })
+        if (this.#state.state !== 'stopping') {
+          this.#cleanupStream()
+          this.#setState({ state: 'idle', sessionId: null, mimeType: null })
+        }
+      })
 
     recorder.addEventListener('error', (event) => {
       console.error('[CaptureController] Recorder error', event)
@@ -232,47 +234,107 @@ function selectMimeType(preferred?: string): string {
   }
 
   async stop(): Promise<void> {
-    if (!this.#mediaRecorder) {
+    const recorder = this.#mediaRecorder
+    if (!recorder) {
       return
     }
+
     this.#setState({ state: 'stopping' })
-    const recorder = this.#mediaRecorder
-    let finalFlushPromise: Promise<void> | null = null
-    if (recorder.state !== 'inactive') {
-      if (recorder.state === 'recording') {
-        finalFlushPromise = new Promise((resolve) => {
-          const timeout: ReturnType<typeof setTimeout> = setTimeout(resolve, 750)
-          const handler = () => {
-            clearTimeout(timeout)
-            resolve()
-          }
-          recorder.addEventListener('dataavailable', handler, { once: true })
-          try {
-            recorder.requestData()
-          } catch (error) {
-            clearTimeout(timeout)
-            console.warn('[CaptureController] requestData failed before stop', error)
-            resolve()
-          }
-        })
-      }
-      recorder.stop()
-    }
-    if (finalFlushPromise) {
-      await finalFlushPromise
-    }
-    await this.flushPending()
     const sessionId = this.#sessionId
-    this.#sessionId = null
+
+    if (recorder.state === 'recording') {
+      await this.#flushRecorder(recorder)
+    }
+
+    if (recorder.state !== 'inactive') {
+      await new Promise<void>((resolve) => {
+        recorder.addEventListener('stop', () => resolve(), { once: true })
+        try {
+          recorder.stop()
+        } catch (error) {
+          console.warn('[CaptureController] stop() threw before inactive state', error)
+          resolve()
+        }
+      })
+    }
+
+    await this.flushPending()
+    this.#cleanupStream()
+
     this.#mediaRecorder = null
+    this.#sessionId = null
     this.#chunkDurationMs = 0
+
     if (sessionId) {
       await manifestService.updateSession(sessionId, {
         status: 'ready',
         updatedAt: Date.now(),
       })
     }
-    this.#setState({ state: 'idle', chunksRecorded: 0, bytesBuffered: 0 })
+
+    this.#setState({
+      state: 'idle',
+      sessionId: null,
+      startedAt: null,
+      lastChunkAt: null,
+      mimeType: null,
+      chunksRecorded: 0,
+      bytesBuffered: 0,
+    })
+  }
+
+  async #flushRecorder(recorder: MediaRecorder): Promise<void> {
+    let chunkCaptured = false
+    let resolvedByTimeout = false
+
+    const waitForChunk = new Promise<void>((resolve) => {
+      const timeout = window.setTimeout(() => {
+        resolvedByTimeout = true
+        cleanup()
+        resolve()
+      }, 1200)
+
+      const handleData = (event: BlobEvent) => {
+        if (!event.data || event.data.size === 0) {
+          return
+        }
+        chunkCaptured = true
+        cleanup()
+        resolve()
+      }
+
+      const handleStopOrError = () => {
+        cleanup()
+        resolve()
+      }
+
+      const cleanup = () => {
+        window.clearTimeout(timeout)
+        recorder.removeEventListener('dataavailable', handleData)
+        recorder.removeEventListener('stop', handleStopOrError)
+        recorder.removeEventListener('error', handleStopOrError)
+      }
+
+      recorder.addEventListener('dataavailable', handleData)
+      recorder.addEventListener('stop', handleStopOrError, { once: true })
+      recorder.addEventListener('error', handleStopOrError, { once: true })
+    })
+
+    try {
+      recorder.requestData()
+    } catch (error) {
+      console.warn('[CaptureController] requestData failed during flush', error)
+      return
+    }
+
+    await waitForChunk
+
+    if (!chunkCaptured) {
+      await logWarn('Final flush completed without non-empty chunk', {
+        sessionId: this.#sessionId,
+        reason: resolvedByTimeout ? 'timeout' : 'stop-event',
+      })
+    }
   }
 
   async flushPending(): Promise<void> {
