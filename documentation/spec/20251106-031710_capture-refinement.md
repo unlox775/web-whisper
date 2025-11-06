@@ -24,20 +24,25 @@
 - Tightened chunk debugging UI/CSS (`App.css`) to support the new download pill while keeping spacing consistent.
 - Session cards now surface timestamp/size metadata in the top-right corner, squeeze vertical padding, and pulse briefly when a recording transitions to `ready`.
 - Erroring sessions inherit a red accent and display the captured failure note in place of “Transcription pending…”.
+- Active recordings now show a live timer (seconds since start) in both the capture control card and the session list, switching back to persisted duration once capture completes.
+- Playback modal preloads duration metadata so the scrubber displays total length immediately; header duration, list duration, and audio metadata now align.
 
 ### Modal Interaction & Live View Polish
 - Clicking outside any overlay (detail drawer, settings, or developer console) now dismisses it—no more hunting for the close button on touch devices.
 - The transcription detail dialog exposes per-chunk download buttons and keeps developer metadata collapsed until toggled.
 - Recordings list becomes its own scroll region on narrow screens (`-webkit-overflow-scrolling: touch`), so long histories stay manageable on iPhone.
 - The simulated live-transcription panel only mounts while recording, fades away when capture stops, and resets its stream when a new session begins.
+- Live transcription floats as a fixed overlay near the bottom of the viewport, ensuring it remains visible on mobile without manual scrolling; the session list gains bottom padding so entries remain accessible beneath the overlay.
 
 ### Mobile Interaction Guardrails
 - Disabled browser pinch-zoom via viewport directives plus gesture/touch listeners, preventing accidental zoom on iOS Safari.
 - Added an explicit viewport-fit directive so the layout hugs device-safe areas when installed as a PWA.
+- Header spacing was tightened, the marketing tagline removed, and the page shell now prevents accidental scrolling of the chrome while the session list remains scrollable.
 
 ### iOS Diagnostics & Session Health
 - When Safari delivers an empty `dataavailable`, the logger now captures recorder state, requested timeslice, timecode, and track readiness to help triage permission or encoder issues.
 - Post-stop reconciliation inspects persisted chunks; sessions without any playable audio are automatically marked `error` with a descriptive note and emit a log entry summarising chunk counts and total bytes.
+- Session metadata is normalised on stop, recomputing duration/byte totals from the stored chunk manifests so short (<4 s) captures render consistent lengths across list, detail, and playback UI.
 
 ## Outstanding Items
 

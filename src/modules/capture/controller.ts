@@ -282,9 +282,11 @@ class BrowserCaptureController implements CaptureController {
         (chunk) => chunk.seq > 0 && chunk.byteLength > 0 && chunk.endMs > chunk.startMs,
       )
       const status: SessionStatus = hasPlayableChunk ? 'ready' : 'error'
+      const playableChunks = chunkMetadata.filter((chunk) => chunk.seq > 0 && chunk.endMs > chunk.startMs)
+      const durationMs = playableChunks.length > 0 ? playableChunks[playableChunks.length - 1].endMs - playableChunks[0].startMs : 0
+      const totalBytes = chunkMetadata.reduce((sum, chunk) => sum + chunk.byteLength, 0)
 
       if (!hasPlayableChunk) {
-        const totalBytes = chunkMetadata.reduce((sum, chunk) => sum + chunk.byteLength, 0)
         sessionNotes = chunkMetadata.length === 0
           ? 'Error: no audio captured. Check microphone access and try again.'
           : 'Error: captured audio contained no playable samples.'
@@ -300,6 +302,9 @@ class BrowserCaptureController implements CaptureController {
       const updatePatch: Partial<SessionRecord> = {
         status,
         updatedAt: Date.now(),
+        durationMs,
+        totalBytes,
+        chunkCount: chunkMetadata.length,
       }
       if (sessionNotes) {
         updatePatch.notes = sessionNotes
