@@ -12,6 +12,8 @@
 - Reworked the chunking graph pipeline to build from cached chunk volume profiles first, falling back to on-demand decoding only when cache data is unavailable.
 - Added `verifiedAudioMsec` tracking to each stored chunk (0 for seq0) and backfill missing values via the volume regeneration pass so histogram math always reflects decoded audio length.
 - Simplified chunk volume storage to a compact array of normalized frame magnitudes, updated the analyzer to rebuild timelines from cached data, and added unit tests covering both the new format and legacy back-compat paths.
+- Tightened layout around the recording detail modal: the session list and developer chunk inspector now scroll within fixed-height panels, chunk rows wrap instead of stretching the dialog horizontally, and header/init chunks have their playback/download controls disabled.
+- Reworked per-chunk playback controls to pause the session player, seek into the correct offset, and auto-stop at each chunk boundary so the debug play buttons now isolate their chunk instead of replaying the full session.
 
 ## 🚧 In Progress / Placeholders
 - Iterate on pause detection heuristics (confidence scoring, goal-seeking against target chunk lengths).

@@ -138,6 +138,7 @@ body {
   width: 100%;
   overflow: hidden;
   align-items: stretch;
+  min-height: 0;
 }
 
 .session-section {
@@ -148,6 +149,7 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0;
 }
 
 .session-list {
@@ -298,6 +300,7 @@ body {
 
 .controls-panel {
   display: flex;
+  min-height: 0;
 }
 
 .controls-card {
@@ -445,13 +448,16 @@ body {
 }
 
 .detail-panel {
-  width: min(520px, 90vw);
+  width: min(560px, 92vw);
+  max-height: min(90vh, 720px);
   border-radius: 1.2rem;
   background: rgba(15, 23, 42, 0.95);
   border: 1px solid rgba(94, 234, 212, 0.2);
   padding: 1.4rem;
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 1rem;
+  overflow: hidden;
 }
 
 .detail-header {
@@ -524,6 +530,11 @@ body {
 .detail-body {
   display: grid;
   gap: 0.8rem;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 0.35rem;
+  scrollbar-width: thin;
 }
 
 .detail-summary p {
@@ -742,6 +753,9 @@ body {
 .detail-chunks {
   display: grid;
   gap: 0.45rem;
+  max-height: clamp(12rem, 50vh, 22rem);
+  overflow-y: auto;
+  padding-right: 0.25rem;
 }
 
 .detail-chunks h3 {
@@ -761,6 +775,9 @@ body {
   display: flex;
   align-items: center;
   gap: 0.75rem;
+  row-gap: 0.35rem;
+  flex-wrap: wrap;
+  justify-content: flex-start;
   font-size: 0.8rem;
   color: #cbd5f5;
   background: rgba(15, 23, 42, 0.55);
@@ -771,15 +788,16 @@ body {
 }
 
 .chunk-item span {
-  min-width: 60px;
+  min-width: 0;
+  flex: 0 0 auto;
 }
 
 .chunk-item span:nth-of-type(2) {
-  flex: 1;
+  flex: 1 1 120px;
 }
 
 .chunk-item span:nth-of-type(3) {
-  min-width: 80px;
+  flex: 0 1 90px;
   text-align: right;
 }
 
@@ -801,6 +819,12 @@ body {
   cursor: pointer;
 }
 
+.chunk-play:disabled {
+  background: rgba(148, 163, 184, 0.18);
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
 .chunk-play.is-playing {
   background: rgba(94, 234, 212, 0.35);
   color: #0f172a;
@@ -820,10 +844,22 @@ body {
   cursor: pointer;
 }
 
+.chunk-download:disabled {
+  background: rgba(148, 163, 184, 0.18);
+  color: #94a3b8;
+  cursor: not-allowed;
+}
+
 .chunk-download:hover,
 .chunk-download:focus {
   background: rgba(59, 130, 246, 0.25);
   color: #1d4ed8;
+}
+
+.chunk-download:disabled:hover,
+.chunk-download:disabled:focus {
+  background: rgba(148, 163, 184, 0.18);
+  color: #94a3b8;
 }
 
 .chunk-flag {
