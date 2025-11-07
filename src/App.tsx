@@ -560,9 +560,10 @@ function App() {
                 chunkEndMs: chunkDataEntry.endMs,
               })
               await manifestService.storeChunkVolumeProfile(profile)
+              const existingRecord = volumeRecordMap.get(profile.chunkId) ?? null
               volumeRecordMap.set(profile.chunkId, {
                 id: profile.chunkId,
-                createdAt: Date.now(),
+                createdAt: existingRecord?.createdAt ?? Date.now(),
                 updatedAt: Date.now(),
                 ...profile,
               })
@@ -1561,14 +1562,18 @@ function App() {
                             return volumeRows.map((row, index) => {
                               const key = `${row.sessionId}-${row.chunkId}-${index}`
                               const framesTotal = row.framesTotal ?? row.frames.length
+                              const averageVolume = typeof row.averageNormalized === 'number' ? row.averageNormalized : 0
+                              const peakVolume = typeof row.maxNormalized === 'number' ? row.maxNormalized : 0
+                              const verifiedDurationSec =
+                                typeof row.durationMs === 'number' ? (row.durationMs / 1000).toFixed(2) : '0.00'
                               return (
                                 <div key={key} className="dev-table-chunk">
                                   <pre>{JSON.stringify(row, null, 2)}</pre>
                                   <p className="dev-chunk-extra">
                                     <span>frames: {framesTotal}</span>
-                                    <span>duration: {(row.durationMs / 1000).toFixed(2)}s</span>
-                                    <span>avg RMS: {row.averageRms.toFixed(6)}</span>
-                                    <span>peak RMS: {row.maxRms.toFixed(6)}</span>
+                                    <span>duration: {verifiedDurationSec}s</span>
+                                    <span>avg volume: {averageVolume.toFixed(4)}</span>
+                                    <span>peak volume: {peakVolume.toFixed(4)}</span>
                                   </p>
                                 </div>
                               )

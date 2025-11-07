@@ -37,6 +37,69 @@ export interface ChunkVolumeProfileRecord extends ChunkVolumeProfile {
   updatedAt: number
 }
 
+type StoredChunkVolumeFrame = number | { normalized?: number; rms?: number }
+
+const sanitizeVolumeRecord = (record: any): ChunkVolumeProfileRecord => {
+  const rawFrames: StoredChunkVolumeFrame[] = Array.isArray(record.frames) ? record.frames : []
+  const normalizedFrames: number[] =
+    rawFrames.length > 0 && typeof rawFrames[0] === 'number'
+      ? (rawFrames as number[])
+      : rawFrames.map((frame) => {
+          if (frame && typeof frame === 'object') {
+            if (typeof frame.normalized === 'number') {
+              return Math.max(0, frame.normalized)
+            }
+            if (typeof frame.rms === 'number') {
+              return Math.max(0, frame.rms)
+            }
+          }
+          return 0
+        })
+
+  const frameDurationMs =
+    typeof record.frameDurationMs === 'number' && record.frameDurationMs > 0
+      ? record.frameDurationMs
+      : 50
+  const durationMs =
+    typeof record.durationMs === 'number' && record.durationMs > 0
+      ? record.durationMs
+      : normalizedFrames.length * frameDurationMs
+
+  const maxNormalized =
+    typeof record.maxNormalized === 'number'
+      ? record.maxNormalized
+      : normalizedFrames.length > 0
+        ? Math.max(...normalizedFrames)
+        : 0
+  const averageNormalized =
+    typeof record.averageNormalized === 'number'
+      ? record.averageNormalized
+      : normalizedFrames.length > 0
+        ? normalizedFrames.reduce((sum, value) => sum + value, 0) / normalizedFrames.length
+        : 0
+
+  return {
+    chunkId: record.chunkId,
+    sessionId: record.sessionId,
+    seq: record.seq ?? 0,
+    chunkStartMs: record.chunkStartMs ?? 0,
+    chunkEndMs:
+      typeof record.chunkEndMs === 'number'
+        ? record.chunkEndMs
+        : (record.chunkStartMs ?? 0) + durationMs,
+    durationMs,
+    sampleRate: record.sampleRate ?? 0,
+    frameDurationMs,
+    frames: normalizedFrames,
+    maxNormalized,
+    averageNormalized,
+    scalingFactor: record.scalingFactor ?? 1,
+    id: record.id ?? record.chunkId,
+    createdAt: record.createdAt ?? Date.now(),
+    updatedAt: record.updatedAt ?? Date.now(),
+  }
+}
+
 interface DurableRecorderDB extends DBSchema {
   sessions: {
     key: string
@@ -243,12 +306,13 @@ class IndexedDBManifestService implements ManifestService {
     const chunkStore = tx.objectStore('chunks')
     const existing = await volumeStore.get(profile.chunkId)
     const now = Date.now()
-    const record: ChunkVolumeProfileRecord = {
+    const rawRecord: ChunkVolumeProfileRecord = {
       ...profile,
       id: profile.chunkId,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     }
+    const record = sanitizeVolumeRecord(rawRecord)
     await volumeStore.put(record)
 
     const chunk = await chunkStore.get(profile.chunkId)
@@ -268,12 +332,13 @@ class IndexedDBManifestService implements ManifestService {
   async listChunkVolumeProfiles(sessionId?: string): Promise<ChunkVolumeProfileRecord[]> {
     const db = await getDB()
     const store = db.transaction('chunkVolumes').store
-    let rows: ChunkVolumeProfileRecord[]
+    let rowsRaw: ChunkVolumeProfileRecord[]
     if (sessionId) {
-      rows = await store.index('by-session').getAll(sessionId)
+      rowsRaw = await store.index('by-session').getAll(sessionId)
     } else {
-      rows = await store.getAll()
+      rowsRaw = await store.getAll()
     }
+    const rows = rowsRaw.map((record) => sanitizeVolumeRecord(record))
     return rows.sort((a, b) => {
       if (a.sessionId !== b.sessionId) {
         return a.sessionId.localeCompare(b.sessionId)

@@ -227,7 +227,7 @@ class BrowserCaptureController implements CaptureController {
                 void logDebug('Chunk volume profile stored', {
                   sessionId: this.#sessionId,
                   seq,
-                  frameCount: profile.frameCount,
+                    frameCount: profile.frames.length,
                 })
               } catch (error) {
                 void logWarn('Chunk volume profile failed', {

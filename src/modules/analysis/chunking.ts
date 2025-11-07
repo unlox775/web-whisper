@@ -39,14 +39,6 @@ export interface ChunkSummary {
   boundaryIndex: number | null
 }
 
-export interface ChunkVolumeFrame {
-  index: number
-  startOffsetMs: number
-  endOffsetMs: number
-  rms: number
-  normalized: number
-}
-
 export interface ChunkVolumeProfile {
   chunkId: string
   sessionId: string
@@ -56,11 +48,9 @@ export interface ChunkVolumeProfile {
   durationMs: number
   sampleRate: number
   frameDurationMs: number
-  frameCount: number
-  frames: ChunkVolumeFrame[]
-  minRms: number
-  maxRms: number
-  averageRms: number
+  frames: number[]
+  maxNormalized: number
+  averageNormalized: number
   scalingFactor: number
 }
 
@@ -368,7 +358,7 @@ export async function computeChunkVolumeProfile(
     const arrayBuffer = await blob.arrayBuffer()
     const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0))
     const monoData = mixDownToMono(audioBuffer)
-    const { frames, rmsValues, minRms, maxRms } = computeFrames(
+    const { frames, maxRms } = computeFrames(
       monoData,
       audioBuffer.sampleRate,
       frameDurationMs,
@@ -376,16 +366,11 @@ export async function computeChunkVolumeProfile(
 
     const peakRms = maxRms
     const scalingFactor = peakRms > 0 ? 0.92 / peakRms : 1
-    const normalizedFrames: ChunkVolumeFrame[] = frames.map((frame) => ({
-      index: frame.index,
-      startOffsetMs: frame.startMs,
-      endOffsetMs: frame.endMs,
-      rms: frame.rms,
-      normalized: Math.min(frame.rms * scalingFactor, 1),
-    }))
-
-    const averageRms =
-      rmsValues.length > 0 ? rmsValues.reduce((sum, value) => sum + value, 0) / rmsValues.length : 0
+    const normalizedFrames = frames.map((frame) => Math.min(frame.rms * scalingFactor, 1))
+    const frameCount = normalizedFrames.length
+    const averageNormalized =
+      frameCount > 0 ? normalizedFrames.reduce((sum, value) => sum + value, 0) / frameCount : 0
+    const maxNormalized = frameCount > 0 ? Math.max(...normalizedFrames) : 0
 
     return {
       chunkId,
@@ -396,11 +381,9 @@ export async function computeChunkVolumeProfile(
       durationMs: audioBuffer.duration * 1000,
       sampleRate: audioBuffer.sampleRate,
       frameDurationMs,
-      frameCount: normalizedFrames.length,
       frames: normalizedFrames,
-      minRms,
-      maxRms,
-      averageRms,
+      maxNormalized,
+      averageNormalized,
       scalingFactor,
     }
   } finally {
@@ -428,30 +411,60 @@ export function analyzeRecordingChunkingFromProfiles(
     return a.seq - b.seq
   })
 
+  const minChunkStartMs = sortedProfiles.reduce(
+    (min, profile) => Math.min(min, profile.chunkStartMs),
+    Number.POSITIVE_INFINITY,
+  )
+
   const frames: VolumeFrame[] = []
-  const rmsValues: number[] = []
+  const normalizedValues: number[] = []
   let globalMin = Number.POSITIVE_INFINITY
   let globalMax = 0
   let frameIndex = 0
+  let inferredTotalDuration = 0
 
   sortedProfiles.forEach((profile) => {
-    profile.frames.forEach((frame) => {
-      const startMs = profile.chunkStartMs + frame.startOffsetMs
-      const endMs = profile.chunkStartMs + frame.endOffsetMs
-      const rms = frame.rms
+    const startOffset = profile.chunkStartMs - minChunkStartMs
+    const durationMs = Number.isFinite(profile.durationMs) ? profile.durationMs : 0
+    inferredTotalDuration = Math.max(inferredTotalDuration, startOffset + durationMs)
+
+    const frameValues = Array.isArray(profile.frames)
+      ? profile.frames
+      : []
+    const coercedValues: number[] =
+      frameValues.length > 0 && typeof frameValues[0] === 'number'
+        ? (frameValues as number[])
+        : frameValues.map((frame: unknown) => {
+            if (frame && typeof frame === 'object' && 'normalized' in (frame as Record<string, unknown>)) {
+              const normalized = (frame as Record<string, unknown>).normalized
+              return typeof normalized === 'number' ? normalized : 0
+            }
+            if (frame && typeof frame === 'object' && 'rms' in (frame as Record<string, unknown>)) {
+              const rms = (frame as Record<string, unknown>).rms
+              return typeof rms === 'number' ? rms : 0
+            }
+            return 0
+          })
+
+    const frameDuration = profile.frameDurationMs > 0 ? profile.frameDurationMs : mergedConfig.frameDurationMs
+
+    coercedValues.forEach((value, idx) => {
+      const clampedValue = Number.isFinite(value) ? Math.max(0, value) : 0
+      const startMs = startOffset + idx * frameDuration
+      const endMs = Math.min(startOffset + durationMs, startMs + frameDuration)
       frames.push({
         index: frameIndex,
         startMs,
         endMs,
-        rms,
-        normalized: rms,
+        rms: clampedValue,
+        normalized: clampedValue,
       })
-      rmsValues.push(rms)
-      if (rms < globalMin) {
-        globalMin = rms
+      normalizedValues.push(clampedValue)
+      if (clampedValue < globalMin) {
+        globalMin = clampedValue
       }
-      if (rms > globalMax) {
-        globalMax = rms
+      if (clampedValue > globalMax) {
+        globalMax = clampedValue
       }
       frameIndex += 1
     })
@@ -466,23 +479,20 @@ export function analyzeRecordingChunkingFromProfiles(
   }
 
   const peakRms = globalMax
-  const scalingFactor = peakRms > 0 ? 0.92 / peakRms : 1
-  const framesWithScaling = frames.map((frame) => ({
-    ...frame,
-    normalized: Math.min(frame.rms * scalingFactor, 1),
-  }))
+  const scalingFactor = 1
+  const framesWithScaling = frames
 
-  const noiseFloor = percentile(rmsValues, mergedConfig.noisePercentile)
-  const quietBand = percentile(rmsValues, mergedConfig.quietPercentile)
+  const noiseFloor = percentile(normalizedValues, mergedConfig.noisePercentile)
+  const quietBand = percentile(normalizedValues, mergedConfig.quietPercentile)
   const thresholdCandidate = Math.max(
     noiseFloor * mergedConfig.thresholdMultiplier,
     (noiseFloor + quietBand) / 2,
   )
   const threshold = Math.min(thresholdCandidate, peakRms * 0.7)
-  const normalizedThreshold = Math.min(threshold * scalingFactor, 0.98)
+  const normalizedThreshold = Math.min(threshold, 0.98)
 
   const inferredDurationMs =
-    framesWithScaling.length > 0 ? framesWithScaling[framesWithScaling.length - 1].endMs : 0
+    framesWithScaling.length > 0 ? Math.max(inferredTotalDuration, framesWithScaling[framesWithScaling.length - 1].endMs) : 0
   const totalDurationMs = Math.max(overrideTotalDuration ?? 0, inferredDurationMs)
 
   const quietRegions = attachNormalizedExtents(
