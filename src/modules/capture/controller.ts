@@ -66,6 +66,7 @@ class BrowserCaptureController implements CaptureController {
   #chunkSeq = 0
   #analysisPort: MessagePort | null = null
   #persistQueue: Promise<void> = Promise.resolve()
+  #recorderStartedAt = 0
   #lastChunkEndMs = 0
   #chunkDurationMs = 0
   #mimeType: string | null = null
@@ -125,6 +126,10 @@ class BrowserCaptureController implements CaptureController {
     this.#chunkSeq = 0
     this.#mimeType = mimeType
     const startedAt = Date.now()
+    await logInfo('Started At:', {
+      startedAt: startedAt
+    })
+    this.#recorderStartedAt = startedAt
     this.#lastChunkEndMs = startedAt
 
     recorder.addEventListener('dataavailable', (event) => {
@@ -153,19 +158,10 @@ class BrowserCaptureController implements CaptureController {
       }
       const seq = this.#chunkSeq++
       const chunkStart = this.#lastChunkEndMs
-        const hasTimecode = typeof event.timecode === 'number' && Number.isFinite(event.timecode)
-        const fallbackDuration = Math.max(32, Date.now() - chunkStart)
-        const chunkDuration = hasTimecode ? Math.max(0, event.timecode) : fallbackDuration
-        if (!hasTimecode) {
-          void logInfo('Chunk duration fallback applied', {
-            sessionId: this.#sessionId,
-            seq,
-            fallbackDuration,
-            recorderState: recorder.state,
-          })
-        }
+      const manualTimecode = chunkStart - this.#recorderStartedAt
+      const chunkDuration = Date.now() - chunkStart
       const isFirstChunk = seq === 0
-      const isHeaderChunk = isFirstChunk && (!hasTimecode || event.timecode === 0 || data.size < 2048)
+      const isHeaderChunk = isFirstChunk && (event.timecode === 0 || data.size < 2048)
       const chunkEnd = isHeaderChunk ? chunkStart : chunkStart + chunkDuration
       this.#lastChunkEndMs = chunkEnd
       void logDebug('Chunk captured', {
@@ -174,9 +170,9 @@ class BrowserCaptureController implements CaptureController {
         size: data.size,
         durationMs: chunkEnd - chunkStart,
         isHeaderChunk,
-          chunkStartMs: chunkStart,
-          chunkEndMs: chunkEnd,
-          timecode: hasTimecode ? event.timecode : null,
+        chunkStartMs: chunkStart,
+        chunkEndMs: chunkEnd,
+        timecode: manualTimecode,
       })
       this.#persistQueue = this.#persistQueue
         .then(() =>
