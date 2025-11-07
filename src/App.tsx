@@ -55,6 +55,13 @@ type AudioState = {
   position: number
 }
 
+type ChunkPlaybackEntry = {
+  audio: HTMLAudioElement
+  cleanup: () => void
+  startTime: number
+  endTime: number
+}
+
 const SIMULATED_STREAM = [
   'Holding a steady floor — last snip landed cleanly.',
   'Uploader healthy, chunk latency ~1.2 s.',
@@ -214,7 +221,7 @@ function App() {
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const audioUrlRef = useRef<string | null>(null)
   const chunkUrlMapRef = useRef<Map<string, string>>(new Map())
-  const chunkAudioRef = useRef<Map<string, HTMLAudioElement>>(new Map())
+  const chunkAudioRef = useRef<Map<string, ChunkPlaybackEntry>>(new Map())
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
   const chunkAnalysisCacheRef = useRef<Map<string, RecordingChunkAnalysis>>(new Map())
@@ -410,7 +417,7 @@ function App() {
 
   useEffect(() => {
     const urlMap = chunkUrlMapRef.current
-    const audioMap = chunkAudioRef.current
+    const audioEntries = chunkAudioRef.current
     const currentIds = new Set(chunkData.map((chunk) => chunk.id))
 
     Array.from(urlMap.entries()).forEach(([id, url]) => {
@@ -420,19 +427,25 @@ function App() {
       }
     })
 
-    audioMap.forEach((audio, id) => {
+    for (const [id, entry] of audioEntries.entries()) {
       if (!currentIds.has(id)) {
-        audio.pause()
-        audioMap.delete(id)
+        entry.cleanup()
+        entry.audio.pause()
+        entry.audio.currentTime = entry.startTime
+        audioEntries.delete(id)
       }
-    })
+    }
 
     setChunkPlayingId((prev) => (prev && currentIds.has(prev) ? prev : null))
   }, [chunkData])
 
   useEffect(() => {
     return () => {
-      chunkAudioRef.current.forEach((audio) => audio.pause())
+      chunkAudioRef.current.forEach((entry) => {
+        entry.cleanup()
+        entry.audio.pause()
+        entry.audio.currentTime = entry.startTime
+      })
       chunkAudioRef.current.clear()
       chunkUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url))
       chunkUrlMapRef.current.clear()
@@ -441,7 +454,11 @@ function App() {
 
   useEffect(() => {
     if (!debugDetailsOpen) {
-      chunkAudioRef.current.forEach((audio) => audio.pause())
+      chunkAudioRef.current.forEach((entry) => {
+        entry.cleanup()
+        entry.audio.pause()
+        entry.audio.currentTime = entry.startTime
+      })
       chunkAudioRef.current.clear()
       setChunkPlayingId(null)
     }
@@ -452,8 +469,8 @@ function App() {
     if (mainAudio) {
       mainAudio.volume = playbackVolume
     }
-    chunkAudioRef.current.forEach((audio) => {
-      audio.volume = playbackVolume
+    chunkAudioRef.current.forEach((entry) => {
+      entry.audio.volume = playbackVolume
     })
   }, [playbackVolume])
 
@@ -872,7 +889,11 @@ function App() {
   }, [preparePlaybackSource, selectedRecording])
 
   const handleCloseDetail = async () => {
-    chunkAudioRef.current.forEach((audio) => audio.pause())
+    chunkAudioRef.current.forEach((entry) => {
+      entry.cleanup()
+      entry.audio.pause()
+      entry.audio.currentTime = entry.startTime
+    })
     chunkAudioRef.current.clear()
     chunkUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url))
     chunkUrlMapRef.current.clear()
@@ -926,57 +947,117 @@ function App() {
     await settingsStore.set({ groqApiKey: value })
   }
 
-    const handleChunkPlayToggle = useCallback(
-      async (chunk: StoredChunk) => {
-        const { id } = chunk
-        const audioMap = chunkAudioRef.current
-        const existingAudio = audioMap.get(id)
+  const handleChunkPlayToggle = useCallback(
+    async (chunk: StoredChunk) => {
+      const { id } = chunk
+      const audioEntries = chunkAudioRef.current
+      const activeEntry = audioEntries.get(id)
 
-        if (chunkPlayingId === id) {
-          existingAudio?.pause()
-          if (existingAudio) {
-            existingAudio.currentTime = 0
-            audioMap.delete(id)
-          }
-          setChunkPlayingId(null)
-          return
-        }
+      const stopEntry = (entryId: string, entry: ChunkPlaybackEntry) => {
+        entry.cleanup()
+        entry.audio.pause()
+        entry.audio.currentTime = entry.startTime
+        audioEntries.delete(entryId)
+      }
 
-        audioMap.forEach((audio, audioId) => {
-          audio.pause()
-          audio.currentTime = 0
-          if (audioId !== id) {
-            audioMap.delete(audioId)
-          }
-        })
+      if (chunkPlayingId === id) {
+        if (activeEntry) {
+          stopEntry(id, activeEntry)
+        }
+        setChunkPlayingId(null)
+        return
+      }
 
-        const url = ensureChunkPlaybackUrl(chunk)
-        if (!url) {
-          console.error('[UI] Missing chunk URL for playback', id)
-          return
-        }
+      for (const [entryId, entry] of audioEntries.entries()) {
+        stopEntry(entryId, entry)
+      }
+      setChunkPlayingId(null)
 
-        const audio = existingAudio ?? new Audio()
-        if (audio.src !== url) {
-          audio.src = url
+      if (isHeaderSegment(chunk)) {
+        return
+      }
+
+      const url = ensureChunkPlaybackUrl(chunk)
+      if (!url) {
+        console.error('[UI] Missing chunk URL for playback', id)
+        return
+      }
+
+      const audio = new Audio()
+      audio.src = url
+      audio.volume = playbackVolume
+
+      const sessionStartMs = selectedRecording?.startedAt ?? chunk.startMs
+      const chunkDurationSeconds = Math.max(0, (chunk.endMs - chunk.startMs) / 1000)
+      const startTime = Math.max(0, (chunk.startMs - sessionStartMs) / 1000)
+      const endTime = startTime + chunkDurationSeconds
+
+      audioRef.current?.pause()
+
+      function cleanupListeners() {
+        audio.removeEventListener('timeupdate', handleTimeUpdate)
+        audio.removeEventListener('ended', handlePlaybackComplete)
+        audio.removeEventListener('error', handlePlaybackComplete)
+      }
+
+      function finishPlayback() {
+        cleanupListeners()
+        audio.pause()
+        audio.currentTime = startTime
+        audioEntries.delete(id)
+        setChunkPlayingId((prev) => (prev === id ? null : prev))
+      }
+
+      function handlePlaybackComplete() {
+        finishPlayback()
+      }
+
+      function handleTimeUpdate() {
+        if (chunkDurationSeconds > 0 && audio.currentTime >= endTime - 0.05) {
+          finishPlayback()
         }
-        audio.volume = playbackVolume
-        audioMap.set(id, audio)
-        audio.currentTime = 0
-        try {
-          await audio.play()
-          setChunkPlayingId(id)
-          audio.onended = () => {
-            setChunkPlayingId((prev) => (prev === id ? null : prev))
-            audioMap.delete(id)
-          }
-        } catch (error) {
-          console.error('[UI] Failed to play chunk', error)
-          audioMap.delete(id)
+      }
+
+      audio.addEventListener('timeupdate', handleTimeUpdate)
+      audio.addEventListener('ended', handlePlaybackComplete)
+      audio.addEventListener('error', handlePlaybackComplete)
+
+      const cleanup = () => cleanupListeners()
+
+      audioEntries.set(id, {
+        audio,
+        cleanup,
+        startTime,
+        endTime,
+      })
+
+      try {
+        if (audio.readyState < HTMLMediaElement.HAVE_METADATA) {
+          await new Promise<void>((resolve, reject) => {
+            const handleLoadedMetadata = () => {
+              audio.removeEventListener('loadedmetadata', handleLoadedMetadata)
+              audio.removeEventListener('error', handleMetadataError)
+              resolve()
+            }
+            const handleMetadataError = () => {
+              audio.removeEventListener('loadedmetadata', handleLoadedMetadata)
+              audio.removeEventListener('error', handleMetadataError)
+              reject(new Error('Failed to load chunk metadata'))
+            }
+            audio.addEventListener('loadedmetadata', handleLoadedMetadata)
+            audio.addEventListener('error', handleMetadataError)
+          })
         }
-      },
-      [chunkPlayingId, ensureChunkPlaybackUrl, playbackVolume],
-    )
+        audio.currentTime = startTime
+        await audio.play()
+        setChunkPlayingId(id)
+      } catch (error) {
+        console.error('[UI] Failed to play chunk', error)
+        finishPlayback()
+      }
+    },
+    [chunkPlayingId, ensureChunkPlaybackUrl, isHeaderSegment, playbackVolume, selectedRecording?.startedAt],
+  )
 
     const loadDeveloperTables = useCallback(async () => {
       try {
@@ -1368,39 +1449,50 @@ function App() {
                     {chunkData.length === 0 ? (
                       <p className="detail-transcription-placeholder">No chunks persisted yet.</p>
                     ) : (
-                      <ul className="chunk-list">
-                        {chunkData.map((chunk) => {
-                          const durationSeconds = Math.max(0, (chunk.endMs - chunk.startMs) / 1000)
-                          const decimalPlaces = durationSeconds < 10 ? 2 : 1
-                          const durationLabel = `${durationSeconds.toFixed(decimalPlaces)} s`
-                          const header = isHeaderSegment(chunk)
-                          return (
-                            <li key={chunk.id} className={`chunk-item ${header ? 'header-chunk' : ''}`}>
-                              <button
-                                type="button"
-                                className={`chunk-play ${chunkPlayingId === chunk.id ? 'is-playing' : ''}`}
-                                onClick={() => void handleChunkPlayToggle(chunk)}
-                                aria-pressed={chunkPlayingId === chunk.id}
-                                aria-label={chunkPlayingId === chunk.id ? `Pause chunk ${chunk.seq + 1}` : `Play chunk ${chunk.seq + 1}`}
-                              >
-                                {chunkPlayingId === chunk.id ? '⏸' : '▶'}
-                              </button>
-                              <span>#{chunk.seq + 1}</span>
-                              <span>{durationLabel}</span>
-                              <span>{formatDataSize(chunk.byteLength)}</span>
-                              <button
-                                type="button"
-                                className="chunk-download"
-                                onClick={() => handleChunkDownload(chunk)}
-                                aria-label={`Download chunk ${chunk.seq + 1}`}
-                              >
-                                ⬇
-                              </button>
-                              {header ? <span className="chunk-flag">init segment</span> : null}
-                            </li>
-                          )
-                        })}
-                      </ul>
+                        <ul className="chunk-list">
+                          {chunkData.map((chunk) => {
+                            const durationSeconds = Math.max(0, (chunk.endMs - chunk.startMs) / 1000)
+                            const decimalPlaces = durationSeconds < 10 ? 2 : 1
+                            const durationLabel = `${durationSeconds.toFixed(decimalPlaces)} s`
+                            const header = isHeaderSegment(chunk)
+                            const isChunkPlaying = chunkPlayingId === chunk.id
+                            const sequenceLabel = chunk.seq + 1
+                            const playLabel = header
+                              ? `Chunk ${sequenceLabel} is an init segment without audio`
+                              : isChunkPlaying
+                                ? `Pause chunk ${sequenceLabel}`
+                                : `Play chunk ${sequenceLabel}`
+                            return (
+                              <li key={chunk.id} className={`chunk-item ${header ? 'header-chunk' : ''}`}>
+                                <button
+                                  type="button"
+                                  className={`chunk-play ${isChunkPlaying ? 'is-playing' : ''}`}
+                                  onClick={() => void handleChunkPlayToggle(chunk)}
+                                  aria-pressed={isChunkPlaying}
+                                  aria-label={playLabel}
+                                  disabled={header}
+                                  title={header ? 'Init segment (no audio payload)' : undefined}
+                                >
+                                  {header ? 'NA' : isChunkPlaying ? '⏸' : '▶'}
+                                </button>
+                                <span>#{sequenceLabel}</span>
+                                <span>{durationLabel}</span>
+                                <span>{formatDataSize(chunk.byteLength)}</span>
+                                <button
+                                  type="button"
+                                  className="chunk-download"
+                                  onClick={() => handleChunkDownload(chunk)}
+                                  aria-label={`Download chunk ${sequenceLabel}`}
+                                  disabled={header}
+                                  title={header ? 'Init segment (typically no downloadable audio)' : undefined}
+                                >
+                                  ⬇
+                                </button>
+                                {header ? <span className="chunk-flag">init segment</span> : null}
+                              </li>
+                            )
+                          })}
+                        </ul>
                     )}
                   </div>
                 ) : null}
