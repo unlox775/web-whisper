@@ -1459,7 +1459,7 @@ function App() {
                           }
 
                           if (selectedDeveloperTable === 'chunkVolumes') {
-                            const volumeRows = activeTable.rows as Array<
+                            const volumeRows = activeTable.rows as unknown as Array<
                               ChunkVolumeProfileRecord & { framesPreview?: unknown; framesTotal?: number }
                             >
                             return volumeRows.map((row, index) => {
