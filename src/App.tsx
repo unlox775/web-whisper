@@ -7,7 +7,11 @@ import {
 } from 'react'
 import { captureController } from './modules/capture/controller'
 import { RecordingChunkingGraph } from './components/RecordingChunkingGraph'
-import { analyzeRecordingChunking, type RecordingChunkAnalysis } from './modules/analysis/chunking'
+import {
+  analyzeRecordingChunking,
+  analyzeRecordingChunkingFromProfiles,
+  type RecordingChunkAnalysis,
+} from './modules/analysis/chunking'
 import './App.css'
 import {
   manifestService,
@@ -501,21 +505,47 @@ function App() {
       setChunkAnalysis(null)
       return
     }
-    const cacheKey = `${selectedRecording.id}:${selectedRecording.chunkCount}:${selectedRecording.updatedAt ?? 0}`
-    const cache = chunkAnalysisCacheRef.current
-    const cached = cache.get(cacheKey)
-    if (cached) {
-      setChunkAnalysis(cached)
-      setChunkAnalysisState('ready')
-      setChunkAnalysisError(null)
-      return
-    }
     let cancelled = false
     setChunkAnalysisState('loading')
     setChunkAnalysisError(null)
     setChunkAnalysis(null)
     ;(async () => {
       try {
+        const chunkVolumes = await manifestService.listChunkVolumeProfiles(selectedRecording.id)
+        const usableProfiles = chunkVolumes.filter(
+          (profile) => profile.durationMs > 0 && profile.sessionId === selectedRecording.id,
+        )
+        const latestProfileUpdate = usableProfiles.reduce(
+          (max, profile) => Math.max(max, profile.updatedAt ?? profile.createdAt ?? 0),
+          0,
+        )
+        const cacheKey = `${selectedRecording.id}:${selectedRecording.chunkCount}:${
+          selectedRecording.updatedAt ?? 0
+        }:${latestProfileUpdate}`
+        const cache = chunkAnalysisCacheRef.current
+        const cached = cache.get(cacheKey)
+        if (cached) {
+          setChunkAnalysis(cached)
+          setChunkAnalysisState('ready')
+          setChunkAnalysisError(null)
+          return
+        }
+
+        if (usableProfiles.length > 0) {
+          const analysisFromCache = analyzeRecordingChunkingFromProfiles(usableProfiles, {
+            totalDurationMs: selectedRecording.durationMs,
+          })
+          if (analysisFromCache) {
+            if (cancelled) {
+              return
+            }
+            cache.set(cacheKey, analysisFromCache)
+            setChunkAnalysis(analysisFromCache)
+            setChunkAnalysisState('ready')
+            return
+          }
+        }
+
         const mime = selectedRecording.mimeType ?? 'audio/mp4'
         const blob = await manifestService.buildSessionBlob(selectedRecording.id, mime)
         if (!blob) {

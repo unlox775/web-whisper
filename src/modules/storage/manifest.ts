@@ -104,11 +104,11 @@ async function getDB(): Promise<IDBPDatabase<DurableRecorderDB>> {
           logEntries.createIndex('by-timestamp', 'timestamp')
         }
 
-          if (oldVersion < 3) {
-            const chunkVolumes = db.createObjectStore('chunkVolumes', { keyPath: 'id' })
-            chunkVolumes.createIndex('by-session', 'sessionId')
-            chunkVolumes.createIndex('by-chunk', 'chunkId')
-          }
+        if (oldVersion < 3) {
+          const chunkVolumes = db.createObjectStore('chunkVolumes', { keyPath: 'id' })
+          chunkVolumes.createIndex('by-session', 'sessionId')
+          chunkVolumes.createIndex('by-chunk', 'chunkId')
+        }
       },
     })
   }

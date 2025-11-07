@@ -71,6 +71,7 @@ class BrowserCaptureController implements CaptureController {
   #lastChunkEndMs = 0
   #chunkDurationMs = 0
   #mimeType: string | null = null
+  #headerChunkBlob: Blob | null = null
   #listeners = new Set<(state: CaptureStateSnapshot) => void>()
   #state: CaptureStateSnapshot = {
     sessionId: null,
@@ -125,6 +126,7 @@ class BrowserCaptureController implements CaptureController {
     this.#sessionId = options.sessionId
     this.#chunkDurationMs = options.chunkDurationMs
     this.#chunkSeq = 0
+    this.#headerChunkBlob = null
     this.#mimeType = mimeType
     const startedAt = Date.now()
     await logInfo('Started At:', {
@@ -165,6 +167,9 @@ class BrowserCaptureController implements CaptureController {
       const isHeaderChunk = isFirstChunk && (event.timecode === 0 || data.size < 2048)
       const chunkEnd = isHeaderChunk ? chunkStart : chunkStart + chunkDuration
       this.#lastChunkEndMs = chunkEnd
+      if (isHeaderChunk) {
+        this.#headerChunkBlob = data
+      }
       void logDebug('Chunk captured', {
         sessionId: this.#sessionId,
         seq,
@@ -204,7 +209,13 @@ class BrowserCaptureController implements CaptureController {
             })
             if (!isHeaderChunk && data.size > 0 && chunkEnd > chunkStart) {
               try {
-                const profile = await computeChunkVolumeProfile(data, {
+                let analysisBlob: Blob = data
+                const headerBlob = this.#headerChunkBlob
+                const mime = this.#mimeType ?? data.type
+                if (headerBlob && mime && /mp4/i.test(mime)) {
+                  analysisBlob = new Blob([headerBlob, data], { type: headerBlob.type || data.type || mime })
+                }
+                const profile = await computeChunkVolumeProfile(analysisBlob, {
                   chunkId,
                   sessionId: this.#sessionId!,
                   seq,

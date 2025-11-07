@@ -8,6 +8,8 @@
 - Switched the chunking graph to a logarithmic vertical scale with a draggable, scrollable one-minute viewport window and visual edge indicators.
 - Updated chunk analysis heuristics to ignore the first ~120 ms and delay quiet-region detection until after an initial loud frame, while enabling on-demand analysis during active recordings with cache invalidation tied to chunk counts.
 - Persisted per-chunk volume profiles immediately after capture, storing normalized frame data in IndexedDB and surfacing the records in the developer debug panel.
+- Combined header and media payloads when generating per-chunk volume profiles and gracefully skip decode failures, eliminating “Decoding failed” warnings during capture.
+- Reworked the chunking graph pipeline to build from cached chunk volume profiles first, falling back to on-demand decoding only when cache data is unavailable.
 
 ## 🚧 In Progress / Placeholders
 - Iterate on pause detection heuristics (confidence scoring, goal-seeking against target chunk lengths).

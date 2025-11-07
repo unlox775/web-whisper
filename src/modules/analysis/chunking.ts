@@ -410,6 +410,115 @@ export async function computeChunkVolumeProfile(
   }
 }
 
+export function analyzeRecordingChunkingFromProfiles(
+  profiles: ChunkVolumeProfile[],
+  options: {
+    totalDurationMs?: number
+    config?: Partial<ChunkingAnalysisConfig>
+  } = {},
+): RecordingChunkAnalysis | null {
+  const { totalDurationMs: overrideTotalDuration, config = {} } = options
+  if (profiles.length === 0) {
+    return null
+  }
+
+  const mergedConfig: ChunkingAnalysisConfig = { ...DEFAULT_CONFIG, ...config }
+  const sortedProfiles = [...profiles].sort((a, b) => {
+    if (a.chunkStartMs !== b.chunkStartMs) return a.chunkStartMs - b.chunkStartMs
+    return a.seq - b.seq
+  })
+
+  const frames: VolumeFrame[] = []
+  const rmsValues: number[] = []
+  let globalMin = Number.POSITIVE_INFINITY
+  let globalMax = 0
+  let frameIndex = 0
+
+  sortedProfiles.forEach((profile) => {
+    profile.frames.forEach((frame) => {
+      const startMs = profile.chunkStartMs + frame.startOffsetMs
+      const endMs = profile.chunkStartMs + frame.endOffsetMs
+      const rms = frame.rms
+      frames.push({
+        index: frameIndex,
+        startMs,
+        endMs,
+        rms,
+        normalized: rms,
+      })
+      rmsValues.push(rms)
+      if (rms < globalMin) {
+        globalMin = rms
+      }
+      if (rms > globalMax) {
+        globalMax = rms
+      }
+      frameIndex += 1
+    })
+  })
+
+  if (frames.length === 0) {
+    return null
+  }
+
+  if (!Number.isFinite(globalMin)) {
+    globalMin = 0
+  }
+
+  const peakRms = globalMax
+  const scalingFactor = peakRms > 0 ? 0.92 / peakRms : 1
+  const framesWithScaling = frames.map((frame) => ({
+    ...frame,
+    normalized: Math.min(frame.rms * scalingFactor, 1),
+  }))
+
+  const noiseFloor = percentile(rmsValues, mergedConfig.noisePercentile)
+  const quietBand = percentile(rmsValues, mergedConfig.quietPercentile)
+  const thresholdCandidate = Math.max(
+    noiseFloor * mergedConfig.thresholdMultiplier,
+    (noiseFloor + quietBand) / 2,
+  )
+  const threshold = Math.min(thresholdCandidate, peakRms * 0.7)
+  const normalizedThreshold = Math.min(threshold * scalingFactor, 0.98)
+
+  const inferredDurationMs =
+    framesWithScaling.length > 0 ? framesWithScaling[framesWithScaling.length - 1].endMs : 0
+  const totalDurationMs = Math.max(overrideTotalDuration ?? 0, inferredDurationMs)
+
+  const quietRegions = attachNormalizedExtents(
+    detectQuietRegions(
+      framesWithScaling,
+      threshold,
+      mergedConfig.minQuietDurationMs,
+      mergedConfig.initialIgnoreMs,
+    ),
+    framesWithScaling,
+  )
+  const { boundaries, chunks } = proposeChunkBoundaries(quietRegions, totalDurationMs, mergedConfig)
+
+  const sampleRate = sortedProfiles[0]?.sampleRate ?? 0
+  const frameDurationMs = sortedProfiles[0]?.frameDurationMs ?? mergedConfig.frameDurationMs
+
+  return {
+    frames: framesWithScaling,
+    quietRegions,
+    chunkBoundaries: boundaries,
+    chunks,
+    stats: {
+      sampleRate,
+      totalDurationMs,
+      frameDurationMs,
+      frameCount: framesWithScaling.length,
+      maxRms: peakRms,
+      minRms: globalMin,
+      scalingFactor,
+      noiseFloor,
+      threshold,
+      normalizedThreshold,
+    },
+  }
+}
+
 export async function analyzeRecordingChunking(
   blob: Blob,
   config: Partial<ChunkingAnalysisConfig> = {},
