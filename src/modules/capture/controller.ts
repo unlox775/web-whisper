@@ -1,3 +1,4 @@
+import { computeChunkVolumeProfile } from '../analysis/chunking'
 import { manifestService, type SessionRecord, type SessionStatus } from '../storage/manifest'
 import { logDebug, logError, logInfo, logWarn } from '../logging/logger'
 
@@ -174,34 +175,58 @@ class BrowserCaptureController implements CaptureController {
         chunkEndMs: chunkEnd,
         timecode: manualTimecode,
       })
-      this.#persistQueue = this.#persistQueue
-        .then(() =>
-          manifestService.appendChunk(
-            {
-              id: `${this.#sessionId}-chunk-${seq}`,
-              sessionId: this.#sessionId!,
+        const chunkId = `${this.#sessionId}-chunk-${seq}`
+        this.#persistQueue = this.#persistQueue
+          .then(() =>
+            manifestService.appendChunk(
+              {
+                id: chunkId,
+                sessionId: this.#sessionId!,
+                seq,
+                startMs: chunkStart,
+                endMs: chunkEnd,
+              },
+              data,
+            ),
+          )
+          .then(async () => {
+            this.#setState({
+              lastChunkAt: chunkEnd,
+              bytesBuffered: this.#state.bytesBuffered + data.size,
+              chunksRecorded: this.#state.chunksRecorded + 1,
+            })
+            void logInfo('Chunk persisted', {
+              sessionId: this.#sessionId,
               seq,
+              size: data.size,
               startMs: chunkStart,
               endMs: chunkEnd,
-            },
-            data,
-          ),
-        )
-        .then(() => {
-          this.#setState({
-            lastChunkAt: chunkEnd,
-            bytesBuffered: this.#state.bytesBuffered + data.size,
-            chunksRecorded: this.#state.chunksRecorded + 1,
+            })
+            if (!isHeaderChunk && data.size > 0 && chunkEnd > chunkStart) {
+              try {
+                const profile = await computeChunkVolumeProfile(data, {
+                  chunkId,
+                  sessionId: this.#sessionId!,
+                  seq,
+                  chunkStartMs: chunkStart,
+                  chunkEndMs: chunkEnd,
+                })
+                await manifestService.storeChunkVolumeProfile(profile)
+                void logDebug('Chunk volume profile stored', {
+                  sessionId: this.#sessionId,
+                  seq,
+                  frameCount: profile.frameCount,
+                })
+              } catch (error) {
+                void logWarn('Chunk volume profile failed', {
+                  sessionId: this.#sessionId,
+                  seq,
+                  error: error instanceof Error ? error.message : String(error),
+                })
+              }
+            }
           })
-          void logInfo('Chunk persisted', {
-            sessionId: this.#sessionId,
-            seq,
-            size: data.size,
-            startMs: chunkStart,
-            endMs: chunkEnd,
-          })
-        })
-        .catch((error) => {
+          .catch((error) => {
           console.error('[CaptureController] Failed to persist chunk', error)
           this.#setState({ state: 'error', error: error instanceof Error ? error.message : String(error) })
           void logError('Chunk persistence failed', {

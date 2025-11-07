@@ -1,4 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
+import type { ChunkVolumeProfile } from '../analysis/chunking'
 
 export type SessionStatus = 'recording' | 'ready' | 'error'
 
@@ -29,6 +30,12 @@ export interface StoredChunk extends ChunkRecord {
   blob: Blob
 }
 
+export interface ChunkVolumeProfileRecord extends ChunkVolumeProfile {
+  id: string
+  createdAt: number
+  updatedAt: number
+}
+
 interface DurableRecorderDB extends DBSchema {
   sessions: {
     key: string
@@ -39,6 +46,11 @@ interface DurableRecorderDB extends DBSchema {
     key: string
     value: StoredChunk
     indexes: { 'by-session': string }
+  }
+  chunkVolumes: {
+    key: string
+    value: ChunkVolumeProfileRecord
+    indexes: { 'by-session': string; 'by-chunk': string }
   }
   logSessions: {
     key: string
@@ -68,7 +80,7 @@ export interface LogEntryRecord {
 }
 
 const DB_NAME = 'durable-audio-recorder'
-const DB_VERSION = 2
+const DB_VERSION = 3
 const MAX_LOG_SESSIONS = 50
 
 let dbPromise: Promise<IDBPDatabase<DurableRecorderDB>> | null = null
@@ -91,6 +103,12 @@ async function getDB(): Promise<IDBPDatabase<DurableRecorderDB>> {
           logEntries.createIndex('by-session', 'sessionId')
           logEntries.createIndex('by-timestamp', 'timestamp')
         }
+
+          if (oldVersion < 3) {
+            const chunkVolumes = db.createObjectStore('chunkVolumes', { keyPath: 'id' })
+            chunkVolumes.createIndex('by-session', 'sessionId')
+            chunkVolumes.createIndex('by-chunk', 'chunkId')
+          }
       },
     })
   }
@@ -107,6 +125,9 @@ export interface ManifestService {
   getChunkMetadata(sessionId: string): Promise<ChunkRecord[]>
   getChunkData(sessionId: string): Promise<StoredChunk[]>
   buildSessionBlob(sessionId: string, mimeType: string): Promise<Blob | null>
+  storeChunkVolumeProfile(profile: ChunkVolumeProfile): Promise<void>
+  getChunkVolumeProfile(chunkId: string): Promise<ChunkVolumeProfileRecord | null>
+  listChunkVolumeProfiles(sessionId?: string): Promise<ChunkVolumeProfileRecord[]>
   deleteSession(sessionId: string): Promise<void>
   storageTotals(): Promise<{ totalBytes: number }>
   reconcileDanglingSessions(): Promise<void>
@@ -213,13 +234,59 @@ class IndexedDBManifestService implements ManifestService {
     return new Blob(blobs, { type: mimeType })
   }
 
+  async storeChunkVolumeProfile(profile: ChunkVolumeProfile): Promise<void> {
+    const db = await getDB()
+    const tx = db.transaction('chunkVolumes', 'readwrite')
+    const store = tx.objectStore('chunkVolumes')
+    const existing = await store.get(profile.chunkId)
+    const now = Date.now()
+    const record: ChunkVolumeProfileRecord = {
+      ...profile,
+      id: profile.chunkId,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    }
+    await store.put(record)
+    await tx.done
+  }
+
+  async getChunkVolumeProfile(chunkId: string): Promise<ChunkVolumeProfileRecord | null> {
+    const db = await getDB()
+    return (await db.get('chunkVolumes', chunkId)) ?? null
+  }
+
+  async listChunkVolumeProfiles(sessionId?: string): Promise<ChunkVolumeProfileRecord[]> {
+    const db = await getDB()
+    const store = db.transaction('chunkVolumes').store
+    let rows: ChunkVolumeProfileRecord[]
+    if (sessionId) {
+      rows = await store.index('by-session').getAll(sessionId)
+    } else {
+      rows = await store.getAll()
+    }
+    return rows.sort((a, b) => {
+      if (a.sessionId !== b.sessionId) {
+        return a.sessionId.localeCompare(b.sessionId)
+      }
+      if (a.seq !== b.seq) {
+        return a.seq - b.seq
+      }
+      return a.chunkStartMs - b.chunkStartMs
+    })
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     const db = await getDB()
-    const tx = db.transaction(['sessions', 'chunks'], 'readwrite')
+    const tx = db.transaction(['sessions', 'chunks', 'chunkVolumes'], 'readwrite')
     await tx.objectStore('sessions').delete(sessionId)
     const chunkStore = tx.objectStore('chunks')
-    const index = chunkStore.index('by-session')
-    for (let cursor = await index.openCursor(sessionId); cursor; cursor = await cursor.continue()) {
+    const chunkIndex = chunkStore.index('by-session')
+    for (let cursor = await chunkIndex.openCursor(sessionId); cursor; cursor = await cursor.continue()) {
+      await cursor.delete()
+    }
+    const volumeStore = tx.objectStore('chunkVolumes')
+    const volumeIndex = volumeStore.index('by-session')
+    for (let cursor = await volumeIndex.openCursor(sessionId); cursor; cursor = await cursor.continue()) {
       await cursor.delete()
     }
     await tx.done

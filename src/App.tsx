@@ -11,6 +11,7 @@ import { analyzeRecordingChunking, type RecordingChunkAnalysis } from './modules
 import './App.css'
 import {
   manifestService,
+  type ChunkVolumeProfileRecord,
   type LogEntryRecord,
   type LogSessionRecord,
   type StoredChunk,
@@ -490,80 +491,74 @@ function App() {
     setSelectedRecordingDurationMs(selectedRecording.durationMs)
   }, [selectedRecording])
 
-    useEffect(() => {
-      if (!developerMode || !selectedRecording || !isChunkingGraphOpen) {
-        return
-      }
-      if (selectedRecording.status === 'recording') {
-        setChunkAnalysisState('error')
-        setChunkAnalysisError('Recording still in progress — chunking analysis needs a finished capture.')
-        setChunkAnalysis(null)
-        return
-      }
-      if (selectedRecording.chunkCount === 0) {
-        setChunkAnalysisState('error')
-        setChunkAnalysisError('No audio chunks available yet for this session.')
-        setChunkAnalysis(null)
-        return
-      }
-      const cacheKey = selectedRecording.id
-      const cache = chunkAnalysisCacheRef.current
-      const cached = cache.get(cacheKey)
-      if (cached) {
-        setChunkAnalysis(cached)
-        setChunkAnalysisState('ready')
-        setChunkAnalysisError(null)
-        return
-      }
-      let cancelled = false
-      setChunkAnalysisState('loading')
-      setChunkAnalysisError(null)
+  useEffect(() => {
+    if (!developerMode || !selectedRecording || !isChunkingGraphOpen) {
+      return
+    }
+    if (selectedRecording.chunkCount === 0) {
+      setChunkAnalysisState('error')
+      setChunkAnalysisError('No audio chunks available yet. Capture a few seconds of audio and try again.')
       setChunkAnalysis(null)
-      ;(async () => {
-        try {
-          const mime = selectedRecording.mimeType ?? 'audio/mp4'
-          const blob = await manifestService.buildSessionBlob(selectedRecording.id, mime)
-          if (!blob) {
-            throw new Error('No audio data available yet. Capture additional audio and retry.')
-          }
-          const analysis = await analyzeRecordingChunking(blob)
-          if (cancelled) {
-            return
-          }
-          cache.set(cacheKey, analysis)
-          setChunkAnalysis(analysis)
-          setChunkAnalysisState('ready')
-        } catch (error) {
-          if (cancelled) {
-            return
-          }
-          const message = error instanceof Error ? error.message : String(error)
-          setChunkAnalysisState('error')
-          setChunkAnalysisError(message)
-          if (selectedRecording) {
-            void logError('Chunk analysis failed', {
-              sessionId: selectedRecording.id,
-              error: message,
-            })
-          }
+      return
+    }
+    const cacheKey = `${selectedRecording.id}:${selectedRecording.chunkCount}:${selectedRecording.updatedAt ?? 0}`
+    const cache = chunkAnalysisCacheRef.current
+    const cached = cache.get(cacheKey)
+    if (cached) {
+      setChunkAnalysis(cached)
+      setChunkAnalysisState('ready')
+      setChunkAnalysisError(null)
+      return
+    }
+    let cancelled = false
+    setChunkAnalysisState('loading')
+    setChunkAnalysisError(null)
+    setChunkAnalysis(null)
+    ;(async () => {
+      try {
+        const mime = selectedRecording.mimeType ?? 'audio/mp4'
+        const blob = await manifestService.buildSessionBlob(selectedRecording.id, mime)
+        if (!blob) {
+          throw new Error('No audio data available yet. Capture additional audio and retry.')
         }
-      })()
-      return () => {
-        cancelled = true
+        const analysis = await analyzeRecordingChunking(blob)
+        if (cancelled) {
+          return
+        }
+        cache.set(cacheKey, analysis)
+        setChunkAnalysis(analysis)
+        setChunkAnalysisState('ready')
+      } catch (error) {
+        if (cancelled) {
+          return
+        }
+        const message = error instanceof Error ? error.message : String(error)
+        setChunkAnalysisState('error')
+        setChunkAnalysisError(message)
+        if (selectedRecording) {
+          void logError('Chunk analysis failed', {
+            sessionId: selectedRecording.id,
+            error: message,
+          })
+        }
       }
-    }, [developerMode, isChunkingGraphOpen, selectedRecording])
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [developerMode, isChunkingGraphOpen, selectedRecording])
 
-    const isHeaderSegment = useCallback((chunk: StoredChunk) => {
-      const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
-      return chunk.seq === 0 && (durationMs <= 10 || chunk.byteLength < 4096)
-    }, [])
+  const isHeaderSegment = useCallback((chunk: StoredChunk) => {
+    const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
+    return chunk.seq === 0 && (durationMs <= 10 || chunk.byteLength < 4096)
+  }, [])
 
-    const headerChunk = useMemo(() => chunkData.find(isHeaderSegment) ?? null, [chunkData, isHeaderSegment])
+  const headerChunk = useMemo(() => chunkData.find(isHeaderSegment) ?? null, [chunkData, isHeaderSegment])
 
-    const playableChunkCount = useMemo(
-      () => chunkData.filter((chunk) => !isHeaderSegment(chunk)).length,
-      [chunkData, isHeaderSegment],
-    )
+  const playableChunkCount = useMemo(
+    () => chunkData.filter((chunk) => !isHeaderSegment(chunk)).length,
+    [chunkData, isHeaderSegment],
+  )
 
     const createChunkCompositeBlob = useCallback(
       (chunk: StoredChunk) => {
@@ -888,13 +883,22 @@ function App() {
 
     const loadDeveloperTables = useCallback(async () => {
       try {
-        const [sessions, chunks] = await Promise.all([
+        const [sessions, chunks, chunkVolumes] = await Promise.all([
           manifestService.listSessions(),
           manifestService.getChunksForInspection(),
+          manifestService.listChunkVolumeProfiles(),
         ])
         setDeveloperTables([
           { name: 'sessions', rows: sessions.map((row) => ({ ...row })) },
           { name: 'chunks', rows: chunks.map((row) => ({ ...row })) },
+          {
+            name: 'chunkVolumes',
+            rows: chunkVolumes.map((row) => ({
+              ...row,
+              framesPreview: row.frames.slice(0, 24),
+              framesTotal: row.frames.length,
+            })),
+          },
         ])
         setSelectedDeveloperTable((prev) => prev ?? 'sessions')
       } catch (error) {
@@ -1448,6 +1452,27 @@ function App() {
                                     <span className={mismatch ? 'dev-chunk-warning' : 'dev-chunk-ok'}>
                                       {mismatch ? '⚠ size mismatch' : '✓ sizes match'}
                                     </span>
+                                  </p>
+                                </div>
+                              )
+                            })
+                          }
+
+                          if (selectedDeveloperTable === 'chunkVolumes') {
+                            const volumeRows = activeTable.rows as Array<
+                              ChunkVolumeProfileRecord & { framesPreview?: unknown; framesTotal?: number }
+                            >
+                            return volumeRows.map((row, index) => {
+                              const key = `${row.sessionId}-${row.chunkId}-${index}`
+                              const framesTotal = row.framesTotal ?? row.frames.length
+                              return (
+                                <div key={key} className="dev-table-chunk">
+                                  <pre>{JSON.stringify(row, null, 2)}</pre>
+                                  <p className="dev-chunk-extra">
+                                    <span>frames: {framesTotal}</span>
+                                    <span>duration: {(row.durationMs / 1000).toFixed(2)}s</span>
+                                    <span>avg RMS: {row.averageRms.toFixed(6)}</span>
+                                    <span>peak RMS: {row.maxRms.toFixed(6)}</span>
                                   </p>
                                 </div>
                               )
