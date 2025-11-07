@@ -483,6 +483,22 @@ body {
   transform: translateY(-1px);
 }
 
+.detail-graph-toggle {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  background: rgba(15, 23, 42, 0.55);
+  color: #38bdf8;
+  padding: 0.35rem 0.7rem;
+  font-size: 1rem;
+  transition: border-color 0.2s ease, transform 0.1s ease;
+}
+
+.detail-graph-toggle.is-active {
+  border-color: rgba(56, 189, 248, 0.7);
+  background: rgba(56, 189, 248, 0.18);
+  transform: translateY(-1px);
+}
+
 .detail-label {
   margin: 0;
   text-transform: uppercase;
@@ -541,6 +557,139 @@ body {
   margin: 0;
   color: #fca5a5;
   font-size: 0.82rem;
+}
+
+.detail-analysis {
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  background: rgba(15, 23, 42, 0.55);
+  border-radius: 0.95rem;
+  padding: 0.85rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.detail-analysis-status {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #94a3b8;
+}
+
+.chunking-graph {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.chunking-graph-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.chunking-graph-header h4 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.chunking-graph-meta {
+  display: flex;
+  gap: 0.6rem;
+  font-size: 0.76rem;
+  color: #94a3b8;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.chunking-graph-body {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.chunking-graph-svg {
+  width: 100%;
+  height: 180px;
+  border-radius: 0.8rem;
+  overflow: hidden;
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  background: rgba(15, 23, 42, 0.65);
+}
+
+.chunking-target-hint {
+  font-size: 0.75rem;
+  color: #a5b4fc;
+}
+
+.chunking-stats {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.5rem;
+}
+
+.chunking-stats div {
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(94, 234, 212, 0.12);
+  border-radius: 0.6rem;
+  padding: 0.5rem 0.6rem;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.chunking-stats dt {
+  margin: 0;
+  font-size: 0.7rem;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.chunking-stats dd {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #e2e8f0;
+  font-variant-numeric: tabular-nums;
+}
+
+.chunking-chunk-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.chunking-chunk-list h5 {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.chunking-chunk-list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.chunking-chunk-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border-radius: 0.6rem;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(94, 234, 212, 0.12);
+  font-size: 0.8rem;
+  color: #cbd5f5;
+}
+
+.chunking-chunk-label {
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.chunking-empty {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #94a3b8;
 }
 
 .detail-chunks {
