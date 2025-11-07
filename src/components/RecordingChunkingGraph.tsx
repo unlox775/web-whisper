@@ -1,4 +1,13 @@
-import { memo, useMemo, useId } from 'react'
+import {
+  memo,
+  useMemo,
+  useId,
+  useRef,
+  useState,
+  useCallback,
+  useEffect,
+} from 'react'
+import type { PointerEvent as ReactPointerEvent, UIEvent as ReactUIEvent } from 'react'
 import type {
   RecordingChunkAnalysis,
   ChunkSummary,
@@ -31,11 +40,31 @@ const formatDuration = (durationMs: number) => {
   return `${minutes}m ${remainder.toFixed(0).padStart(2, '0')}s`
 }
 
+const LOG_SCALE_BASE = 10
+const SCROLL_WINDOW_MS = 60_000
+const BASE_VIEWPORT_WIDTH = 720
+const SCROLL_INDICATOR_THRESHOLD = 12
+
+const toLogScale = (value: number, base = LOG_SCALE_BASE) => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0
+  }
+  const clamped = Math.min(1, Math.max(0, value))
+  const numerator = Math.log10(1 + (base - 1) * clamped)
+  const denominator = Math.log10(base)
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator === 0) {
+    return clamped
+  }
+  const scaled = numerator / denominator
+  return Math.min(1, Math.max(0, scaled))
+}
+
 const buildAreaPath = (
   frames: RecordingChunkAnalysis['frames'],
   totalDurationMs: number,
   height: number,
   width: number,
+  transform: (value: number) => number,
 ) => {
   if (frames.length === 0 || totalDurationMs <= 0) {
     return ''
@@ -45,7 +74,8 @@ const buildAreaPath = (
   frames.forEach((frame) => {
     const midpointMs = (frame.startMs + frame.endMs) / 2
     const x = Math.min(width, (midpointMs / totalDurationMs) * width)
-    const y = Math.max(0, Math.min(height, (1 - frame.normalized) * height))
+    const normalized = transform(frame.normalized)
+    const y = Math.max(0, Math.min(height, (1 - normalized) * height))
     commands.push(`L ${x.toFixed(2)} ${y.toFixed(2)}`)
   })
   commands.push(`L ${Math.max(width, (lastFrame.endMs / totalDurationMs) * width).toFixed(2)} ${height}`)
@@ -87,29 +117,121 @@ const describeChunks = (chunks: ChunkSummary[]) =>
   }))
 
 const RecordingChunkingGraphComponent = ({ analysis, targetRange }: RecordingChunkingGraphProps) => {
-  const width = Math.max(640, analysis.frames.length)
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null)
+  const dragStateRef = useRef<{ pointerId: number; startX: number; scrollLeft: number } | null>(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const [showLeftIndicator, setShowLeftIndicator] = useState(false)
+  const [showRightIndicator, setShowRightIndicator] = useState(false)
   const height = 120
   const totalDurationMs = analysis.stats.totalDurationMs
+  const estimatedDuration =
+    totalDurationMs > 0 ? totalDurationMs : analysis.stats.frameCount * analysis.stats.frameDurationMs
+  const baseViewportWidth =
+    typeof window !== 'undefined'
+      ? Math.min(960, Math.max(BASE_VIEWPORT_WIDTH, Math.floor(window.innerWidth * 0.8)))
+      : BASE_VIEWPORT_WIDTH
+  const width =
+    estimatedDuration > 0
+      ? Math.max(baseViewportWidth, Math.round((estimatedDuration / SCROLL_WINDOW_MS) * baseViewportWidth))
+      : baseViewportWidth
   const gradientId = useId()
 
+  const updateIndicators = useCallback(() => {
+    const container = scrollContainerRef.current
+    if (!container) {
+      setShowLeftIndicator(false)
+      setShowRightIndicator(false)
+      return
+    }
+    const { scrollLeft, clientWidth, scrollWidth } = container
+    setShowLeftIndicator(scrollLeft > SCROLL_INDICATOR_THRESHOLD)
+    setShowRightIndicator(scrollLeft + clientWidth < scrollWidth - SCROLL_INDICATOR_THRESHOLD)
+  }, [])
+
+  const handleScroll = useCallback(
+    (event: ReactUIEvent<HTMLDivElement>) => {
+      if (isDragging) {
+        event.preventDefault()
+      }
+      updateIndicators()
+    },
+    [isDragging, updateIndicators],
+  )
+
+  const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const container = scrollContainerRef.current
+    if (!container) {
+      return
+    }
+    container.setPointerCapture(event.pointerId)
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      scrollLeft: container.scrollLeft,
+    }
+    setIsDragging(true)
+  }, [])
+
+  const handlePointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const container = scrollContainerRef.current
+      const dragState = dragStateRef.current
+      if (!container || !dragState || dragState.pointerId !== event.pointerId) {
+        return
+      }
+      event.preventDefault()
+      const delta = event.clientX - dragState.startX
+      container.scrollLeft = dragState.scrollLeft - delta
+      updateIndicators()
+    },
+    [updateIndicators],
+  )
+
+  const endDrag = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const container = scrollContainerRef.current
+      const dragState = dragStateRef.current
+      if (!container || !dragState || dragState.pointerId !== event.pointerId) {
+        return
+      }
+      container.releasePointerCapture(event.pointerId)
+      dragStateRef.current = null
+      setIsDragging(false)
+      updateIndicators()
+    },
+    [updateIndicators],
+  )
+
+  useEffect(() => {
+    updateIndicators()
+  }, [width, updateIndicators])
+
   const areaPath = useMemo(
-    () => buildAreaPath(analysis.frames, totalDurationMs, height, width),
-    [analysis.frames, totalDurationMs, height, width],
+    () => buildAreaPath(analysis.frames, estimatedDuration, height, width, toLogScale),
+    [analysis.frames, estimatedDuration, height, width],
   )
 
   const quietRects = useMemo(
-    () => buildQuietRects(analysis.quietRegions, totalDurationMs, width),
-    [analysis.quietRegions, totalDurationMs, width],
+    () => buildQuietRects(analysis.quietRegions, estimatedDuration, width),
+    [analysis.quietRegions, estimatedDuration, width],
   )
 
   const boundaryLines = useMemo(
-    () => buildBoundaryLines(analysis.chunkBoundaries, totalDurationMs, width),
-    [analysis.chunkBoundaries, totalDurationMs, width],
+    () => buildBoundaryLines(analysis.chunkBoundaries, estimatedDuration, width),
+    [analysis.chunkBoundaries, estimatedDuration, width],
   )
 
   const chunkSummaries = useMemo(() => describeChunks(analysis.chunks), [analysis.chunks])
 
-  const thresholdY = (1 - analysis.stats.normalizedThreshold) * height
+  const thresholdY = (1 - toLogScale(analysis.stats.normalizedThreshold)) * height
+  const scrollClassName = [
+    'chunking-graph-scroll',
+    isDragging ? 'is-dragging' : '',
+    showLeftIndicator ? 'show-left-indicator' : '',
+    showRightIndicator ? 'show-right-indicator' : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
 
   return (
     <div className="chunking-graph">
@@ -117,59 +239,70 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange }: RecordingChu
         <h4>Volume histogram</h4>
         <div className="chunking-graph-meta">
           <span>Frames: {analysis.stats.frameCount}</span>
-          <span>Duration: {formatDuration(totalDurationMs)}</span>
+          <span>Duration: {formatDuration(estimatedDuration)}</span>
         </div>
       </header>
       <div className="chunking-graph-body">
-        <svg
-          className="chunking-graph-svg"
-          role="img"
-          viewBox={`0 0 ${width} ${height}`}
-          aria-label="Volume histogram with proposed chunk boundaries"
-          preserveAspectRatio="none"
+        <div
+          className={scrollClassName}
+          ref={scrollContainerRef}
+          onScroll={handleScroll}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={endDrag}
+          onPointerLeave={(event) => {
+            if (isDragging) {
+              endDrag(event)
+            }
+          }}
         >
-          <rect x={0} y={0} width={width} height={height} fill="rgba(15, 23, 42, 0.85)" />
-          {quietRects.map((rect, index) => (
-            <rect
-              key={`quiet-${index}`}
-              x={rect.x}
-              y={0}
-              width={Math.max(1.5, rect.rectWidth)}
-              height={height}
-              fill="rgba(56, 189, 248, 0.12)"
-            />
-          ))}
-          {areaPath ? (
-            <path d={areaPath} fill={`url(#${gradientId})`} stroke="rgba(94, 234, 212, 0.48)" strokeWidth={1} />
-          ) : null}
-          <line
-            x1={0}
-            y1={thresholdY}
-            x2={width}
-            y2={thresholdY}
-            strokeDasharray="6 6"
-            stroke="rgba(250, 204, 21, 0.9)"
-            strokeWidth={1}
-          />
-          {boundaryLines.map((line, index) => (
-            <g key={`boundary-${index}`}>
+          <svg
+            className="chunking-graph-svg"
+            role="img"
+            viewBox={`0 0 ${width} ${height}`}
+            width={width}
+            height={height}
+            aria-label="Volume histogram with proposed chunk boundaries"
+            preserveAspectRatio="none"
+          >
+            <rect x={0} y={0} width={width} height={height} fill="rgba(15, 23, 42, 0.85)" />
+            {quietRects.map((rect, index) => (
               <rect
-                x={line.x - 2}
+                key={`quiet-${index}`}
+                x={rect.x}
                 y={0}
-                width={4}
+                width={Math.max(1.5, rect.rectWidth)}
                 height={height}
-                fill="rgba(251, 146, 60, 0.24)"
+                fill="rgba(56, 189, 248, 0.12)"
               />
-              <line x1={line.x} y1={0} x2={line.x} y2={height} stroke="#facc15" strokeWidth={1.5} />
-            </g>
-          ))}
-          <defs>
-            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="rgba(94, 234, 212, 0.55)" />
-              <stop offset="100%" stopColor="rgba(56, 189, 248, 0.15)" />
-            </linearGradient>
-          </defs>
-        </svg>
+            ))}
+            {areaPath ? (
+              <path d={areaPath} fill={`url(#${gradientId})`} stroke="rgba(94, 234, 212, 0.48)" strokeWidth={1} />
+            ) : null}
+            <line
+              x1={0}
+              y1={thresholdY}
+              x2={width}
+              y2={thresholdY}
+              strokeDasharray="6 6"
+              stroke="rgba(250, 204, 21, 0.9)"
+              strokeWidth={1}
+            />
+            {boundaryLines.map((line, index) => (
+              <g key={`boundary-${index}`}>
+                <rect x={line.x - 2} y={0} width={4} height={height} fill="rgba(251, 146, 60, 0.24)" />
+                <line x1={line.x} y1={0} x2={line.x} y2={height} stroke="#facc15" strokeWidth={1.5} />
+              </g>
+            ))}
+            <defs>
+              <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="rgba(94, 234, 212, 0.55)" />
+                <stop offset="100%" stopColor="rgba(56, 189, 248, 0.15)" />
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
         {targetRange ? (
           <div className="chunking-target-hint">
             Target chunk length: {formatDuration(targetRange.minMs)} – {formatDuration(targetRange.maxMs)} (ideal{' '}

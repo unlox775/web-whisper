@@ -1,4 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
+import type { ChunkVolumeProfile } from '../analysis/chunking'
 
 export type SessionStatus = 'recording' | 'ready' | 'error'
 
@@ -23,10 +24,80 @@ export interface ChunkRecord {
   endMs: number
   byteLength: number
   createdAt: number
+  verifiedAudioMsec: number | null
 }
 
 export interface StoredChunk extends ChunkRecord {
   blob: Blob
+}
+
+export interface ChunkVolumeProfileRecord extends ChunkVolumeProfile {
+  id: string
+  createdAt: number
+  updatedAt: number
+}
+
+type StoredChunkVolumeFrame = number | { normalized?: number; rms?: number }
+
+const sanitizeVolumeRecord = (record: any): ChunkVolumeProfileRecord => {
+  const rawFrames: StoredChunkVolumeFrame[] = Array.isArray(record.frames) ? record.frames : []
+  const normalizedFrames: number[] =
+    rawFrames.length > 0 && typeof rawFrames[0] === 'number'
+      ? (rawFrames as number[])
+      : rawFrames.map((frame) => {
+          if (frame && typeof frame === 'object') {
+            if (typeof frame.normalized === 'number') {
+              return Math.max(0, frame.normalized)
+            }
+            if (typeof frame.rms === 'number') {
+              return Math.max(0, frame.rms)
+            }
+          }
+          return 0
+        })
+
+  const frameDurationMs =
+    typeof record.frameDurationMs === 'number' && record.frameDurationMs > 0
+      ? record.frameDurationMs
+      : 50
+  const durationMs =
+    typeof record.durationMs === 'number' && record.durationMs > 0
+      ? record.durationMs
+      : normalizedFrames.length * frameDurationMs
+
+  const maxNormalized =
+    typeof record.maxNormalized === 'number'
+      ? record.maxNormalized
+      : normalizedFrames.length > 0
+        ? Math.max(...normalizedFrames)
+        : 0
+  const averageNormalized =
+    typeof record.averageNormalized === 'number'
+      ? record.averageNormalized
+      : normalizedFrames.length > 0
+        ? normalizedFrames.reduce((sum, value) => sum + value, 0) / normalizedFrames.length
+        : 0
+
+  return {
+    chunkId: record.chunkId,
+    sessionId: record.sessionId,
+    seq: record.seq ?? 0,
+    chunkStartMs: record.chunkStartMs ?? 0,
+    chunkEndMs:
+      typeof record.chunkEndMs === 'number'
+        ? record.chunkEndMs
+        : (record.chunkStartMs ?? 0) + durationMs,
+    durationMs,
+    sampleRate: record.sampleRate ?? 0,
+    frameDurationMs,
+    frames: normalizedFrames,
+    maxNormalized,
+    averageNormalized,
+    scalingFactor: record.scalingFactor ?? 1,
+    id: record.id ?? record.chunkId,
+    createdAt: record.createdAt ?? Date.now(),
+    updatedAt: record.updatedAt ?? Date.now(),
+  }
 }
 
 interface DurableRecorderDB extends DBSchema {
@@ -39,6 +110,11 @@ interface DurableRecorderDB extends DBSchema {
     key: string
     value: StoredChunk
     indexes: { 'by-session': string }
+  }
+  chunkVolumes: {
+    key: string
+    value: ChunkVolumeProfileRecord
+    indexes: { 'by-session': string; 'by-chunk': string }
   }
   logSessions: {
     key: string
@@ -68,7 +144,7 @@ export interface LogEntryRecord {
 }
 
 const DB_NAME = 'durable-audio-recorder'
-const DB_VERSION = 2
+const DB_VERSION = 3
 const MAX_LOG_SESSIONS = 50
 
 let dbPromise: Promise<IDBPDatabase<DurableRecorderDB>> | null = null
@@ -91,6 +167,12 @@ async function getDB(): Promise<IDBPDatabase<DurableRecorderDB>> {
           logEntries.createIndex('by-session', 'sessionId')
           logEntries.createIndex('by-timestamp', 'timestamp')
         }
+
+        if (oldVersion < 3) {
+          const chunkVolumes = db.createObjectStore('chunkVolumes', { keyPath: 'id' })
+          chunkVolumes.createIndex('by-session', 'sessionId')
+          chunkVolumes.createIndex('by-chunk', 'chunkId')
+        }
       },
     })
   }
@@ -107,6 +189,9 @@ export interface ManifestService {
   getChunkMetadata(sessionId: string): Promise<ChunkRecord[]>
   getChunkData(sessionId: string): Promise<StoredChunk[]>
   buildSessionBlob(sessionId: string, mimeType: string): Promise<Blob | null>
+  storeChunkVolumeProfile(profile: ChunkVolumeProfile): Promise<void>
+  getChunkVolumeProfile(chunkId: string): Promise<ChunkVolumeProfileRecord | null>
+  listChunkVolumeProfiles(sessionId?: string): Promise<ChunkVolumeProfileRecord[]>
   deleteSession(sessionId: string): Promise<void>
   storageTotals(): Promise<{ totalBytes: number }>
   reconcileDanglingSessions(): Promise<void>
@@ -154,6 +239,7 @@ class IndexedDBManifestService implements ManifestService {
       blob,
       byteLength: blob.size,
       createdAt: Date.now(),
+      verifiedAudioMsec: entry.seq === 0 ? 0 : null,
     }
 
     await chunkStore.put(storedChunk)
@@ -213,13 +299,69 @@ class IndexedDBManifestService implements ManifestService {
     return new Blob(blobs, { type: mimeType })
   }
 
+  async storeChunkVolumeProfile(profile: ChunkVolumeProfile): Promise<void> {
+    const db = await getDB()
+    const tx = db.transaction(['chunkVolumes', 'chunks'], 'readwrite')
+    const volumeStore = tx.objectStore('chunkVolumes')
+    const chunkStore = tx.objectStore('chunks')
+    const existing = await volumeStore.get(profile.chunkId)
+    const now = Date.now()
+    const rawRecord: ChunkVolumeProfileRecord = {
+      ...profile,
+      id: profile.chunkId,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    }
+    const record = sanitizeVolumeRecord(rawRecord)
+    await volumeStore.put(record)
+
+    const chunk = await chunkStore.get(profile.chunkId)
+    if (chunk) {
+      chunk.verifiedAudioMsec = Math.round(profile.durationMs)
+      await chunkStore.put(chunk)
+    }
+
+    await tx.done
+  }
+
+  async getChunkVolumeProfile(chunkId: string): Promise<ChunkVolumeProfileRecord | null> {
+    const db = await getDB()
+    return (await db.get('chunkVolumes', chunkId)) ?? null
+  }
+
+  async listChunkVolumeProfiles(sessionId?: string): Promise<ChunkVolumeProfileRecord[]> {
+    const db = await getDB()
+    const store = db.transaction('chunkVolumes').store
+    let rowsRaw: ChunkVolumeProfileRecord[]
+    if (sessionId) {
+      rowsRaw = await store.index('by-session').getAll(sessionId)
+    } else {
+      rowsRaw = await store.getAll()
+    }
+    const rows = rowsRaw.map((record) => sanitizeVolumeRecord(record))
+    return rows.sort((a, b) => {
+      if (a.sessionId !== b.sessionId) {
+        return a.sessionId.localeCompare(b.sessionId)
+      }
+      if (a.seq !== b.seq) {
+        return a.seq - b.seq
+      }
+      return a.chunkStartMs - b.chunkStartMs
+    })
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     const db = await getDB()
-    const tx = db.transaction(['sessions', 'chunks'], 'readwrite')
+    const tx = db.transaction(['sessions', 'chunks', 'chunkVolumes'], 'readwrite')
     await tx.objectStore('sessions').delete(sessionId)
     const chunkStore = tx.objectStore('chunks')
-    const index = chunkStore.index('by-session')
-    for (let cursor = await index.openCursor(sessionId); cursor; cursor = await cursor.continue()) {
+    const chunkIndex = chunkStore.index('by-session')
+    for (let cursor = await chunkIndex.openCursor(sessionId); cursor; cursor = await cursor.continue()) {
+      await cursor.delete()
+    }
+    const volumeStore = tx.objectStore('chunkVolumes')
+    const volumeIndex = volumeStore.index('by-session')
+    for (let cursor = await volumeIndex.openCursor(sessionId); cursor; cursor = await cursor.continue()) {
       await cursor.delete()
     }
     await tx.done

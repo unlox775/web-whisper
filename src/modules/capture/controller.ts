@@ -1,3 +1,4 @@
+import { computeChunkVolumeProfile } from '../analysis/chunking'
 import { manifestService, type SessionRecord, type SessionStatus } from '../storage/manifest'
 import { logDebug, logError, logInfo, logWarn } from '../logging/logger'
 
@@ -70,6 +71,7 @@ class BrowserCaptureController implements CaptureController {
   #lastChunkEndMs = 0
   #chunkDurationMs = 0
   #mimeType: string | null = null
+  #headerChunkBlob: Blob | null = null
   #listeners = new Set<(state: CaptureStateSnapshot) => void>()
   #state: CaptureStateSnapshot = {
     sessionId: null,
@@ -124,6 +126,7 @@ class BrowserCaptureController implements CaptureController {
     this.#sessionId = options.sessionId
     this.#chunkDurationMs = options.chunkDurationMs
     this.#chunkSeq = 0
+    this.#headerChunkBlob = null
     this.#mimeType = mimeType
     const startedAt = Date.now()
     await logInfo('Started At:', {
@@ -164,6 +167,9 @@ class BrowserCaptureController implements CaptureController {
       const isHeaderChunk = isFirstChunk && (event.timecode === 0 || data.size < 2048)
       const chunkEnd = isHeaderChunk ? chunkStart : chunkStart + chunkDuration
       this.#lastChunkEndMs = chunkEnd
+      if (isHeaderChunk) {
+        this.#headerChunkBlob = data
+      }
       void logDebug('Chunk captured', {
         sessionId: this.#sessionId,
         seq,
@@ -174,34 +180,65 @@ class BrowserCaptureController implements CaptureController {
         chunkEndMs: chunkEnd,
         timecode: manualTimecode,
       })
-      this.#persistQueue = this.#persistQueue
-        .then(() =>
-          manifestService.appendChunk(
-            {
-              id: `${this.#sessionId}-chunk-${seq}`,
-              sessionId: this.#sessionId!,
+        const chunkId = `${this.#sessionId}-chunk-${seq}`
+        this.#persistQueue = this.#persistQueue
+          .then(() =>
+            manifestService.appendChunk(
+              {
+                id: chunkId,
+                sessionId: this.#sessionId!,
+                seq,
+                startMs: chunkStart,
+                endMs: chunkEnd,
+              verifiedAudioMsec: isHeaderChunk ? 0 : null,
+              },
+              data,
+            ),
+          )
+          .then(async () => {
+            this.#setState({
+              lastChunkAt: chunkEnd,
+              bytesBuffered: this.#state.bytesBuffered + data.size,
+              chunksRecorded: this.#state.chunksRecorded + 1,
+            })
+            void logInfo('Chunk persisted', {
+              sessionId: this.#sessionId,
               seq,
+              size: data.size,
               startMs: chunkStart,
               endMs: chunkEnd,
-            },
-            data,
-          ),
-        )
-        .then(() => {
-          this.#setState({
-            lastChunkAt: chunkEnd,
-            bytesBuffered: this.#state.bytesBuffered + data.size,
-            chunksRecorded: this.#state.chunksRecorded + 1,
+            })
+            if (!isHeaderChunk && data.size > 0 && chunkEnd > chunkStart) {
+              try {
+                let analysisBlob: Blob = data
+                const headerBlob = this.#headerChunkBlob
+                const mime = this.#mimeType ?? data.type
+                if (headerBlob && mime && /mp4/i.test(mime)) {
+                  analysisBlob = new Blob([headerBlob, data], { type: headerBlob.type || data.type || mime })
+                }
+                const profile = await computeChunkVolumeProfile(analysisBlob, {
+                  chunkId,
+                  sessionId: this.#sessionId!,
+                  seq,
+                  chunkStartMs: chunkStart,
+                  chunkEndMs: chunkEnd,
+                })
+                await manifestService.storeChunkVolumeProfile(profile)
+                void logDebug('Chunk volume profile stored', {
+                  sessionId: this.#sessionId,
+                  seq,
+                    frameCount: profile.frames.length,
+                })
+              } catch (error) {
+                void logWarn('Chunk volume profile failed', {
+                  sessionId: this.#sessionId,
+                  seq,
+                  error: error instanceof Error ? error.message : String(error),
+                })
+              }
+            }
           })
-          void logInfo('Chunk persisted', {
-            sessionId: this.#sessionId,
-            seq,
-            size: data.size,
-            startMs: chunkStart,
-            endMs: chunkEnd,
-          })
-        })
-        .catch((error) => {
+          .catch((error) => {
           console.error('[CaptureController] Failed to persist chunk', error)
           this.#setState({ state: 'error', error: error instanceof Error ? error.message : String(error) })
           void logError('Chunk persistence failed', {
