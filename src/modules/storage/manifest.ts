@@ -24,6 +24,7 @@ export interface ChunkRecord {
   endMs: number
   byteLength: number
   createdAt: number
+  verifiedAudioMsec: number | null
 }
 
 export interface StoredChunk extends ChunkRecord {
@@ -175,6 +176,7 @@ class IndexedDBManifestService implements ManifestService {
       blob,
       byteLength: blob.size,
       createdAt: Date.now(),
+      verifiedAudioMsec: entry.seq === 0 ? 0 : null,
     }
 
     await chunkStore.put(storedChunk)
@@ -236,9 +238,10 @@ class IndexedDBManifestService implements ManifestService {
 
   async storeChunkVolumeProfile(profile: ChunkVolumeProfile): Promise<void> {
     const db = await getDB()
-    const tx = db.transaction('chunkVolumes', 'readwrite')
-    const store = tx.objectStore('chunkVolumes')
-    const existing = await store.get(profile.chunkId)
+    const tx = db.transaction(['chunkVolumes', 'chunks'], 'readwrite')
+    const volumeStore = tx.objectStore('chunkVolumes')
+    const chunkStore = tx.objectStore('chunks')
+    const existing = await volumeStore.get(profile.chunkId)
     const now = Date.now()
     const record: ChunkVolumeProfileRecord = {
       ...profile,
@@ -246,7 +249,14 @@ class IndexedDBManifestService implements ManifestService {
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
     }
-    await store.put(record)
+    await volumeStore.put(record)
+
+    const chunk = await chunkStore.get(profile.chunkId)
+    if (chunk) {
+      chunk.verifiedAudioMsec = Math.round(profile.durationMs)
+      await chunkStore.put(chunk)
+    }
+
     await tx.done
   }
 

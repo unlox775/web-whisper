@@ -190,6 +190,7 @@ class BrowserCaptureController implements CaptureController {
                 seq,
                 startMs: chunkStart,
                 endMs: chunkEnd,
+              verifiedAudioMsec: isHeaderChunk ? 0 : null,
               },
               data,
             ),

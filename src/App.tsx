@@ -10,6 +10,7 @@ import { RecordingChunkingGraph } from './components/RecordingChunkingGraph'
 import {
   analyzeRecordingChunking,
   analyzeRecordingChunkingFromProfiles,
+  computeChunkVolumeProfile,
   type RecordingChunkAnalysis,
 } from './modules/analysis/chunking'
 import './App.css'
@@ -511,12 +512,77 @@ function App() {
     setChunkAnalysis(null)
     ;(async () => {
       try {
-        const chunkVolumes = await manifestService.listChunkVolumeProfiles(selectedRecording.id)
-        const usableProfiles = chunkVolumes.filter(
-          (profile) => profile.durationMs > 0 && profile.sessionId === selectedRecording.id,
+        const [chunkMetadata, chunkVolumeRecords] = await Promise.all([
+          manifestService.getChunkMetadata(selectedRecording.id),
+          manifestService.listChunkVolumeProfiles(selectedRecording.id),
+        ])
+
+        const volumeRecordMap = new Map<string, ChunkVolumeProfileRecord>(
+          chunkVolumeRecords.map((record) => [record.chunkId, record]),
         )
-        const latestProfileUpdate = usableProfiles.reduce(
-          (max, profile) => Math.max(max, profile.updatedAt ?? profile.createdAt ?? 0),
+
+        const chunksNeedingVolume = chunkMetadata.filter((chunk) => {
+          if (chunk.seq === 0) {
+            return false
+          }
+          const record = volumeRecordMap.get(chunk.id)
+          const hasVerified =
+            typeof chunk.verifiedAudioMsec === 'number' && Number.isFinite(chunk.verifiedAudioMsec) && chunk.verifiedAudioMsec > 0
+          const hasProfile = record && record.durationMs > 0
+          return !hasProfile || !hasVerified
+        })
+
+        if (chunksNeedingVolume.length > 0) {
+          const chunkData = await manifestService.getChunkData(selectedRecording.id)
+          const headerChunk = chunkData.find((chunk) => chunk.seq === 0) ?? null
+          const headerBlob = headerChunk?.blob ?? null
+          const headerMime = headerBlob?.type ?? selectedRecording.mimeType ?? 'audio/mp4'
+
+          for (const chunk of chunksNeedingVolume) {
+            const chunkDataEntry = chunkData.find((entry) => entry.id === chunk.id)
+            if (!chunkDataEntry || chunkDataEntry.seq === 0 || chunkDataEntry.blob.size === 0) {
+              continue
+            }
+
+            let analysisBlob: Blob = chunkDataEntry.blob
+            if (headerBlob && /mp4|m4a/i.test(headerMime)) {
+              analysisBlob = new Blob([headerBlob, chunkDataEntry.blob], {
+                type: headerBlob.type || chunkDataEntry.blob.type || headerMime,
+              })
+            }
+
+            try {
+              const profile = await computeChunkVolumeProfile(analysisBlob, {
+                chunkId: chunkDataEntry.id,
+                sessionId: chunkDataEntry.sessionId,
+                seq: chunkDataEntry.seq,
+                chunkStartMs: chunkDataEntry.startMs,
+                chunkEndMs: chunkDataEntry.endMs,
+              })
+              await manifestService.storeChunkVolumeProfile(profile)
+              volumeRecordMap.set(profile.chunkId, {
+                id: profile.chunkId,
+                createdAt: Date.now(),
+                updatedAt: Date.now(),
+                ...profile,
+              })
+              chunk.verifiedAudioMsec = Math.round(profile.durationMs)
+            } catch (error) {
+              console.warn('[App] Failed to regenerate chunk volume profile', {
+                sessionId: selectedRecording.id,
+                chunkId: chunkDataEntry.id,
+                error: error instanceof Error ? error.message : String(error),
+              })
+            }
+          }
+        }
+
+        const volumeProfiles: Array<ChunkVolumeProfileRecord> = Array.from(volumeRecordMap.values())
+        const usableProfiles = volumeProfiles
+          .filter((profile) => profile.durationMs > 0 && profile.sessionId === selectedRecording.id)
+          .map(({ id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...rest }) => rest)
+        const latestProfileUpdate = volumeProfiles.reduce(
+          (max, record) => Math.max(max, record.updatedAt ?? record.createdAt ?? 0),
           0,
         )
         const cacheKey = `${selectedRecording.id}:${selectedRecording.chunkCount}:${

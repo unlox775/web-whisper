@@ -10,6 +10,7 @@
 - Persisted per-chunk volume profiles immediately after capture, storing normalized frame data in IndexedDB and surfacing the records in the developer debug panel.
 - Combined header and media payloads when generating per-chunk volume profiles and gracefully skip decode failures, eliminating “Decoding failed” warnings during capture.
 - Reworked the chunking graph pipeline to build from cached chunk volume profiles first, falling back to on-demand decoding only when cache data is unavailable.
+- Added `verifiedAudioMsec` tracking to each stored chunk (0 for seq0) and backfill missing values via the volume regeneration pass so histogram math always reflects decoded audio length.
 
 ## 🚧 In Progress / Placeholders
 - Iterate on pause detection heuristics (confidence scoring, goal-seeking against target chunk lengths).
