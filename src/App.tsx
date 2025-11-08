@@ -1428,10 +1428,14 @@ function App() {
                       ) : chunkAnalysisState === 'error' ? (
                         <p className="detail-analysis-status" role="alert">{chunkAnalysisError ?? 'Unable to analyze audio.'}</p>
                       ) : chunkAnalysis ? (
-                        <RecordingChunkingGraph
-                          analysis={chunkAnalysis}
-                          targetRange={{ minMs: 5000, idealMs: 10000, maxMs: 60000 }}
-                        />
+                          <RecordingChunkingGraph
+                            analysis={chunkAnalysis}
+                            targetRange={{ minMs: 5000, idealMs: 10000, maxMs: 60000 }}
+                            playback={{
+                              positionMs: Math.max(0, audioState.position * 1000),
+                              isPlaying: audioState.playing,
+                            }}
+                          />
                       ) : (
                         <p className="detail-analysis-status">Preparing analysis…</p>
                       )}

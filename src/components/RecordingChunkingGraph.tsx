@@ -22,6 +22,10 @@ type RecordingChunkingGraphProps = {
     idealMs: number
     maxMs: number
   }
+  playback?: {
+    positionMs: number
+    isPlaying: boolean
+  }
 }
 
 const formatDuration = (durationMs: number) => {
@@ -44,6 +48,10 @@ const LOG_SCALE_BASE = 10
 const SCROLL_WINDOW_MS = 60_000
 const BASE_VIEWPORT_WIDTH = 720
 const SCROLL_INDICATOR_THRESHOLD = 12
+const AUTO_SCROLL_THRESHOLD_RATIO = 0.75
+const AUTO_SCROLL_MARGIN_RATIO = 0.1
+const PLAYBACK_BAR_WIDTH = 3
+const PLAYBACK_GLOW_WIDTH = 7
 
 const toLogScale = (value: number, base = LOG_SCALE_BASE) => {
   if (!Number.isFinite(value) || value <= 0) {
@@ -116,7 +124,7 @@ const describeChunks = (chunks: ChunkSummary[]) =>
     breakReason: chunk.breakReason,
   }))
 
-const RecordingChunkingGraphComponent = ({ analysis, targetRange }: RecordingChunkingGraphProps) => {
+const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: RecordingChunkingGraphProps) => {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const dragStateRef = useRef<{ pointerId: number; startX: number; scrollLeft: number } | null>(null)
   const [isDragging, setIsDragging] = useState(false)
@@ -135,6 +143,30 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange }: RecordingChu
       ? Math.max(baseViewportWidth, Math.round((estimatedDuration / SCROLL_WINDOW_MS) * baseViewportWidth))
       : baseViewportWidth
   const gradientId = useId()
+  const playbackPositionMs = playback?.positionMs ?? null
+  const hasUsableDuration = estimatedDuration > 0 && width > 0
+  const clampedPlaybackMs =
+    playbackPositionMs === null || !hasUsableDuration
+      ? null
+      : Math.min(Math.max(playbackPositionMs, 0), estimatedDuration)
+  const playbackRatio = clampedPlaybackMs === null || !hasUsableDuration ? null : clampedPlaybackMs / estimatedDuration
+  const playbackX = playbackRatio === null ? null : playbackRatio * width
+  const playbackIndicator = useMemo(() => {
+    if (playbackX === null || !hasUsableDuration) {
+      return null
+    }
+    const center = Math.min(width, Math.max(0, playbackX))
+    const clampPosition = (barWidth: number) =>
+      Math.max(0, Math.min(Math.max(width - barWidth, 0), center - barWidth / 2))
+    return {
+      center,
+      mainX: clampPosition(PLAYBACK_BAR_WIDTH),
+      mainWidth: PLAYBACK_BAR_WIDTH,
+      glowX: clampPosition(PLAYBACK_GLOW_WIDTH),
+      glowWidth: PLAYBACK_GLOW_WIDTH,
+    }
+  }, [hasUsableDuration, playbackX, width])
+  const isPlaybackActive = Boolean(playback?.isPlaying)
 
   const updateIndicators = useCallback(() => {
     const container = scrollContainerRef.current
@@ -205,6 +237,63 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange }: RecordingChu
   useEffect(() => {
     updateIndicators()
   }, [width, updateIndicators])
+
+  useEffect(() => {
+    const container = scrollContainerRef.current
+    if (!container) {
+      return
+    }
+    if (playbackIndicator === null) {
+      return
+    }
+    if (isDragging) {
+      return
+    }
+    if (!isPlaybackActive) {
+      return
+    }
+    const viewportWidth = container.clientWidth
+    if (viewportWidth <= 0) {
+      return
+    }
+    const maxScrollLeft = Math.max(0, container.scrollWidth - viewportWidth)
+    if (maxScrollLeft <= 0) {
+      return
+    }
+    const scrollLeft = container.scrollLeft
+    const viewportStart = scrollLeft
+    const viewportEnd = scrollLeft + viewportWidth
+    const thresholdOffset = viewportWidth * AUTO_SCROLL_THRESHOLD_RATIO
+    const marginOffset = viewportWidth * AUTO_SCROLL_MARGIN_RATIO
+
+    let nextScrollLeft: number | null = null
+
+    if (playbackIndicator.center >= viewportStart + thresholdOffset) {
+      nextScrollLeft = Math.min(maxScrollLeft, playbackIndicator.center - thresholdOffset)
+    } else if (playbackIndicator.center <= viewportStart) {
+      nextScrollLeft = Math.max(0, playbackIndicator.center - marginOffset)
+    } else if (playbackIndicator.center >= viewportEnd) {
+      nextScrollLeft = Math.min(maxScrollLeft, playbackIndicator.center - thresholdOffset)
+    }
+
+    if (nextScrollLeft !== null && Math.abs(nextScrollLeft - scrollLeft) > 0.5) {
+      if (typeof container.scrollTo === 'function') {
+        container.scrollTo({
+          left: nextScrollLeft,
+          behavior: 'smooth',
+        })
+      } else {
+        container.scrollLeft = nextScrollLeft
+      }
+      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(() => {
+          updateIndicators()
+        })
+      } else {
+        updateIndicators()
+      }
+    }
+  }, [isDragging, isPlaybackActive, playbackIndicator, updateIndicators])
 
   const areaPath = useMemo(
     () => buildAreaPath(analysis.frames, estimatedDuration, height, width, toLogScale),
@@ -280,6 +369,24 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange }: RecordingChu
             {areaPath ? (
               <path d={areaPath} fill={`url(#${gradientId})`} stroke="rgba(94, 234, 212, 0.48)" strokeWidth={1} />
             ) : null}
+              {playbackIndicator ? (
+                <g className="chunking-playback-indicator" aria-hidden="true">
+                  <rect
+                    x={playbackIndicator.glowX}
+                    y={0}
+                    width={playbackIndicator.glowWidth}
+                    height={height}
+                    fill="rgba(34, 197, 94, 0.28)"
+                  />
+                  <rect
+                    x={playbackIndicator.mainX}
+                    y={0}
+                    width={playbackIndicator.mainWidth}
+                    height={height}
+                    fill="rgba(34, 197, 94, 0.95)"
+                  />
+                </g>
+              ) : null}
             <line
               x1={0}
               y1={thresholdY}
