@@ -1,6 +1,7 @@
 export * from './capture/controller'
 export * from './analysis/worklet-contracts'
 export * from './storage/manifest'
+export * from './storage/session-chunk-provider'
 export * from './upload/uploader'
 export * from './transcription/service'
 export * from './settings/store'

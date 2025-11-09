@@ -17,7 +17,7 @@ This document tracks the real-world readiness of core capabilities. Status is in
 | --- | --- | --- |
 | Installable PWA shell | 🟩 Ready | Scaffolding, theming, and service worker registration verified. |
 | Continuous capture tee | 🟨 In progress | Continuous MediaRecorder capture + fixed snips working; AudioWorklet analysis still pending. |
-| Chunk persistence & durability | 🟨 In progress | IndexedDB manifest persists chunks; upload/backoff plumbing still outstanding. |
+| Chunk persistence & durability | 🟨 In progress | IndexedDB manifest persists chunks with deterministic timing verification; upload/backoff plumbing still outstanding. |
 | Recording playback | 🟨 In progress | Combined chunk playback available; needs waveform scrubber & buffering polish. |
 | Adaptive snip logic | 🟥 Not implemented | DSP/VAD analysis module not wired; snip timing currently conceptual. |
 | Live transcription | 🟥 Not implemented | UI simulates streaming text; no Groq/Whisper integration yet. |

@@ -7,12 +7,7 @@ import {
 } from 'react'
 import { captureController } from './modules/capture/controller'
 import { RecordingChunkingGraph } from './components/RecordingChunkingGraph'
-import {
-  analyzeRecordingChunking,
-  analyzeRecordingChunkingFromProfiles,
-  computeChunkVolumeProfile,
-  type RecordingChunkAnalysis,
-} from './modules/analysis/chunking'
+import { type RecordingChunkAnalysis } from './modules/analysis/chunking'
 import './App.css'
 import {
   manifestService,
@@ -22,6 +17,7 @@ import {
   type StoredChunk,
   type SessionRecord,
 } from './modules/storage/manifest'
+import { SessionChunkProvider } from './modules/storage/session-chunk-provider'
 import { settingsStore, type RecorderSettings } from './modules/settings/store'
 import {
   getActiveLogSession,
@@ -84,6 +80,7 @@ const formatClock = (timestamp: number) =>
 const formatDate = (timestamp: number) =>
   new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(timestamp))
 
+/** Formats a millisecond duration into a compact human-readable label. */
 const formatDuration = (durationMs: number) => {
   const totalSeconds = Math.max(0, Math.round(durationMs / 1000))
   const minutes = Math.floor(totalSeconds / 60)
@@ -96,6 +93,7 @@ const formatDuration = (durationMs: number) => {
   return `${remainingMinutes}m ${seconds.toString().padStart(2, '0')}s`
 }
 
+/** Produces a human-readable data size string with significant digits preserved. */
 const formatDataSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -112,6 +110,7 @@ const formatDataSize = (bytes: number) => {
   return `${formatter.format(value)} ${units[unitIndex]}`
 }
 
+/** Returns an integer-rounded data size for quick-glance UI elements. */
 const formatCompactDataSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -124,6 +123,26 @@ const formatCompactDataSize = (bytes: number) => {
   return `${Math.round(value)} ${units[unitIndex]}`
 }
 
+/**
+ * Formats the verified end timestamp for a session by combining the start time and duration.
+ * Falls back to the start time when the duration is missing or zero so the UI remains sensible.
+ */
+const formatSessionEnd = (startMs: number, durationMs: number): string => {
+  // Clamp the duration so negative or NaN values do not skew the calculation.
+  const safeDuration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0
+  // Build the absolute end timestamp by adding the verified duration to the start.
+  const endMs = startMs + safeDuration
+  // Decide whether the end falls on a different calendar day than the start.
+  const startDate = new Date(startMs)
+  const endDate = new Date(endMs)
+  const spansMultipleDays = startDate.toDateString() !== endDate.toDateString()
+  // Include the date when the span crosses midnight; otherwise keep the display compact.
+  return spansMultipleDays
+    ? `${formatDate(endMs)} ${formatClock(endMs)}`
+    : formatClock(endMs)
+}
+
+/** Converts a duration into `hh:mm:ss`, dropping leading hours or minutes when unnecessary. */
 const formatSessionDuration = (durationMs: number) => {
   const totalSeconds = Math.max(0, Math.round(durationMs / 1000))
   const hours = Math.floor(totalSeconds / 3600)
@@ -138,6 +157,7 @@ const formatSessionDuration = (durationMs: number) => {
   return `0:${seconds.toString().padStart(2, '0')}`
 }
 
+/** Formats a timestamp as a concise date/time string for session metadata tables. */
 const formatSessionDateTime = (timestamp: number) =>
   new Intl.DateTimeFormat(undefined, {
     month: 'short',
@@ -146,6 +166,7 @@ const formatSessionDateTime = (timestamp: number) =>
     minute: '2-digit',
   }).format(new Date(timestamp))
 
+/** Converts a playback position (seconds) into a `m:ss` display. */
 const formatTimecode = (seconds: number) => {
   if (!Number.isFinite(seconds)) return '0:00'
   const clamped = Math.max(0, seconds)
@@ -224,13 +245,19 @@ function App() {
   const chunkAudioRef = useRef<Map<string, ChunkPlaybackEntry>>(new Map())
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
-  const chunkAnalysisCacheRef = useRef<Map<string, RecordingChunkAnalysis>>(new Map())
+  const sessionChunkProviderRef = useRef<SessionChunkProvider | null>(null)
 
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
 
+  /** Loads the latest session manifest snapshot and triggers background verification. */
   const loadSessions = useCallback(async () => {
+    // Ensure the manifest is usable before any list or summary calls.
     await manifestService.init()
+    // Reuse or create a single provider instance so verification caching survives reloads.
+    const provider = sessionChunkProviderRef.current ?? new SessionChunkProvider()
+    sessionChunkProviderRef.current = provider
+    // Fetch sessions and overall storage usage concurrently for snappier UI updates.
     const [sessions, totals] = await Promise.all([
       manifestService.listSessions(),
       manifestService.storageTotals(),
@@ -259,7 +286,38 @@ function App() {
     }
 
     setRecordings(sessions)
+    // Update the buffer usage indicator with the latest totals and quota.
     setBufferTotals({ totalBytes: totals.totalBytes, limitBytes: storageLimitBytes })
+
+    // Identify sessions that still need timing verification so charts remain monotonic.
+    const sessionsNeedingVerification = sessions.filter(
+      (session) => session.chunkCount > 0 && (session.timingStatus ?? 'unverified') !== 'verified',
+    )
+    sessionsNeedingVerification.forEach((session) => {
+      void provider
+        .ensureTimings(session.id)
+        .then((result) => {
+          const updatedSession = result.session
+          if (result.status !== 'verified' || !updatedSession) {
+            return
+          }
+          // Merge the verified session back into state so timestamps show the corrected values.
+          setRecordings((prev) =>
+            prev.map((existing) =>
+              existing.id === updatedSession.id ? { ...existing, ...updatedSession } : existing,
+            ),
+          )
+          // Remember the updated timestamp so future comparisons recognise the change.
+          sessionUpdatesRef.current.set(updatedSession.id, updatedSession.updatedAt)
+        })
+        .catch((error) => {
+          // Soft-fail on verification misses so the UI can still display existing data.
+          console.warn('[UI] Session timing verification failed', {
+            sessionId: session.id,
+            error,
+          })
+        })
+    })
   }, [storageLimitBytes])
 
   useEffect(() => settingsStore.subscribe((value) => setSettings({ ...value })), [])
@@ -515,6 +573,9 @@ function App() {
 
   useEffect(() => {
     if (!developerMode || !selectedRecording || !isChunkingGraphOpen) {
+      setChunkAnalysisState('idle')
+      setChunkAnalysis(null)
+      setChunkAnalysisError(null)
       return
     }
     if (selectedRecording.chunkCount === 0) {
@@ -523,125 +584,40 @@ function App() {
       setChunkAnalysis(null)
       return
     }
+
+    const provider = sessionChunkProviderRef.current ?? new SessionChunkProvider()
+    sessionChunkProviderRef.current = provider
+
     let cancelled = false
     setChunkAnalysisState('loading')
     setChunkAnalysisError(null)
     setChunkAnalysis(null)
+
     ;(async () => {
       try {
-        const [chunkMetadata, chunkVolumeRecords] = await Promise.all([
-          manifestService.getChunkMetadata(selectedRecording.id),
-          manifestService.listChunkVolumeProfiles(selectedRecording.id),
-        ])
-
-        const volumeRecordMap = new Map<string, ChunkVolumeProfileRecord>(
-          chunkVolumeRecords.map((record) => [record.chunkId, record]),
-        )
-
-        const chunksNeedingVolume = chunkMetadata.filter((chunk) => {
-          if (chunk.seq === 0) {
-            return false
-          }
-          const record = volumeRecordMap.get(chunk.id)
-          const hasVerified =
-            typeof chunk.verifiedAudioMsec === 'number' && Number.isFinite(chunk.verifiedAudioMsec) && chunk.verifiedAudioMsec > 0
-          const hasProfile = record && record.durationMs > 0
-          return !hasProfile || !hasVerified
+        const result = await provider.prepareAnalysisForSession({
+          session: selectedRecording,
+          mimeTypeHint: selectedRecording.mimeType ?? null,
         })
-
-        if (chunksNeedingVolume.length > 0) {
-          const chunkData = await manifestService.getChunkData(selectedRecording.id)
-          const headerChunk = chunkData.find((chunk) => chunk.seq === 0) ?? null
-          const headerBlob = headerChunk?.blob ?? null
-          const headerMime = headerBlob?.type ?? selectedRecording.mimeType ?? 'audio/mp4'
-
-          for (const chunk of chunksNeedingVolume) {
-            const chunkDataEntry = chunkData.find((entry) => entry.id === chunk.id)
-            if (!chunkDataEntry || chunkDataEntry.seq === 0 || chunkDataEntry.blob.size === 0) {
-              continue
-            }
-
-            let analysisBlob: Blob = chunkDataEntry.blob
-            if (headerBlob && /mp4|m4a/i.test(headerMime)) {
-              analysisBlob = new Blob([headerBlob, chunkDataEntry.blob], {
-                type: headerBlob.type || chunkDataEntry.blob.type || headerMime,
-              })
-            }
-
-            try {
-              const profile = await computeChunkVolumeProfile(analysisBlob, {
-                chunkId: chunkDataEntry.id,
-                sessionId: chunkDataEntry.sessionId,
-                seq: chunkDataEntry.seq,
-                chunkStartMs: chunkDataEntry.startMs,
-                chunkEndMs: chunkDataEntry.endMs,
-              })
-              await manifestService.storeChunkVolumeProfile(profile)
-              const existingRecord = volumeRecordMap.get(profile.chunkId) ?? null
-              volumeRecordMap.set(profile.chunkId, {
-                id: profile.chunkId,
-                createdAt: existingRecord?.createdAt ?? Date.now(),
-                updatedAt: Date.now(),
-                ...profile,
-              })
-              chunk.verifiedAudioMsec = Math.round(profile.durationMs)
-            } catch (error) {
-              console.warn('[App] Failed to regenerate chunk volume profile', {
-                sessionId: selectedRecording.id,
-                chunkId: chunkDataEntry.id,
-                error: error instanceof Error ? error.message : String(error),
-              })
-            }
-          }
-        }
-
-        const volumeProfiles: Array<ChunkVolumeProfileRecord> = Array.from(volumeRecordMap.values())
-        const usableProfiles = volumeProfiles
-          .filter((profile) => profile.durationMs > 0 && profile.sessionId === selectedRecording.id)
-          .map(({ id: _id, createdAt: _createdAt, updatedAt: _updatedAt, ...rest }) => rest)
-        const latestProfileUpdate = volumeProfiles.reduce(
-          (max, record) => Math.max(max, record.updatedAt ?? record.createdAt ?? 0),
-          0,
-        )
-        const cacheKey = `${selectedRecording.id}:${selectedRecording.chunkCount}:${
-          selectedRecording.updatedAt ?? 0
-        }:${latestProfileUpdate}`
-        const cache = chunkAnalysisCacheRef.current
-        const cached = cache.get(cacheKey)
-        if (cached) {
-          setChunkAnalysis(cached)
-          setChunkAnalysisState('ready')
-          setChunkAnalysisError(null)
-          return
-        }
-
-        if (usableProfiles.length > 0) {
-          const analysisFromCache = analyzeRecordingChunkingFromProfiles(usableProfiles, {
-            totalDurationMs: selectedRecording.durationMs,
-          })
-          if (analysisFromCache) {
-            if (cancelled) {
-              return
-            }
-            cache.set(cacheKey, analysisFromCache)
-            setChunkAnalysis(analysisFromCache)
-            setChunkAnalysisState('ready')
-            return
-          }
-        }
-
-        const mime = selectedRecording.mimeType ?? 'audio/mp4'
-        const blob = await manifestService.buildSessionBlob(selectedRecording.id, mime)
-        if (!blob) {
-          throw new Error('No audio data available yet. Capture additional audio and retry.')
-        }
-        const analysis = await analyzeRecordingChunking(blob)
         if (cancelled) {
           return
         }
-        cache.set(cacheKey, analysis)
-        setChunkAnalysis(analysis)
-        setChunkAnalysisState('ready')
+        if (result.analysis) {
+          // Feed the verified frames into the graph component.
+          setChunkAnalysis(result.analysis)
+          setChunkAnalysisState('ready')
+          setChunkAnalysisError(null)
+        } else {
+          // Surface a friendlier warning when volumes are still baking.
+          setChunkAnalysis(null)
+          setChunkAnalysisState('error')
+          const missingCount = result.verification.missingChunkIds.length
+          setChunkAnalysisError(
+            missingCount > 0
+              ? `Waiting on verified audio durations for ${missingCount} chunk${missingCount === 1 ? '' : 's'}.`
+              : 'No chunk volume profiles available yet. Capture additional audio and retry.',
+          )
+        }
       } catch (error) {
         if (cancelled) {
           return
@@ -649,18 +625,25 @@ function App() {
         const message = error instanceof Error ? error.message : String(error)
         setChunkAnalysisState('error')
         setChunkAnalysisError(message)
-        if (selectedRecording) {
-          void logError('Chunk analysis failed', {
-            sessionId: selectedRecording.id,
-            error: message,
-          })
-        }
+        // Emit a structured log so we can inspect failures in the developer console.
+        void logError('Chunk analysis failed', {
+          sessionId: selectedRecording.id,
+          error: message,
+        })
       }
     })()
+
     return () => {
       cancelled = true
     }
-  }, [developerMode, isChunkingGraphOpen, selectedRecording])
+  }, [
+    developerMode,
+    isChunkingGraphOpen,
+    selectedRecording?.id,
+    selectedRecording?.updatedAt,
+    selectedRecording?.chunkCount,
+    selectedRecording?.mimeType,
+  ])
 
   const isHeaderSegment = useCallback((chunk: StoredChunk) => {
     const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
@@ -753,6 +736,7 @@ function App() {
         durationMs: 0,
         mimeType: null,
         notes: 'Transcription pending…',
+        timingStatus: 'unverified',
       })
       await captureController.start({
         sessionId,
@@ -1366,9 +1350,9 @@ function App() {
             </header>
             <div className="detail-body">
               <div className="detail-summary">
-                <p>
-                  <strong>Captured:</strong> {formatDate(selectedRecording.startedAt)} {formatClock(selectedRecording.startedAt)} →{' '}
-                  {formatClock(selectedRecording.updatedAt)}
+                  <p>
+                    <strong>Captured:</strong> {formatDate(selectedRecording.startedAt)} {formatClock(selectedRecording.startedAt)} →{' '}
+                    {formatSessionEnd(selectedRecording.startedAt, selectedRecording.durationMs)}
                 </p>
                 <p>
                   <strong>Size:</strong> {formatDataSize(selectedRecording.totalBytes)}
