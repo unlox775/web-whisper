@@ -22,12 +22,17 @@ export function computeSequentialTimings(
   baseStartMs: number,
   durations: SequencedChunkDuration[],
 ): SequencedChunkTiming[] {
+  // Start with zero offset so seq0 aligns with the provided session start time.
   let rollingOffset = 0
 
   return durations.map((chunk) => {
+    // Coerce any invalid duration to zero so jittery metadata never breaks the timeline.
     const safeDuration = Number.isFinite(chunk.durationMs) && chunk.durationMs > 0 ? Math.round(chunk.durationMs) : 0
+    // Build the monotonic start timestamp by adding the cumulative offset to the base.
     const startMs = Math.round(baseStartMs + rollingOffset)
+    // The end timestamp is the start plus the verified duration (header chunks stay zero-length).
     const endMs = chunk.seq === 0 ? startMs : Math.round(startMs + safeDuration)
+    // Accumulate the duration so the next chunk begins where this one finishes.
     if (chunk.seq !== 0) {
       rollingOffset += safeDuration
     }

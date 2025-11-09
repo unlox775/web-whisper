@@ -10,10 +10,13 @@
 - Implemented manifest-level timing verification pass that rewrites start/end timestamps from verified durations.
 - Updated `App` flow to automatically verify sessions on load and consume provider-generated analyses.
 - Captured focused unit coverage for the sequential timing calculator.
+- Sanitised chunk volume start/end offsets via `SessionChunkProvider` so histogram paths remain monotonic.
+- Refined session detail header to show verified capture spans instead of stale `updatedAt` clocks.
+- Expanded inline documentation across provider/utilities to meet the requested density guidelines.
 
 ## 🚧 In Progress
-- Documentation refresh (spec narrative, developer README) and CI/build validation.
 - Assess downstream visualizations for potential timing-status affordances.
+- Documentation refresh (spec narrative, developer README) and CI/build validation.
 
 ## ⏭️ Next Actions
 - Polish written docs/comments where additional clarity is useful.

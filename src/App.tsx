@@ -80,6 +80,7 @@ const formatClock = (timestamp: number) =>
 const formatDate = (timestamp: number) =>
   new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(timestamp))
 
+/** Formats a millisecond duration into a compact human-readable label. */
 const formatDuration = (durationMs: number) => {
   const totalSeconds = Math.max(0, Math.round(durationMs / 1000))
   const minutes = Math.floor(totalSeconds / 60)
@@ -92,6 +93,7 @@ const formatDuration = (durationMs: number) => {
   return `${remainingMinutes}m ${seconds.toString().padStart(2, '0')}s`
 }
 
+/** Produces a human-readable data size string with significant digits preserved. */
 const formatDataSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -108,6 +110,7 @@ const formatDataSize = (bytes: number) => {
   return `${formatter.format(value)} ${units[unitIndex]}`
 }
 
+/** Returns an integer-rounded data size for quick-glance UI elements. */
 const formatCompactDataSize = (bytes: number) => {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB', 'TB']
@@ -120,6 +123,26 @@ const formatCompactDataSize = (bytes: number) => {
   return `${Math.round(value)} ${units[unitIndex]}`
 }
 
+/**
+ * Formats the verified end timestamp for a session by combining the start time and duration.
+ * Falls back to the start time when the duration is missing or zero so the UI remains sensible.
+ */
+const formatSessionEnd = (startMs: number, durationMs: number): string => {
+  // Clamp the duration so negative or NaN values do not skew the calculation.
+  const safeDuration = Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0
+  // Build the absolute end timestamp by adding the verified duration to the start.
+  const endMs = startMs + safeDuration
+  // Decide whether the end falls on a different calendar day than the start.
+  const startDate = new Date(startMs)
+  const endDate = new Date(endMs)
+  const spansMultipleDays = startDate.toDateString() !== endDate.toDateString()
+  // Include the date when the span crosses midnight; otherwise keep the display compact.
+  return spansMultipleDays
+    ? `${formatDate(endMs)} ${formatClock(endMs)}`
+    : formatClock(endMs)
+}
+
+/** Converts a duration into `hh:mm:ss`, dropping leading hours or minutes when unnecessary. */
 const formatSessionDuration = (durationMs: number) => {
   const totalSeconds = Math.max(0, Math.round(durationMs / 1000))
   const hours = Math.floor(totalSeconds / 3600)
@@ -134,6 +157,7 @@ const formatSessionDuration = (durationMs: number) => {
   return `0:${seconds.toString().padStart(2, '0')}`
 }
 
+/** Formats a timestamp as a concise date/time string for session metadata tables. */
 const formatSessionDateTime = (timestamp: number) =>
   new Intl.DateTimeFormat(undefined, {
     month: 'short',
@@ -142,6 +166,7 @@ const formatSessionDateTime = (timestamp: number) =>
     minute: '2-digit',
   }).format(new Date(timestamp))
 
+/** Converts a playback position (seconds) into a `m:ss` display. */
 const formatTimecode = (seconds: number) => {
   if (!Number.isFinite(seconds)) return '0:00'
   const clamped = Math.max(0, seconds)
@@ -225,10 +250,14 @@ function App() {
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
 
+  /** Loads the latest session manifest snapshot and triggers background verification. */
   const loadSessions = useCallback(async () => {
+    // Ensure the manifest is usable before any list or summary calls.
     await manifestService.init()
+    // Reuse or create a single provider instance so verification caching survives reloads.
     const provider = sessionChunkProviderRef.current ?? new SessionChunkProvider()
     sessionChunkProviderRef.current = provider
+    // Fetch sessions and overall storage usage concurrently for snappier UI updates.
     const [sessions, totals] = await Promise.all([
       manifestService.listSessions(),
       manifestService.storageTotals(),
@@ -257,8 +286,10 @@ function App() {
     }
 
     setRecordings(sessions)
+    // Update the buffer usage indicator with the latest totals and quota.
     setBufferTotals({ totalBytes: totals.totalBytes, limitBytes: storageLimitBytes })
 
+    // Identify sessions that still need timing verification so charts remain monotonic.
     const sessionsNeedingVerification = sessions.filter(
       (session) => session.chunkCount > 0 && (session.timingStatus ?? 'unverified') !== 'verified',
     )
@@ -270,14 +301,17 @@ function App() {
           if (result.status !== 'verified' || !updatedSession) {
             return
           }
+          // Merge the verified session back into state so timestamps show the corrected values.
           setRecordings((prev) =>
             prev.map((existing) =>
               existing.id === updatedSession.id ? { ...existing, ...updatedSession } : existing,
             ),
           )
+          // Remember the updated timestamp so future comparisons recognise the change.
           sessionUpdatesRef.current.set(updatedSession.id, updatedSession.updatedAt)
         })
         .catch((error) => {
+          // Soft-fail on verification misses so the UI can still display existing data.
           console.warn('[UI] Session timing verification failed', {
             sessionId: session.id,
             error,
@@ -569,10 +603,12 @@ function App() {
           return
         }
         if (result.analysis) {
+          // Feed the verified frames into the graph component.
           setChunkAnalysis(result.analysis)
           setChunkAnalysisState('ready')
           setChunkAnalysisError(null)
         } else {
+          // Surface a friendlier warning when volumes are still baking.
           setChunkAnalysis(null)
           setChunkAnalysisState('error')
           const missingCount = result.verification.missingChunkIds.length
@@ -589,6 +625,7 @@ function App() {
         const message = error instanceof Error ? error.message : String(error)
         setChunkAnalysisState('error')
         setChunkAnalysisError(message)
+        // Emit a structured log so we can inspect failures in the developer console.
         void logError('Chunk analysis failed', {
           sessionId: selectedRecording.id,
           error: message,
@@ -1313,9 +1350,9 @@ function App() {
             </header>
             <div className="detail-body">
               <div className="detail-summary">
-                <p>
-                  <strong>Captured:</strong> {formatDate(selectedRecording.startedAt)} {formatClock(selectedRecording.startedAt)} →{' '}
-                  {formatClock(selectedRecording.updatedAt)}
+                  <p>
+                    <strong>Captured:</strong> {formatDate(selectedRecording.startedAt)} {formatClock(selectedRecording.startedAt)} →{' '}
+                    {formatSessionEnd(selectedRecording.startedAt, selectedRecording.durationMs)}
                 </p>
                 <p>
                   <strong>Size:</strong> {formatDataSize(selectedRecording.totalBytes)}

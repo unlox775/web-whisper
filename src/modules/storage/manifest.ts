@@ -463,6 +463,7 @@ class IndexedDBManifestService implements ManifestService {
     }
 
     const ordered = [...chunkRows].sort((a, b) => a.seq - b.seq)
+    // Preallocate arrays so we can track verified durations and any missing chunk ids.
     const durations: number[] = new Array(ordered.length)
     const missingChunkIds: string[] = []
 
@@ -472,6 +473,7 @@ class IndexedDBManifestService implements ManifestService {
         durations[i] = 0
         continue
       }
+      // Prefer the previously verified audio length when it exists.
       const verifiedDuration =
         typeof chunk.verifiedAudioMsec === 'number' && chunk.verifiedAudioMsec > 0
           ? Math.round(chunk.verifiedAudioMsec)
@@ -488,6 +490,7 @@ class IndexedDBManifestService implements ManifestService {
         continue
       }
 
+      // Record the missing chunk id so callers know which profile still needs regeneration.
       missingChunkIds.push(chunk.id)
     }
 
@@ -534,6 +537,7 @@ class IndexedDBManifestService implements ManifestService {
     for (let idx = 0; idx < sequentialPlan.length; idx += 1) {
       const current = ordered[idx]
       const plan = sequentialPlan[idx]
+      // Merge the verified timeline back into the chunk record so storage reflects deterministic values.
       const nextChunk = {
         ...current,
         startMs: plan.startMs,
@@ -542,6 +546,7 @@ class IndexedDBManifestService implements ManifestService {
         timingStatus: 'verified' as ChunkTimingStatus,
       }
 
+      // Only persist the chunk when something actually changed to minimise writes.
       const requiresUpdate =
         current.startMs !== nextChunk.startMs ||
         current.endMs !== nextChunk.endMs ||
@@ -556,6 +561,7 @@ class IndexedDBManifestService implements ManifestService {
       ordered[idx] = nextChunk
 
       if (plan.seq > 0) {
+        // Accumulate verification totals so the caller can surface progress feedback.
         verifiedChunkCount += 1
         totalVerifiedDurationMs += Math.max(0, plan.durationMs)
       }
