@@ -44,6 +44,9 @@ const AAC_HE_MIME = 'audio/mp4;codecs=mp4a.40.5'
 const AAC_LC_MIME = 'audio/mp4;codecs=mp4a.40.2'
 const OPUS_WEBM_MIME = 'audio/webm;codecs=opus'
 
+const NO_AUDIO_TIMEOUT_MS = 15_000
+const MIN_PLAYABLE_CHUNK_BYTES = 1_500
+
 function selectMimeType(preferred?: string): string {
   const candidates = preferred
     ? [preferred]
@@ -82,6 +85,8 @@ class BrowserCaptureController implements CaptureController {
     mimeType: null,
     chunksRecorded: 0,
   }
+  #noAudioTimeoutId: number | null = null
+  #audioFlowDetected = false
 
   get state(): CaptureStateSnapshot {
     return this.#state
@@ -159,18 +164,21 @@ class BrowserCaptureController implements CaptureController {
         }
         return
       }
-      const seq = this.#chunkSeq++
-      const chunkStart = this.#lastChunkEndMs
-      const manualTimecode = chunkStart - this.#recorderStartedAt
-      const chunkDuration = Date.now() - chunkStart
-      const isFirstChunk = seq === 0
-      const isHeaderChunk = isFirstChunk && (event.timecode === 0 || data.size < 2048)
-      const chunkEnd = isHeaderChunk ? chunkStart : chunkStart + chunkDuration
-      this.#lastChunkEndMs = chunkEnd
+        const seq = this.#chunkSeq++
+        const chunkStart = this.#lastChunkEndMs
+        const manualTimecode = chunkStart - this.#recorderStartedAt
+        const chunkDuration = Date.now() - chunkStart
+        const isFirstChunk = seq === 0
+        const isHeaderChunk = isFirstChunk && (event.timecode === 0 || data.size < 2048)
+        const chunkEnd = isHeaderChunk ? chunkStart : chunkStart + chunkDuration
+        if (!isHeaderChunk && data.size >= MIN_PLAYABLE_CHUNK_BYTES) {
+          this.#markAudioDetected()
+        }
+        this.#lastChunkEndMs = chunkEnd
       if (isHeaderChunk) {
         this.#headerChunkBlob = data
       }
-      void logDebug('Chunk captured', {
+        void logDebug('Chunk captured', {
         sessionId: this.#sessionId,
         seq,
         size: data.size,
@@ -190,7 +198,7 @@ class BrowserCaptureController implements CaptureController {
                 seq,
                 startMs: chunkStart,
                 endMs: chunkEnd,
-              verifiedAudioMsec: isHeaderChunk ? 0 : null,
+                verifiedAudioMsec: isHeaderChunk ? 0 : null,
               },
               data,
             ),
@@ -259,6 +267,7 @@ class BrowserCaptureController implements CaptureController {
 
     recorder.addEventListener('error', (event) => {
       console.error('[CaptureController] Recorder error', event)
+      this.#clearNoAudioTimer()
       this.#setState({ state: 'error', error: event.error?.message ?? 'Recorder error' })
       void logError('MediaRecorder error', {
         sessionId: this.#sessionId,
@@ -286,6 +295,8 @@ class BrowserCaptureController implements CaptureController {
       lastChunkAt: null,
       chunksRecorded: 0,
     })
+    this.#audioFlowDetected = false
+    this.#armNoAudioTimer()
   }
 
   async stop(): Promise<void> {
@@ -294,6 +305,7 @@ class BrowserCaptureController implements CaptureController {
       return
     }
 
+    this.#clearNoAudioTimer()
     this.#setState({ state: 'stopping' })
     const sessionId = this.#sessionId
 
@@ -447,6 +459,81 @@ class BrowserCaptureController implements CaptureController {
 
   async flushPending(): Promise<void> {
     await this.#persistQueue
+  }
+
+  #armNoAudioTimer() {
+    this.#clearNoAudioTimer()
+    if (this.#state.state !== 'recording') {
+      return
+    }
+    this.#noAudioTimeoutId = window.setTimeout(() => {
+      void this.#handleNoAudioTimeout()
+    }, NO_AUDIO_TIMEOUT_MS)
+  }
+
+  #clearNoAudioTimer() {
+    if (this.#noAudioTimeoutId !== null) {
+      window.clearTimeout(this.#noAudioTimeoutId)
+      this.#noAudioTimeoutId = null
+    }
+  }
+
+  #markAudioDetected() {
+    if (this.#audioFlowDetected) {
+      return
+    }
+    this.#audioFlowDetected = true
+    this.#clearNoAudioTimer()
+    void logInfo('Audio flow detected', {
+      sessionId: this.#sessionId,
+      elapsedMs: Date.now() - this.#recorderStartedAt,
+    })
+  }
+
+  async #handleNoAudioTimeout() {
+    this.#noAudioTimeoutId = null
+    if (this.#audioFlowDetected || this.#state.state !== 'recording' || !this.#sessionId) {
+      return
+    }
+    void logWarn('No audio detected within safety window', {
+      sessionId: this.#sessionId,
+      elapsedMs: Date.now() - this.#recorderStartedAt,
+    })
+    await this.#playWarningTone()
+    this.#setState({ error: 'No audio detected — recording stopped.' })
+    try {
+      await this.stop()
+    } catch (error) {
+      console.error('[CaptureController] Failed to stop after no-audio timeout', error)
+    }
+  }
+
+  async #playWarningTone() {
+    try {
+      const AudioContextCtor =
+        window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      if (typeof AudioContextCtor !== 'function') {
+        return
+      }
+      const context = new AudioContextCtor()
+      await context.resume().catch(() => undefined)
+      const oscillator = context.createOscillator()
+      const gain = context.createGain()
+      oscillator.type = 'sine'
+      oscillator.frequency.value = 660
+      gain.gain.value = 0.05
+      oscillator.connect(gain)
+      gain.connect(context.destination)
+      oscillator.start()
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 550))
+      oscillator.stop()
+      await new Promise<void>((resolve) => {
+        oscillator.addEventListener('ended', () => resolve(), { once: true })
+      })
+      await context.close()
+    } catch (error) {
+      console.warn('[CaptureController] Warning tone failed', error)
+    }
   }
 
   attachAnalysisPort(port: MessagePort): void {
