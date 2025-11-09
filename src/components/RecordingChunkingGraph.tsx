@@ -68,28 +68,69 @@ const toLogScale = (value: number, base = LOG_SCALE_BASE) => {
   return Math.min(1, Math.max(0, scaled))
 }
 
-const buildAreaPath = (
+const SEGMENT_RESET_EPSILON_MS = 1
+
+const buildAreaPaths = (
   frames: RecordingChunkAnalysis['frames'],
   totalDurationMs: number,
   height: number,
   width: number,
   transform: (value: number) => number,
 ) => {
-  if (frames.length === 0 || totalDurationMs <= 0) {
-    return ''
+  if (frames.length === 0 || totalDurationMs <= 0 || width <= 0) {
+    return [] as string[]
   }
-  const commands: string[] = [`M 0 ${height}`]
-  const lastFrame = frames[frames.length - 1]
-  frames.forEach((frame) => {
+
+  const orderedFrames = [...frames].sort((a, b) => {
+    if (a.startMs !== b.startMs) return a.startMs - b.startMs
+    if (a.endMs !== b.endMs) return a.endMs - b.endMs
+    return a.index - b.index
+  })
+
+  const segments: string[] = []
+  let commands: string[] = []
+  let segmentEndX = 0
+  let lastMidpointMs = -Infinity
+
+  const flushSegment = () => {
+    if (commands.length > 1) {
+      commands.push(`L ${segmentEndX.toFixed(2)} ${height}`)
+      commands.push('Z')
+      segments.push(commands.join(' '))
+    }
+    commands = []
+  }
+
+  orderedFrames.forEach((frame, idx) => {
     const midpointMs = (frame.startMs + frame.endMs) / 2
-    const x = Math.min(width, (midpointMs / totalDurationMs) * width)
+    const frameStartX = Math.min(width, Math.max(0, (frame.startMs / totalDurationMs) * width))
+    const frameEndX = Math.min(width, Math.max(0, (frame.endMs / totalDurationMs) * width))
+    const x = Math.min(width, Math.max(0, (midpointMs / totalDurationMs) * width))
     const normalized = transform(frame.normalized)
     const y = Math.max(0, Math.min(height, (1 - normalized) * height))
+
+    const isNewSegment =
+      commands.length === 0 || midpointMs + SEGMENT_RESET_EPSILON_MS < lastMidpointMs
+
+    if (isNewSegment) {
+      flushSegment()
+      commands = [`M ${frameStartX.toFixed(2)} ${height}`]
+    }
+
     commands.push(`L ${x.toFixed(2)} ${y.toFixed(2)}`)
+    segmentEndX = Math.max(frameEndX, segmentEndX)
+    lastMidpointMs = midpointMs
+
+    if (idx === orderedFrames.length - 1) {
+      flushSegment()
+    }
   })
-  commands.push(`L ${Math.max(width, (lastFrame.endMs / totalDurationMs) * width).toFixed(2)} ${height}`)
-  commands.push('Z')
-  return commands.join(' ')
+
+  if (commands.length > 0) {
+    flushSegment()
+  }
+
+  return segments
 }
 
 const buildQuietRects = (
@@ -296,8 +337,8 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: Re
     }
   }, [isDragging, isPlaybackActive, playbackIndicator, updateIndicators])
 
-  const areaPath = useMemo(
-    () => buildAreaPath(analysis.frames, estimatedDuration, height, width, toLogScale),
+  const areaPaths = useMemo(
+    () => buildAreaPaths(analysis.frames, estimatedDuration, height, width, toLogScale),
     [analysis.frames, estimatedDuration, height, width],
   )
 
@@ -367,9 +408,15 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: Re
                 fill="rgba(56, 189, 248, 0.12)"
               />
             ))}
-            {areaPath ? (
-              <path d={areaPath} fill={`url(#${gradientId})`} stroke="rgba(94, 234, 212, 0.48)" strokeWidth={1} />
-            ) : null}
+            {areaPaths.map((segmentPath, index) => (
+              <path
+                key={`histogram-${index}`}
+                d={segmentPath}
+                fill={`url(#${gradientId})`}
+                stroke="rgba(94, 234, 212, 0.48)"
+                strokeWidth={1}
+              />
+            ))}
               {playbackIndicator ? (
                 <g className="chunking-playback-indicator" aria-hidden="true">
                   <rect
