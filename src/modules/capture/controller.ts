@@ -44,8 +44,9 @@ const AAC_HE_MIME = 'audio/mp4;codecs=mp4a.40.5'
 const AAC_LC_MIME = 'audio/mp4;codecs=mp4a.40.2'
 const OPUS_WEBM_MIME = 'audio/webm;codecs=opus'
 
-const NO_AUDIO_TIMEOUT_MS = 15_000
-const MIN_PLAYABLE_CHUNK_BYTES = 1_500
+const NO_AUDIO_TIMEOUT_MS = 9_000
+const AUDIO_DETECTION_MAX_THRESHOLD = 0.003
+const AUDIO_DETECTION_AVERAGE_THRESHOLD = 0.0008
 
 function selectMimeType(preferred?: string): string {
   const candidates = preferred
@@ -171,9 +172,6 @@ class BrowserCaptureController implements CaptureController {
         const isFirstChunk = seq === 0
         const isHeaderChunk = isFirstChunk && (event.timecode === 0 || data.size < 2048)
         const chunkEnd = isHeaderChunk ? chunkStart : chunkStart + chunkDuration
-        if (!isHeaderChunk && data.size >= MIN_PLAYABLE_CHUNK_BYTES) {
-          this.#markAudioDetected()
-        }
         this.#lastChunkEndMs = chunkEnd
       if (isHeaderChunk) {
         this.#headerChunkBlob = data
@@ -203,58 +201,74 @@ class BrowserCaptureController implements CaptureController {
               data,
             ),
           )
-          .then(async () => {
-            this.#setState({
-              lastChunkAt: chunkEnd,
-              bytesBuffered: this.#state.bytesBuffered + data.size,
-              chunksRecorded: this.#state.chunksRecorded + 1,
-            })
-            void logInfo('Chunk persisted', {
-              sessionId: this.#sessionId,
-              seq,
-              size: data.size,
-              startMs: chunkStart,
-              endMs: chunkEnd,
-            })
-            if (!isHeaderChunk && data.size > 0 && chunkEnd > chunkStart) {
-              try {
-                let analysisBlob: Blob = data
-                const headerBlob = this.#headerChunkBlob
-                const mime = this.#mimeType ?? data.type
-                if (headerBlob && mime && /mp4/i.test(mime)) {
-                  analysisBlob = new Blob([headerBlob, data], { type: headerBlob.type || data.type || mime })
-                }
-                const profile = await computeChunkVolumeProfile(analysisBlob, {
-                  chunkId,
-                  sessionId: this.#sessionId!,
-                  seq,
-                  chunkStartMs: chunkStart,
-                  chunkEndMs: chunkEnd,
-                })
-                await manifestService.storeChunkVolumeProfile(profile)
-                void logDebug('Chunk volume profile stored', {
-                  sessionId: this.#sessionId,
-                  seq,
+            .then(async () => {
+              this.#setState({
+                lastChunkAt: chunkEnd,
+                bytesBuffered: this.#state.bytesBuffered + data.size,
+                chunksRecorded: this.#state.chunksRecorded + 1,
+              })
+              void logInfo('Chunk persisted', {
+                sessionId: this.#sessionId,
+                seq,
+                size: data.size,
+                startMs: chunkStart,
+                endMs: chunkEnd,
+              })
+              if (!isHeaderChunk && data.size > 0 && chunkEnd > chunkStart) {
+                try {
+                  let analysisBlob: Blob = data
+                  const headerBlob = this.#headerChunkBlob
+                  const mime = this.#mimeType ?? data.type
+                  if (headerBlob && mime && /mp4/i.test(mime)) {
+                    analysisBlob = new Blob([headerBlob, data], { type: headerBlob.type || data.type || mime })
+                  }
+                  const profile = await computeChunkVolumeProfile(analysisBlob, {
+                    chunkId,
+                    sessionId: this.#sessionId!,
+                    seq,
+                    chunkStartMs: chunkStart,
+                    chunkEndMs: chunkEnd,
+                  })
+                  const { maxNormalized, averageNormalized } = profile
+                  if (
+                    maxNormalized >= AUDIO_DETECTION_MAX_THRESHOLD ||
+                    averageNormalized >= AUDIO_DETECTION_AVERAGE_THRESHOLD
+                  ) {
+                    this.#markAudioDetected({ maxNormalized, averageNormalized })
+                  } else if (!this.#audioFlowDetected) {
+                    void logDebug('Chunk below audio detection threshold', {
+                      sessionId: this.#sessionId,
+                      seq,
+                      maxNormalized,
+                      averageNormalized,
+                      thresholdMax: AUDIO_DETECTION_MAX_THRESHOLD,
+                      thresholdAverage: AUDIO_DETECTION_AVERAGE_THRESHOLD,
+                    })
+                  }
+                  await manifestService.storeChunkVolumeProfile(profile)
+                  void logDebug('Chunk volume profile stored', {
+                    sessionId: this.#sessionId,
+                    seq,
                     frameCount: profile.frames.length,
-                })
-              } catch (error) {
-                void logWarn('Chunk volume profile failed', {
+                  })
+                } catch (error) {
+                  void logWarn('Chunk volume profile failed', {
+                    sessionId: this.#sessionId,
+                    seq,
+                    error: error instanceof Error ? error.message : String(error),
+                  })
+                }
+              }
+            })
+              .catch((error) => {
+                console.error('[CaptureController] Failed to persist chunk', error)
+                this.#setState({ state: 'error', error: error instanceof Error ? error.message : String(error) })
+                void logError('Chunk persistence failed', {
                   sessionId: this.#sessionId,
                   seq,
                   error: error instanceof Error ? error.message : String(error),
                 })
-              }
-            }
-          })
-          .catch((error) => {
-          console.error('[CaptureController] Failed to persist chunk', error)
-          this.#setState({ state: 'error', error: error instanceof Error ? error.message : String(error) })
-          void logError('Chunk persistence failed', {
-            sessionId: this.#sessionId,
-            seq,
-            error: error instanceof Error ? error.message : String(error),
-          })
-        })
+              })
     })
 
     recorder.addEventListener('stop', () => {
@@ -478,7 +492,7 @@ class BrowserCaptureController implements CaptureController {
     }
   }
 
-  #markAudioDetected() {
+  #markAudioDetected(details?: { maxNormalized?: number; averageNormalized?: number }) {
     if (this.#audioFlowDetected) {
       return
     }
@@ -487,6 +501,8 @@ class BrowserCaptureController implements CaptureController {
     void logInfo('Audio flow detected', {
       sessionId: this.#sessionId,
       elapsedMs: Date.now() - this.#recorderStartedAt,
+      maxNormalized: details?.maxNormalized ?? null,
+      averageNormalized: details?.averageNormalized ?? null,
     })
   }
 

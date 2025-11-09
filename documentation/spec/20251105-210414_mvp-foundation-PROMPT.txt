@@ -214,3 +214,7 @@ I want you to make it so that when I open up the playlist and I hit the bug and 
 [2025-11-09T19:44Z] Ok, when viewing on iPhone, in debug mode or normal mode, the list of transcriptions, is too large, and covers up the recording button. Can we add dynamic detection of the top section height, so that the transcription scrolley  panel always fills the lower-portion  below?
 
 [2025-11-09T20:07Z] OK different  issue. There are some times, some devices, that after hitting record, audio is not actually flowing. In these cases, after 15 seconds, and still no audio, you should play a quiet-ish tone, and stop the recording, showing the recording has the regular error case. That way nobody sits and records  for minutes without realizing
+
+[2025-11-09T20:40Z] It is not working, and never stopped the recording. 
+
+Also reduce the max time you wait until abort to 9 seconds
