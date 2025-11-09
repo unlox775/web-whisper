@@ -45,7 +45,8 @@ const formatDuration = (durationMs: number) => {
 }
 
 const LOG_SCALE_BASE = 10
-const SCROLL_WINDOW_MS = 30_000
+// Each viewport spans 75 seconds of audio so the histogram starts zoomed out per product guidance.
+const SCROLL_WINDOW_MS = 75_000
 const BASE_VIEWPORT_WIDTH = 720
 const SCROLL_INDICATOR_THRESHOLD = 12
 const AUTO_SCROLL_THRESHOLD_RATIO = 0.75

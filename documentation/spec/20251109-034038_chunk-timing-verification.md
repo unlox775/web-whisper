@@ -13,6 +13,7 @@
 - Sanitised chunk volume start/end offsets via `SessionChunkProvider` so histogram paths remain monotonic.
 - Refined session detail header to show verified capture spans instead of stale `updatedAt` clocks.
 - Expanded inline documentation across provider/utilities to meet the requested density guidelines.
+- Adjusted histogram viewport to default to a 75 s window (≈2.5× zoom-out) for quicker whole-session scans.
 
 ## 🚧 In Progress
 - Assess downstream visualizations for potential timing-status affordances.
