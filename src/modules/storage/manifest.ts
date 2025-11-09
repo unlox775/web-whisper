@@ -1,7 +1,9 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import type { ChunkVolumeProfile } from '../analysis/chunking'
+import { DEFAULT_CHUNK_TIMING_STATUS, computeSequentialTimings } from './chunk-timing'
 
 export type SessionStatus = 'recording' | 'ready' | 'error'
+export type ChunkTimingStatus = 'unverified' | 'verified'
 
 export interface SessionRecord {
   id: string
@@ -14,6 +16,7 @@ export interface SessionRecord {
   durationMs: number
   mimeType: string | null
   notes?: string
+  timingStatus?: ChunkTimingStatus
 }
 
 export interface ChunkRecord {
@@ -25,6 +28,7 @@ export interface ChunkRecord {
   byteLength: number
   createdAt: number
   verifiedAudioMsec: number | null
+  timingStatus?: ChunkTimingStatus
 }
 
 export interface StoredChunk extends ChunkRecord {
@@ -35,6 +39,17 @@ export interface ChunkVolumeProfileRecord extends ChunkVolumeProfile {
   id: string
   createdAt: number
   updatedAt: number
+}
+
+export interface SessionTimingVerificationResult {
+  sessionId: string
+  status: ChunkTimingStatus
+  updatedChunkIds: string[]
+  missingChunkIds: string[]
+  totalVerifiedDurationMs: number
+  baseStartMs: number | null
+  verifiedChunkCount: number
+  session?: SessionRecord | null
 }
 
 type StoredChunkVolumeFrame = number | { normalized?: number; rms?: number }
@@ -188,13 +203,14 @@ export interface ManifestService {
   getSession(sessionId: string): Promise<SessionRecord | null>
   getChunkMetadata(sessionId: string): Promise<ChunkRecord[]>
   getChunkData(sessionId: string): Promise<StoredChunk[]>
-  buildSessionBlob(sessionId: string, mimeType: string): Promise<Blob | null>
-  storeChunkVolumeProfile(profile: ChunkVolumeProfile): Promise<void>
-  getChunkVolumeProfile(chunkId: string): Promise<ChunkVolumeProfileRecord | null>
-  listChunkVolumeProfiles(sessionId?: string): Promise<ChunkVolumeProfileRecord[]>
-  deleteSession(sessionId: string): Promise<void>
-  storageTotals(): Promise<{ totalBytes: number }>
-  reconcileDanglingSessions(): Promise<void>
+    buildSessionBlob(sessionId: string, mimeType: string): Promise<Blob | null>
+    storeChunkVolumeProfile(profile: ChunkVolumeProfile): Promise<void>
+    getChunkVolumeProfile(chunkId: string): Promise<ChunkVolumeProfileRecord | null>
+    listChunkVolumeProfiles(sessionId?: string): Promise<ChunkVolumeProfileRecord[]>
+    deleteSession(sessionId: string): Promise<void>
+    storageTotals(): Promise<{ totalBytes: number }>
+    verifySessionChunkTimings(sessionId: string): Promise<SessionTimingVerificationResult>
+    reconcileDanglingSessions(): Promise<void>
   getChunksForInspection(): Promise<Array<Record<string, unknown>>>
   createLogSession(): Promise<LogSessionRecord>
   finishLogSession(id: string): Promise<void>
@@ -210,7 +226,10 @@ class IndexedDBManifestService implements ManifestService {
 
   async createSession(record: SessionRecord): Promise<void> {
     const db = await getDB()
-    await db.put('sessions', record)
+    await db.put('sessions', {
+      ...record,
+      timingStatus: record.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+    })
   }
 
   async updateSession(id: string, patch: Partial<SessionRecord>): Promise<SessionRecord | null> {
@@ -222,7 +241,11 @@ class IndexedDBManifestService implements ManifestService {
       await tx.done
       return null
     }
-    const updated = { ...existing, ...patch }
+    const updated: SessionRecord = {
+      ...existing,
+      ...patch,
+      timingStatus: patch.timingStatus ?? existing.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+    }
     await store.put(updated)
     await tx.done
     return updated
@@ -240,6 +263,7 @@ class IndexedDBManifestService implements ManifestService {
       byteLength: blob.size,
       createdAt: Date.now(),
       verifiedAudioMsec: entry.seq === 0 ? 0 : null,
+      timingStatus: DEFAULT_CHUNK_TIMING_STATUS,
     }
 
     await chunkStore.put(storedChunk)
@@ -263,12 +287,24 @@ class IndexedDBManifestService implements ManifestService {
   async listSessions(): Promise<SessionRecord[]> {
     const db = await getDB()
     const sessions = await db.getAll('sessions')
-    return sessions.sort((a, b) => b.startedAt - a.startedAt)
+    return sessions
+      .map((session) => ({
+        ...session,
+        timingStatus: session.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+      }))
+      .sort((a, b) => b.startedAt - a.startedAt)
   }
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
     const db = await getDB()
-    return (await db.get('sessions', sessionId)) ?? null
+    const record = await db.get('sessions', sessionId)
+    if (!record) {
+      return null
+    }
+    return {
+      ...record,
+      timingStatus: record.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+    }
   }
 
   async getChunkMetadata(sessionId: string): Promise<ChunkRecord[]> {
@@ -276,7 +312,10 @@ class IndexedDBManifestService implements ManifestService {
     const index = db.transaction('chunks').store.index('by-session')
     const chunks = await index.getAll(sessionId)
     return chunks
-      .map(({ blob: _blob, ...rest }) => rest)
+      .map(({ blob: _blob, timingStatus, ...rest }) => ({
+        ...rest,
+        timingStatus: timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+      }))
       .sort((a, b) => a.seq - b.seq)
   }
 
@@ -284,7 +323,12 @@ class IndexedDBManifestService implements ManifestService {
     const db = await getDB()
     const index = db.transaction('chunks').store.index('by-session')
     const chunks = await index.getAll(sessionId)
-    return chunks.sort((a, b) => a.seq - b.seq)
+    return chunks
+      .sort((a, b) => a.seq - b.seq)
+      .map((chunk) => ({
+        ...chunk,
+        timingStatus: chunk.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+      }))
   }
 
   async buildSessionBlob(sessionId: string, mimeType: string): Promise<Blob | null> {
@@ -379,6 +423,172 @@ class IndexedDBManifestService implements ManifestService {
     return { totalBytes }
   }
 
+  /**
+   * Performs a deterministic rebuild of a session's chunk timing metadata once all chunk
+   * durations have been verified. If any chunk still lacks a positive duration, the pass
+   * returns early without mutating the stored start/end values, signalling the caller to
+   * regenerate the missing volume profile first.
+   */
+  async verifySessionChunkTimings(sessionId: string): Promise<SessionTimingVerificationResult> {
+    const db = await getDB()
+    const tx = db.transaction(['chunks', 'chunkVolumes', 'sessions'], 'readwrite')
+    const chunkStore = tx.objectStore('chunks')
+    const volumeStore = tx.objectStore('chunkVolumes')
+    const sessionStore = tx.objectStore('sessions')
+
+    const [sessionRecord, chunkRows] = await Promise.all([
+      sessionStore.get(sessionId),
+      chunkStore.index('by-session').getAll(sessionId),
+    ])
+
+    const normalizedSession: SessionRecord | null = sessionRecord
+      ? {
+          ...sessionRecord,
+          timingStatus: sessionRecord.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+        }
+      : null
+
+    if (chunkRows.length === 0) {
+      await tx.done
+      return {
+        sessionId,
+        status: DEFAULT_CHUNK_TIMING_STATUS,
+        updatedChunkIds: [],
+        missingChunkIds: [],
+        totalVerifiedDurationMs: 0,
+        baseStartMs: normalizedSession?.startedAt ?? null,
+        verifiedChunkCount: 0,
+        session: normalizedSession,
+      }
+    }
+
+    const ordered = [...chunkRows].sort((a, b) => a.seq - b.seq)
+    const durations: number[] = new Array(ordered.length)
+    const missingChunkIds: string[] = []
+
+    for (let i = 0; i < ordered.length; i += 1) {
+      const chunk = ordered[i]
+      if (chunk.seq === 0) {
+        durations[i] = 0
+        continue
+      }
+      const verifiedDuration =
+        typeof chunk.verifiedAudioMsec === 'number' && chunk.verifiedAudioMsec > 0
+          ? Math.round(chunk.verifiedAudioMsec)
+          : null
+
+      if (verifiedDuration !== null) {
+        durations[i] = verifiedDuration
+        continue
+      }
+
+      const volumeRecord = await volumeStore.get(chunk.id)
+      if (volumeRecord && typeof volumeRecord.durationMs === 'number' && volumeRecord.durationMs > 0) {
+        durations[i] = Math.round(volumeRecord.durationMs)
+        continue
+      }
+
+      missingChunkIds.push(chunk.id)
+    }
+
+    const baseStartMsCandidate =
+      ordered.find((chunk) => chunk.seq === 0)?.startMs ??
+      normalizedSession?.startedAt ??
+      ordered[0]?.startMs ??
+      Date.now()
+    const baseStartMs = Number.isFinite(baseStartMsCandidate) ? Math.round(baseStartMsCandidate) : Date.now()
+
+    if (missingChunkIds.length > 0) {
+      if (sessionRecord && sessionRecord.timingStatus !== DEFAULT_CHUNK_TIMING_STATUS) {
+        await sessionStore.put({
+          ...sessionRecord,
+          timingStatus: DEFAULT_CHUNK_TIMING_STATUS,
+        })
+      }
+      await tx.done
+      return {
+        sessionId,
+        status: DEFAULT_CHUNK_TIMING_STATUS,
+        updatedChunkIds: [],
+        missingChunkIds,
+        totalVerifiedDurationMs: 0,
+        baseStartMs,
+        verifiedChunkCount: ordered.filter((chunk, idx) => chunk.seq > 0 && durations[idx] > 0).length,
+        session: normalizedSession,
+      }
+    }
+
+    const sequentialPlan = computeSequentialTimings(
+      baseStartMs,
+      ordered.map((chunk, idx) => ({
+        id: chunk.id,
+        seq: chunk.seq,
+        durationMs: durations[idx],
+      })),
+    )
+
+    const updatedChunkIds: string[] = []
+    let totalVerifiedDurationMs = 0
+    let verifiedChunkCount = 0
+
+    for (let idx = 0; idx < sequentialPlan.length; idx += 1) {
+      const current = ordered[idx]
+      const plan = sequentialPlan[idx]
+      const nextChunk = {
+        ...current,
+        startMs: plan.startMs,
+        endMs: plan.endMs,
+        verifiedAudioMsec: plan.seq === 0 ? 0 : plan.durationMs,
+        timingStatus: 'verified' as ChunkTimingStatus,
+      }
+
+      const requiresUpdate =
+        current.startMs !== nextChunk.startMs ||
+        current.endMs !== nextChunk.endMs ||
+        (current.verifiedAudioMsec ?? 0) !== nextChunk.verifiedAudioMsec ||
+        current.timingStatus !== 'verified'
+
+      if (requiresUpdate) {
+        await chunkStore.put(nextChunk)
+        updatedChunkIds.push(nextChunk.id)
+      }
+
+      ordered[idx] = nextChunk
+
+      if (plan.seq > 0) {
+        verifiedChunkCount += 1
+        totalVerifiedDurationMs += Math.max(0, plan.durationMs)
+      }
+    }
+
+    let updatedSession: SessionRecord | null = normalizedSession
+    if (sessionRecord) {
+      const verifiedDurationRounded = Math.max(0, Math.round(totalVerifiedDurationMs))
+      const nextSession: SessionRecord = {
+        ...sessionRecord,
+        timingStatus: 'verified',
+        durationMs: Math.max(sessionRecord.durationMs, verifiedDurationRounded),
+        updatedAt: Date.now(),
+      }
+      await sessionStore.put(nextSession)
+      updatedSession = {
+        ...nextSession,
+      }
+    }
+
+    await tx.done
+    return {
+      sessionId,
+      status: 'verified',
+      updatedChunkIds,
+      missingChunkIds: [],
+      totalVerifiedDurationMs: Math.max(0, Math.round(totalVerifiedDurationMs)),
+      baseStartMs,
+      verifiedChunkCount,
+      session: updatedSession,
+    }
+  }
+
   async reconcileDanglingSessions(): Promise<void> {
     const db = await getDB()
     const tx = db.transaction(['sessions', 'chunks'], 'readwrite')
@@ -393,30 +603,32 @@ class IndexedDBManifestService implements ManifestService {
       const chunks = await chunkStore.index('by-session').getAll(session.id)
       if (chunks.length === 0) {
         await sessionStore.put({
-          ...session,
-          status: 'error',
-          notes: 'No audio captured (session interrupted).',
-          updatedAt: now,
-          totalBytes: 0,
-          chunkCount: 0,
-          durationMs: 0,
+            ...session,
+            status: 'error',
+            notes: 'No audio captured (session interrupted).',
+            updatedAt: now,
+            totalBytes: 0,
+            chunkCount: 0,
+            durationMs: 0,
+            timingStatus: session.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
         })
       } else {
         const totalBytes = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
         const durationMs = Math.max(
-          session.durationMs,
-          Math.max(...chunks.map((chunk) => chunk.endMs)) - session.startedAt,
-        )
+            session.durationMs,
+            Math.max(...chunks.map((chunk) => chunk.endMs)) - session.startedAt,
+          )
         await sessionStore.put({
-          ...session,
-          status: 'ready',
-          notes: session.notes,
-          updatedAt: now,
-          totalBytes,
-          chunkCount: chunks.length,
-          durationMs,
-        })
-      }
+            ...session,
+            status: 'ready',
+            notes: session.notes,
+            updatedAt: now,
+            totalBytes,
+            chunkCount: chunks.length,
+            durationMs,
+            timingStatus: session.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+          })
+        }
     }
 
     await tx.done
@@ -443,6 +655,7 @@ class IndexedDBManifestService implements ManifestService {
 
         return {
           ...rest,
+          timingStatus: rest.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
           blobSize: blob.size,
           blobType: blob.type,
           verifiedByteLength,
