@@ -30,6 +30,7 @@ export interface PrepareAnalysisOptions {
 }
 
 const MP4_MIME_PATTERN = /mp4|m4a/i
+const FALLBACK_FRAME_DURATION_MS = 50
 
 /**
  * Central orchestration layer for session chunk state. The provider owns the fetch/verify
@@ -124,16 +125,34 @@ export class SessionChunkProvider {
     })
 
     // Build a quick lookup so we can overwrite profile positions with the verified chunk metadata.
-    const chunkById = new Map<string, ChunkRecord>(
-      chunkMetadata.map((chunk) => [chunk.id, chunk]),
-    )
-
     // Rewrite the stored profile timing using the verified chunk metadata so charts stay monotonic.
+    const orderedChunkRecords = chunkMetadata
+      .filter((chunk) => chunk.seq >= 0)
+      .sort((a, b) => a.seq - b.seq)
+    const chunkDurations = new Map<string, number>()
+    orderedChunkRecords.forEach((chunk) => {
+      if (chunk.seq === 0) {
+        chunkDurations.set(chunk.id, 0)
+        return
+      }
+      const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
+      chunkDurations.set(chunk.id, durationMs)
+    })
+
+    let cumulativeOffsetMs = 0
     const decoratedVolumeProfiles: ChunkVolumeProfileRecord[] = volumeProfiles.map((profile) => {
-      const chunkMeta = chunkById.get(profile.chunkId) ?? null
-      const startMs = chunkMeta ? chunkMeta.startMs : profile.chunkStartMs
-      const endMs = chunkMeta ? chunkMeta.endMs : profile.chunkEndMs
-      const durationMs = chunkMeta ? Math.max(0, chunkMeta.endMs - chunkMeta.startMs) : profile.durationMs
+      if (profile.seq <= 0) {
+        return {
+          ...profile,
+          chunkStartMs: 0,
+          chunkEndMs: 0,
+          durationMs: 0,
+        }
+      }
+      const durationMs = chunkDurations.get(profile.chunkId) ?? Math.max(0, profile.durationMs ?? 0)
+      const startMs = cumulativeOffsetMs
+      const endMs = startMs + durationMs
+      cumulativeOffsetMs = endMs
       return {
         ...profile,
         chunkStartMs: startMs,
@@ -142,10 +161,20 @@ export class SessionChunkProvider {
       }
     })
 
+    const rebasedTotalDurationMs = decoratedVolumeProfiles.reduce(
+      (max, profile) => Math.max(max, profile.chunkEndMs),
+      0,
+    )
+
     // Only retain profiles with real audio frames and coerce their timing to the verified offsets.
     const usableProfiles: ChunkVolumeProfile[] = decoratedVolumeProfiles
-      .filter((profile) => profile.sessionId === session.id && profile.frames.length > 0)
+      .filter((profile) => profile.sessionId === session.id && profile.seq > 0 && profile.durationMs >= 0)
       .map((profile) => {
+        const frameDurationMs = profile.frameDurationMs > 0 ? profile.frameDurationMs : FALLBACK_FRAME_DURATION_MS
+        const frameCount = profile.frames.length > 0
+          ? profile.frames.length
+          : Math.max(1, Math.round(profile.durationMs / frameDurationMs) || 1)
+        const frames = profile.frames.length > 0 ? profile.frames : new Array(frameCount).fill(0)
         return {
           chunkId: profile.chunkId,
           sessionId: profile.sessionId,
@@ -154,10 +183,10 @@ export class SessionChunkProvider {
           chunkEndMs: profile.chunkEndMs,
           durationMs: Math.max(0, profile.durationMs ?? 0),
           sampleRate: profile.sampleRate,
-          frameDurationMs: profile.frameDurationMs,
-          frames: profile.frames,
-          maxNormalized: profile.maxNormalized,
-          averageNormalized: profile.averageNormalized,
+          frameDurationMs,
+          frames,
+          maxNormalized: profile.frames.length > 0 ? profile.maxNormalized : 0,
+          averageNormalized: profile.frames.length > 0 ? profile.averageNormalized : 0,
           scalingFactor: profile.scalingFactor,
         }
       })
@@ -207,7 +236,11 @@ export class SessionChunkProvider {
     // Prefer the verified session duration, otherwise fall back to the stored session length.
     const totalDurationMs =
       verification.session?.durationMs ??
-      (typeof session.durationMs === 'number' && session.durationMs > 0 ? session.durationMs : undefined)
+      (rebasedTotalDurationMs > 0
+        ? rebasedTotalDurationMs
+        : typeof session.durationMs === 'number' && session.durationMs > 0
+          ? session.durationMs
+          : undefined)
 
     // Ask the chunking analysis helper to generate quiet-region metadata over the sequential frames.
     const analysis = analyzeRecordingChunkingFromProfiles(usableProfiles, {
