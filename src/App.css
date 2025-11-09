@@ -678,6 +678,10 @@ body {
   flex: none;
 }
 
+.chunking-playback-indicator {
+  pointer-events: none;
+}
+
 .chunking-target-hint {
   font-size: 0.75rem;
   color: #a5b4fc;
