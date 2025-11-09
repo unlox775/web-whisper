@@ -47,6 +47,8 @@ const OPUS_WEBM_MIME = 'audio/webm;codecs=opus'
 const NO_AUDIO_TIMEOUT_MS = 9_000
 const AUDIO_DETECTION_MAX_THRESHOLD = 0.003
 const AUDIO_DETECTION_AVERAGE_THRESHOLD = 0.0008
+const MAX_CONSECUTIVE_SILENT_CHUNKS = 3
+const MIN_ELAPSED_FOR_SILENT_ABORT_MS = 4000
 
 function selectMimeType(preferred?: string): string {
   const candidates = preferred
@@ -88,6 +90,10 @@ class BrowserCaptureController implements CaptureController {
   }
   #noAudioTimeoutId: number | null = null
   #audioFlowDetected = false
+  #healthCheckIntervalId: number | null = null
+  #healthAbortIssued = false
+  #silentChunkCount = 0
+  #consecutiveSilentChunks = 0
 
   get state(): CaptureStateSnapshot {
     return this.#state
@@ -214,51 +220,65 @@ class BrowserCaptureController implements CaptureController {
                 startMs: chunkStart,
                 endMs: chunkEnd,
               })
-              if (!isHeaderChunk && data.size > 0 && chunkEnd > chunkStart) {
-                try {
-                  let analysisBlob: Blob = data
-                  const headerBlob = this.#headerChunkBlob
-                  const mime = this.#mimeType ?? data.type
-                  if (headerBlob && mime && /mp4/i.test(mime)) {
-                    analysisBlob = new Blob([headerBlob, data], { type: headerBlob.type || data.type || mime })
-                  }
-                  const profile = await computeChunkVolumeProfile(analysisBlob, {
-                    chunkId,
-                    sessionId: this.#sessionId!,
-                    seq,
-                    chunkStartMs: chunkStart,
-                    chunkEndMs: chunkEnd,
-                  })
-                  const { maxNormalized, averageNormalized } = profile
-                  if (
-                    maxNormalized >= AUDIO_DETECTION_MAX_THRESHOLD ||
-                    averageNormalized >= AUDIO_DETECTION_AVERAGE_THRESHOLD
-                  ) {
-                    this.#markAudioDetected({ maxNormalized, averageNormalized })
-                  } else if (!this.#audioFlowDetected) {
-                    void logDebug('Chunk below audio detection threshold', {
-                      sessionId: this.#sessionId,
-                      seq,
-                      maxNormalized,
-                      averageNormalized,
-                      thresholdMax: AUDIO_DETECTION_MAX_THRESHOLD,
-                      thresholdAverage: AUDIO_DETECTION_AVERAGE_THRESHOLD,
-                    })
-                  }
-                  await manifestService.storeChunkVolumeProfile(profile)
-                  void logDebug('Chunk volume profile stored', {
-                    sessionId: this.#sessionId,
-                    seq,
-                    frameCount: profile.frames.length,
-                  })
-                } catch (error) {
-                  void logWarn('Chunk volume profile failed', {
-                    sessionId: this.#sessionId,
-                    seq,
-                    error: error instanceof Error ? error.message : String(error),
-                  })
-                }
-              }
+        if (!isHeaderChunk && data.size > 0 && chunkEnd > chunkStart) {
+          try {
+            let analysisBlob: Blob = data
+            const headerBlob = this.#headerChunkBlob
+            const mime = this.#mimeType ?? data.type
+            if (headerBlob && mime && /mp4/i.test(mime)) {
+              analysisBlob = new Blob([headerBlob, data], { type: headerBlob.type || data.type || mime })
+            }
+            const profile = await computeChunkVolumeProfile(analysisBlob, {
+              chunkId,
+              sessionId: this.#sessionId!,
+              seq,
+              chunkStartMs: chunkStart,
+              chunkEndMs: chunkEnd,
+            })
+            const { maxNormalized, averageNormalized, frames } = profile
+            const hasFrameEnergy = frames.some((value) => value >= AUDIO_DETECTION_AVERAGE_THRESHOLD)
+            const hasAudio =
+              maxNormalized >= AUDIO_DETECTION_MAX_THRESHOLD ||
+              averageNormalized >= AUDIO_DETECTION_AVERAGE_THRESHOLD ||
+              hasFrameEnergy
+            await manifestService.storeChunkVolumeProfile(profile)
+            if (hasAudio) {
+              this.#registerHealthyChunk({
+                seq,
+                maxNormalized,
+                averageNormalized,
+              })
+            } else {
+              this.#registerSilentChunk('chunk-silent', {
+                seq,
+                maxNormalized,
+                averageNormalized,
+                frameCount: frames.length,
+              })
+            }
+            void logDebug('Chunk volume profile stored', {
+              sessionId: this.#sessionId,
+              seq,
+              frameCount: frames.length,
+            })
+          } catch (error) {
+            this.#registerSilentChunk('analysis-failed', {
+              seq,
+              error: error instanceof Error ? error.message : String(error),
+            })
+            void logWarn('Chunk volume profile failed', {
+              sessionId: this.#sessionId,
+              seq,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          }
+        } else if (!isHeaderChunk) {
+          this.#registerSilentChunk('empty-chunk', {
+            seq,
+            dataSize: data.size,
+            durationMs: chunkEnd - chunkStart,
+          })
+        }
             })
               .catch((error) => {
                 console.error('[CaptureController] Failed to persist chunk', error)
@@ -310,6 +330,11 @@ class BrowserCaptureController implements CaptureController {
       chunksRecorded: 0,
     })
     this.#audioFlowDetected = false
+    this.#healthAbortIssued = false
+    this.#silentChunkCount = 0
+    this.#consecutiveSilentChunks = 0
+    this.#clearHealthInterval()
+    this.#healthCheckIntervalId = window.setInterval(() => this.#runHealthCheck(), 3000)
     this.#armNoAudioTimer()
   }
 
@@ -320,6 +345,7 @@ class BrowserCaptureController implements CaptureController {
     }
 
     this.#clearNoAudioTimer()
+    this.#clearHealthInterval()
     this.#setState({ state: 'stopping' })
     const sessionId = this.#sessionId
 
@@ -475,6 +501,111 @@ class BrowserCaptureController implements CaptureController {
     await this.#persistQueue
   }
 
+  #clearHealthInterval() {
+    if (this.#healthCheckIntervalId !== null) {
+      window.clearInterval(this.#healthCheckIntervalId)
+      this.#healthCheckIntervalId = null
+    }
+  }
+
+  #runHealthCheck() {
+    if (this.#state.state !== 'recording' || this.#healthAbortIssued) {
+      return
+    }
+    const tracks = this.#stream?.getAudioTracks() ?? []
+    if (tracks.length === 0) {
+      void this.#handleUnhealthyStream('no-active-tracks', {
+        elapsedMs: Date.now() - this.#recorderStartedAt,
+      })
+      return
+    }
+    const problematicTrack = tracks.find((track) => track.readyState !== 'live' || track.muted)
+    if (problematicTrack) {
+      void this.#handleUnhealthyStream('track-unhealthy', {
+        trackId: problematicTrack.id,
+        readyState: problematicTrack.readyState,
+        muted: problematicTrack.muted,
+        enabled: problematicTrack.enabled,
+      })
+      return
+    }
+    if (!this.#audioFlowDetected) {
+      const elapsed = Date.now() - this.#recorderStartedAt
+      if (elapsed > NO_AUDIO_TIMEOUT_MS && this.#state.chunksRecorded <= 1) {
+        void this.#handleUnhealthyStream('no-chunks-produced', {
+          elapsedMs: elapsed,
+          chunksRecorded: this.#state.chunksRecorded,
+        })
+      }
+    }
+  }
+
+  #registerHealthyChunk(details: { seq: number; maxNormalized: number; averageNormalized: number }) {
+    this.#silentChunkCount = 0
+    this.#consecutiveSilentChunks = 0
+    void logDebug('Chunk passed audio health check', {
+      sessionId: this.#sessionId,
+      seq: details.seq,
+      maxNormalized: details.maxNormalized,
+      averageNormalized: details.averageNormalized,
+    })
+    this.#markAudioDetected({
+      maxNormalized: details.maxNormalized,
+      averageNormalized: details.averageNormalized,
+    })
+  }
+
+  #registerSilentChunk(reason: string, details: Record<string, unknown>) {
+    if (this.#healthAbortIssued || this.#state.state !== 'recording') {
+      return
+    }
+    const elapsed = Date.now() - this.#recorderStartedAt
+    this.#silentChunkCount += 1
+    this.#consecutiveSilentChunks += 1
+    const payload = {
+      sessionId: this.#sessionId,
+      reason,
+      silentChunkCount: this.#silentChunkCount,
+      consecutiveSilentChunks: this.#consecutiveSilentChunks,
+      elapsedMs: elapsed,
+      ...details,
+    }
+    if (this.#consecutiveSilentChunks >= MAX_CONSECUTIVE_SILENT_CHUNKS && elapsed >= MIN_ELAPSED_FOR_SILENT_ABORT_MS) {
+      void logWarn('Silent chunk detected', payload)
+      void this.#handleUnhealthyStream('consecutive-silent-chunks', payload)
+    } else {
+      void logDebug('Silent chunk detected', payload)
+    }
+  }
+
+  async #handleUnhealthyStream(reason: string, details: Record<string, unknown> = {}) {
+    if (this.#healthAbortIssued) {
+      return
+    }
+    this.#healthAbortIssued = true
+    this.#clearNoAudioTimer()
+    this.#clearHealthInterval()
+    await logWarn('Capture stream unhealthy — aborting', {
+      sessionId: this.#sessionId,
+      reason,
+      ...details,
+    })
+    await this.#playWarningTone().catch(() => undefined)
+    this.#setState({ error: 'No audio detected — recording stopped.' })
+    if (this.#state.state === 'recording' || this.#state.state === 'starting') {
+      void Promise.resolve()
+        .then(() => this.stop())
+        .catch((error) => {
+          console.error('[CaptureController] Failed to stop after stream health abort', error)
+          void logError('Capture abort stop failed', {
+            sessionId: this.#sessionId,
+            reason,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        })
+    }
+  }
+
   #armNoAudioTimer() {
     this.#clearNoAudioTimer()
     if (this.#state.state !== 'recording') {
@@ -508,20 +639,13 @@ class BrowserCaptureController implements CaptureController {
 
   async #handleNoAudioTimeout() {
     this.#noAudioTimeoutId = null
-    if (this.#audioFlowDetected || this.#state.state !== 'recording' || !this.#sessionId) {
+    if (this.#audioFlowDetected || this.#state.state !== 'recording' || !this.#sessionId || this.#healthAbortIssued) {
       return
     }
-    void logWarn('No audio detected within safety window', {
-      sessionId: this.#sessionId,
+    await this.#handleUnhealthyStream('no-audio-timeout', {
       elapsedMs: Date.now() - this.#recorderStartedAt,
+      chunksRecorded: this.#state.chunksRecorded,
     })
-    await this.#playWarningTone()
-    this.#setState({ error: 'No audio detected — recording stopped.' })
-    try {
-      await this.stop()
-    } catch (error) {
-      console.error('[CaptureController] Failed to stop after no-audio timeout', error)
-    }
   }
 
   async #playWarningTone() {
@@ -567,6 +691,7 @@ class BrowserCaptureController implements CaptureController {
       this.#analysisPort = null
     }
     this.#mimeType = null
+    this.#clearHealthInterval()
   }
 
   subscribe(listener: (state: CaptureStateSnapshot) => void): () => void {
