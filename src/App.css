@@ -1297,11 +1297,23 @@ body {
 
 @media (max-width: 960px) {
   .content-grid {
+    display: flex;
+    flex-direction: column;
     grid-template-columns: 1fr;
+    align-items: stretch;
   }
 
   .controls-panel {
     order: -1;
+    flex: 0 0 auto;
+    width: 100%;
+    height: auto;
+  }
+
+  .session-section {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
   }
 
   .transcription-panel {

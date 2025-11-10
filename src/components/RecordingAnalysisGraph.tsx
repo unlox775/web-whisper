@@ -9,14 +9,14 @@ import {
 } from 'react'
 import type { PointerEvent as ReactPointerEvent, UIEvent as ReactUIEvent } from 'react'
 import type {
-  RecordingChunkAnalysis,
-  ChunkSummary,
-  ChunkBoundary,
+  SessionAnalysis,
+  SegmentSummary,
+  SegmentBoundary,
   QuietRegion,
-} from '../modules/analysis/chunking'
+} from '../modules/analysis/session-analysis'
 
-type RecordingChunkingGraphProps = {
-  analysis: RecordingChunkAnalysis
+type RecordingAnalysisGraphProps = {
+  analysis: SessionAnalysis
   targetRange?: {
     minMs: number
     idealMs: number
@@ -68,28 +68,69 @@ const toLogScale = (value: number, base = LOG_SCALE_BASE) => {
   return Math.min(1, Math.max(0, scaled))
 }
 
-const buildAreaPath = (
-  frames: RecordingChunkAnalysis['frames'],
+const SEGMENT_RESET_EPSILON_MS = 1
+
+const buildAreaPaths = (
+  frames: SessionAnalysis['frames'],
   totalDurationMs: number,
   height: number,
   width: number,
   transform: (value: number) => number,
 ) => {
-  if (frames.length === 0 || totalDurationMs <= 0) {
-    return ''
+  if (frames.length === 0 || totalDurationMs <= 0 || width <= 0) {
+    return [] as string[]
   }
-  const commands: string[] = [`M 0 ${height}`]
-  const lastFrame = frames[frames.length - 1]
-  frames.forEach((frame) => {
+
+  const orderedFrames = [...frames].sort((a, b) => {
+    if (a.startMs !== b.startMs) return a.startMs - b.startMs
+    if (a.endMs !== b.endMs) return a.endMs - b.endMs
+    return a.index - b.index
+  })
+
+  const segments: string[] = []
+  let commands: string[] = []
+  let segmentEndX = 0
+  let lastMidpointMs = -Infinity
+
+  const flushSegment = () => {
+    if (commands.length > 1) {
+      commands.push(`L ${segmentEndX.toFixed(2)} ${height}`)
+      commands.push('Z')
+      segments.push(commands.join(' '))
+    }
+    commands = []
+  }
+
+  orderedFrames.forEach((frame, idx) => {
     const midpointMs = (frame.startMs + frame.endMs) / 2
-    const x = Math.min(width, (midpointMs / totalDurationMs) * width)
+    const frameStartX = Math.min(width, Math.max(0, (frame.startMs / totalDurationMs) * width))
+    const frameEndX = Math.min(width, Math.max(0, (frame.endMs / totalDurationMs) * width))
+    const x = Math.min(width, Math.max(0, (midpointMs / totalDurationMs) * width))
     const normalized = transform(frame.normalized)
     const y = Math.max(0, Math.min(height, (1 - normalized) * height))
+
+    const isNewSegment =
+      commands.length === 0 || midpointMs + SEGMENT_RESET_EPSILON_MS < lastMidpointMs
+
+    if (isNewSegment) {
+      flushSegment()
+      commands = [`M ${frameStartX.toFixed(2)} ${height}`]
+    }
+
     commands.push(`L ${x.toFixed(2)} ${y.toFixed(2)}`)
+    segmentEndX = Math.max(frameEndX, segmentEndX)
+    lastMidpointMs = midpointMs
+
+    if (idx === orderedFrames.length - 1) {
+      flushSegment()
+    }
   })
-  commands.push(`L ${Math.max(width, (lastFrame.endMs / totalDurationMs) * width).toFixed(2)} ${height}`)
-  commands.push('Z')
-  return commands.join(' ')
+
+  if (commands.length > 0) {
+    flushSegment()
+  }
+
+  return segments
 }
 
 const buildQuietRects = (
@@ -107,7 +148,7 @@ const buildQuietRects = (
   })
 
 const buildBoundaryLines = (
-  boundaries: ChunkBoundary[],
+  boundaries: SegmentBoundary[],
   totalDurationMs: number,
   width: number,
 ): Array<{ x: number }> =>
@@ -115,17 +156,17 @@ const buildBoundaryLines = (
     x: (boundary.positionMs / totalDurationMs) * width,
   }))
 
-const describeChunks = (chunks: ChunkSummary[]) =>
+const describeSegments = (chunks: SegmentSummary[]) =>
   chunks.map((chunk) => ({
     id: chunk.index,
-    label: chunk.breakReason === 'end' ? 'Tail' : `Chunk #${chunk.index + 1}`,
+    label: chunk.breakReason === 'end' ? 'Tail' : `Segment #${chunk.index + 1}`,
     durationMs: chunk.durationMs,
     startMs: chunk.startMs,
     endMs: chunk.endMs,
     breakReason: chunk.breakReason,
   }))
 
-const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: RecordingChunkingGraphProps) => {
+const RecordingAnalysisGraphComponent = ({ analysis, targetRange, playback }: RecordingAnalysisGraphProps) => {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const dragStateRef = useRef<{ pointerId: number; startX: number; scrollLeft: number } | null>(null)
   const [isDragging, setIsDragging] = useState(false)
@@ -296,8 +337,8 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: Re
     }
   }, [isDragging, isPlaybackActive, playbackIndicator, updateIndicators])
 
-  const areaPath = useMemo(
-    () => buildAreaPath(analysis.frames, estimatedDuration, height, width, toLogScale),
+  const areaPaths = useMemo(
+    () => buildAreaPaths(analysis.frames, estimatedDuration, height, width, toLogScale),
     [analysis.frames, estimatedDuration, height, width],
   )
 
@@ -307,11 +348,11 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: Re
   )
 
   const boundaryLines = useMemo(
-    () => buildBoundaryLines(analysis.chunkBoundaries, estimatedDuration, width),
-    [analysis.chunkBoundaries, estimatedDuration, width],
+    () => buildBoundaryLines(analysis.boundaries, estimatedDuration, width),
+    [analysis.boundaries, estimatedDuration, width],
   )
 
-  const chunkSummaries = useMemo(() => describeChunks(analysis.chunks), [analysis.chunks])
+  const segmentSummaries = useMemo(() => describeSegments(analysis.segments), [analysis.segments])
 
   const thresholdY = (1 - toLogScale(analysis.stats.normalizedThreshold)) * height
   const scrollClassName = [
@@ -367,9 +408,15 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: Re
                 fill="rgba(56, 189, 248, 0.12)"
               />
             ))}
-            {areaPath ? (
-              <path d={areaPath} fill={`url(#${gradientId})`} stroke="rgba(94, 234, 212, 0.48)" strokeWidth={1} />
-            ) : null}
+            {areaPaths.map((segmentPath, index) => (
+              <path
+                key={`histogram-${index}`}
+                d={segmentPath}
+                fill={`url(#${gradientId})`}
+                stroke="rgba(94, 234, 212, 0.48)"
+                strokeWidth={1}
+              />
+            ))}
               {playbackIndicator ? (
                 <g className="chunking-playback-indicator" aria-hidden="true">
                   <rect
@@ -436,17 +483,17 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: Re
           </div>
           <div>
             <dt>Proposed breaks</dt>
-            <dd>{analysis.chunkBoundaries.length}</dd>
+            <dd>{analysis.boundaries.length}</dd>
           </div>
         </dl>
       </div>
       <div className="chunking-chunk-list">
         <h5>Proposed chunks</h5>
-        {chunkSummaries.length === 0 ? (
+        {segmentSummaries.length === 0 ? (
           <p className="chunking-empty">No proposed breaks yet. Recording may be too short or lacks silence.</p>
         ) : (
           <ul>
-            {chunkSummaries.map((chunk) => (
+            {segmentSummaries.map((chunk) => (
               <li key={chunk.id}>
                 <span className="chunking-chunk-label">{chunk.label}</span>
                 <span>{formatDuration(chunk.durationMs)}</span>
@@ -459,5 +506,5 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: Re
   )
 }
 
-export const RecordingChunkingGraph = memo(RecordingChunkingGraphComponent)
+export const RecordingAnalysisGraph = memo(RecordingAnalysisGraphComponent)
 

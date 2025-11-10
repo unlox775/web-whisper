@@ -6,8 +6,8 @@ import {
   useState,
 } from 'react'
 import { captureController } from './modules/capture/controller'
-import { RecordingChunkingGraph } from './components/RecordingChunkingGraph'
-import { type RecordingChunkAnalysis } from './modules/analysis/chunking'
+import { RecordingAnalysisGraph } from './components/RecordingAnalysisGraph'
+import { type SessionAnalysis } from './modules/analysis/session-analysis'
 import './App.css'
 import {
   manifestService,
@@ -17,7 +17,7 @@ import {
   type StoredChunk,
   type SessionRecord,
 } from './modules/storage/manifest'
-import { SessionChunkProvider } from './modules/storage/session-chunk-provider'
+import { SessionAnalysisProvider } from './modules/analysis/session-analysis-provider'
 import { settingsStore, type RecorderSettings } from './modules/settings/store'
 import {
   getActiveLogSession,
@@ -233,10 +233,10 @@ function App() {
   const [playbackError, setPlaybackError] = useState<string | null>(null)
   const [audioState, setAudioState] = useState<AudioState>({ playing: false, duration: 0, position: 0 })
   const [selectedRecordingDurationMs, setSelectedRecordingDurationMs] = useState<number | null>(null)
-  const [isChunkingGraphOpen, setChunkingGraphOpen] = useState(false)
-  const [chunkAnalysisState, setChunkAnalysisState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
-  const [chunkAnalysis, setChunkAnalysis] = useState<RecordingChunkAnalysis | null>(null)
-  const [chunkAnalysisError, setChunkAnalysisError] = useState<string | null>(null)
+  const [isAnalysisGraphOpen, setAnalysisGraphOpen] = useState(false)
+  const [analysisState, setAnalysisState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [sessionAnalysis, setSessionAnalysis] = useState<SessionAnalysis | null>(null)
+  const [analysisError, setAnalysisError] = useState<string | null>(null)
 
   const streamCursor = useRef(1)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -245,7 +245,7 @@ function App() {
   const chunkAudioRef = useRef<Map<string, ChunkPlaybackEntry>>(new Map())
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
-  const sessionChunkProviderRef = useRef<SessionChunkProvider | null>(null)
+  const sessionAnalysisProviderRef = useRef<SessionAnalysisProvider | null>(null)
 
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
@@ -255,8 +255,8 @@ function App() {
     // Ensure the manifest is usable before any list or summary calls.
     await manifestService.init()
     // Reuse or create a single provider instance so verification caching survives reloads.
-    const provider = sessionChunkProviderRef.current ?? new SessionChunkProvider()
-    sessionChunkProviderRef.current = provider
+    const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
+    sessionAnalysisProviderRef.current = provider
     // Fetch sessions and overall storage usage concurrently for snappier UI updates.
     const [sessions, totals] = await Promise.all([
       manifestService.listSessions(),
@@ -429,10 +429,10 @@ function App() {
     if (!selectedRecordingId) {
       setChunkData([])
       setDebugDetailsOpen(false)
-      setChunkingGraphOpen(false)
-      setChunkAnalysis(null)
-      setChunkAnalysisState('idle')
-      setChunkAnalysisError(null)
+      setAnalysisGraphOpen(false)
+      setSessionAnalysis(null)
+      setAnalysisState('idle')
+      setAnalysisError(null)
       return
     }
     ;(async () => {
@@ -536,10 +536,10 @@ function App() {
     if (!developerMode) {
       setDeveloperOverlayOpen(false)
       setDebugDetailsOpen(false)
-      setChunkingGraphOpen(false)
-      setChunkAnalysis(null)
-      setChunkAnalysisState('idle')
-      setChunkAnalysisError(null)
+      setAnalysisGraphOpen(false)
+      setSessionAnalysis(null)
+      setAnalysisState('idle')
+      setAnalysisError(null)
       setDeveloperTables([])
       setSelectedDeveloperTable(null)
       setDeveloperOverlayMode('tables')
@@ -572,26 +572,26 @@ function App() {
   }, [selectedRecording])
 
   useEffect(() => {
-    if (!developerMode || !selectedRecording || !isChunkingGraphOpen) {
-      setChunkAnalysisState('idle')
-      setChunkAnalysis(null)
-      setChunkAnalysisError(null)
+    if (!developerMode || !selectedRecording || !isAnalysisGraphOpen) {
+      setAnalysisState('idle')
+      setSessionAnalysis(null)
+      setAnalysisError(null)
       return
     }
     if (selectedRecording.chunkCount === 0) {
-      setChunkAnalysisState('error')
-      setChunkAnalysisError('No audio chunks available yet. Capture a few seconds of audio and try again.')
-      setChunkAnalysis(null)
+      setAnalysisState('error')
+      setAnalysisError('No audio chunks available yet. Capture a few seconds of audio and try again.')
+      setSessionAnalysis(null)
       return
     }
 
-    const provider = sessionChunkProviderRef.current ?? new SessionChunkProvider()
-    sessionChunkProviderRef.current = provider
+    const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
+    sessionAnalysisProviderRef.current = provider
 
     let cancelled = false
-    setChunkAnalysisState('loading')
-    setChunkAnalysisError(null)
-    setChunkAnalysis(null)
+    setAnalysisState('loading')
+    setAnalysisError(null)
+    setSessionAnalysis(null)
 
     ;(async () => {
       try {
@@ -604,18 +604,18 @@ function App() {
         }
         if (result.analysis) {
           // Feed the verified frames into the graph component.
-          setChunkAnalysis(result.analysis)
-          setChunkAnalysisState('ready')
-          setChunkAnalysisError(null)
+          setSessionAnalysis(result.analysis)
+          setAnalysisState('ready')
+          setAnalysisError(null)
         } else {
           // Surface a friendlier warning when volumes are still baking.
-          setChunkAnalysis(null)
-          setChunkAnalysisState('error')
+          setSessionAnalysis(null)
+          setAnalysisState('error')
           const missingCount = result.verification.missingChunkIds.length
-          setChunkAnalysisError(
+          setAnalysisError(
             missingCount > 0
               ? `Waiting on verified audio durations for ${missingCount} chunk${missingCount === 1 ? '' : 's'}.`
-              : 'No chunk volume profiles available yet. Capture additional audio and retry.',
+              : 'No volume profiles available yet. Capture additional audio and retry.',
           )
         }
       } catch (error) {
@@ -623,10 +623,10 @@ function App() {
           return
         }
         const message = error instanceof Error ? error.message : String(error)
-        setChunkAnalysisState('error')
-        setChunkAnalysisError(message)
+        setAnalysisState('error')
+        setAnalysisError(message)
         // Emit a structured log so we can inspect failures in the developer console.
-        void logError('Chunk analysis failed', {
+        void logError('Session analysis failed', {
           sessionId: selectedRecording.id,
           error: message,
         })
@@ -638,7 +638,7 @@ function App() {
     }
   }, [
     developerMode,
-    isChunkingGraphOpen,
+    isAnalysisGraphOpen,
     selectedRecording?.id,
     selectedRecording?.updatedAt,
     selectedRecording?.chunkCount,
@@ -887,10 +887,10 @@ function App() {
     setChunkData([])
     setSelectedRecordingDurationMs(null)
     setDebugDetailsOpen(false)
-    setChunkingGraphOpen(false)
-    setChunkAnalysis(null)
-    setChunkAnalysisState('idle')
-    setChunkAnalysisError(null)
+    setAnalysisGraphOpen(false)
+    setSessionAnalysis(null)
+    setAnalysisState('idle')
+    setAnalysisError(null)
     setPlaybackError(null)
     setAudioState({ playing: false, duration: 0, position: 0 })
     if (selectedRecordingId) {
@@ -1323,11 +1323,11 @@ function App() {
               <div className="detail-actions">
                   {developerMode ? (
                     <button
-                      className={`detail-graph-toggle ${isChunkingGraphOpen ? 'is-active' : ''}`}
+                      className={`detail-graph-toggle ${isAnalysisGraphOpen ? 'is-active' : ''}`}
                       type="button"
-                      onClick={() => setChunkingGraphOpen((prev) => !prev)}
-                      aria-pressed={isChunkingGraphOpen}
-                      aria-label={isChunkingGraphOpen ? 'Hide audio chunking analysis' : 'Show audio chunking analysis'}
+                      onClick={() => setAnalysisGraphOpen((prev) => !prev)}
+                      aria-pressed={isAnalysisGraphOpen}
+                      aria-label={isAnalysisGraphOpen ? 'Hide audio chunking analysis' : 'Show audio chunking analysis'}
                     >
                       📈
                     </button>
@@ -1405,15 +1405,15 @@ function App() {
                 </div>
               </div>
                 {playbackError ? <p className="detail-notes" role="alert">{playbackError}</p> : null}
-                  {developerMode && isChunkingGraphOpen ? (
+                  {developerMode && isAnalysisGraphOpen ? (
                     <div className="detail-analysis">
-                      {chunkAnalysisState === 'loading' ? (
+                      {analysisState === 'loading' ? (
                         <p className="detail-analysis-status">Analyzing audio for pauses…</p>
-                      ) : chunkAnalysisState === 'error' ? (
-                        <p className="detail-analysis-status" role="alert">{chunkAnalysisError ?? 'Unable to analyze audio.'}</p>
-                      ) : chunkAnalysis ? (
-                          <RecordingChunkingGraph
-                            analysis={chunkAnalysis}
+                      ) : analysisState === 'error' ? (
+                        <p className="detail-analysis-status" role="alert">{analysisError ?? 'Unable to analyze audio.'}</p>
+                      ) : sessionAnalysis ? (
+                          <RecordingAnalysisGraph
+                            analysis={sessionAnalysis}
                             targetRange={{ minMs: 5000, idealMs: 10000, maxMs: 60000 }}
                             playback={{
                               positionMs: Math.max(0, audioState.position * 1000),
