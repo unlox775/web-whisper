@@ -9,14 +9,14 @@ import {
 } from 'react'
 import type { PointerEvent as ReactPointerEvent, UIEvent as ReactUIEvent } from 'react'
 import type {
-  RecordingChunkAnalysis,
-  ChunkSummary,
-  ChunkBoundary,
+  SessionAnalysis,
+  SegmentSummary,
+  SegmentBoundary,
   QuietRegion,
-} from '../modules/analysis/chunking'
+} from '../modules/analysis/session-analysis'
 
-type RecordingChunkingGraphProps = {
-  analysis: RecordingChunkAnalysis
+type RecordingAnalysisGraphProps = {
+  analysis: SessionAnalysis
   targetRange?: {
     minMs: number
     idealMs: number
@@ -71,7 +71,7 @@ const toLogScale = (value: number, base = LOG_SCALE_BASE) => {
 const SEGMENT_RESET_EPSILON_MS = 1
 
 const buildAreaPaths = (
-  frames: RecordingChunkAnalysis['frames'],
+  frames: SessionAnalysis['frames'],
   totalDurationMs: number,
   height: number,
   width: number,
@@ -148,7 +148,7 @@ const buildQuietRects = (
   })
 
 const buildBoundaryLines = (
-  boundaries: ChunkBoundary[],
+  boundaries: SegmentBoundary[],
   totalDurationMs: number,
   width: number,
 ): Array<{ x: number }> =>
@@ -156,17 +156,17 @@ const buildBoundaryLines = (
     x: (boundary.positionMs / totalDurationMs) * width,
   }))
 
-const describeChunks = (chunks: ChunkSummary[]) =>
+const describeSegments = (chunks: SegmentSummary[]) =>
   chunks.map((chunk) => ({
     id: chunk.index,
-    label: chunk.breakReason === 'end' ? 'Tail' : `Chunk #${chunk.index + 1}`,
+    label: chunk.breakReason === 'end' ? 'Tail' : `Segment #${chunk.index + 1}`,
     durationMs: chunk.durationMs,
     startMs: chunk.startMs,
     endMs: chunk.endMs,
     breakReason: chunk.breakReason,
   }))
 
-const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: RecordingChunkingGraphProps) => {
+const RecordingAnalysisGraphComponent = ({ analysis, targetRange, playback }: RecordingAnalysisGraphProps) => {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const dragStateRef = useRef<{ pointerId: number; startX: number; scrollLeft: number } | null>(null)
   const [isDragging, setIsDragging] = useState(false)
@@ -348,11 +348,11 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: Re
   )
 
   const boundaryLines = useMemo(
-    () => buildBoundaryLines(analysis.chunkBoundaries, estimatedDuration, width),
-    [analysis.chunkBoundaries, estimatedDuration, width],
+    () => buildBoundaryLines(analysis.boundaries, estimatedDuration, width),
+    [analysis.boundaries, estimatedDuration, width],
   )
 
-  const chunkSummaries = useMemo(() => describeChunks(analysis.chunks), [analysis.chunks])
+  const segmentSummaries = useMemo(() => describeSegments(analysis.segments), [analysis.segments])
 
   const thresholdY = (1 - toLogScale(analysis.stats.normalizedThreshold)) * height
   const scrollClassName = [
@@ -483,17 +483,17 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: Re
           </div>
           <div>
             <dt>Proposed breaks</dt>
-            <dd>{analysis.chunkBoundaries.length}</dd>
+            <dd>{analysis.boundaries.length}</dd>
           </div>
         </dl>
       </div>
       <div className="chunking-chunk-list">
         <h5>Proposed chunks</h5>
-        {chunkSummaries.length === 0 ? (
+        {segmentSummaries.length === 0 ? (
           <p className="chunking-empty">No proposed breaks yet. Recording may be too short or lacks silence.</p>
         ) : (
           <ul>
-            {chunkSummaries.map((chunk) => (
+            {segmentSummaries.map((chunk) => (
               <li key={chunk.id}>
                 <span className="chunking-chunk-label">{chunk.label}</span>
                 <span>{formatDuration(chunk.durationMs)}</span>
@@ -506,5 +506,5 @@ const RecordingChunkingGraphComponent = ({ analysis, targetRange, playback }: Re
   )
 }
 
-export const RecordingChunkingGraph = memo(RecordingChunkingGraphComponent)
+export const RecordingAnalysisGraph = memo(RecordingAnalysisGraphComponent)
 

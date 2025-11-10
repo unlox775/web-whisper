@@ -6,7 +6,7 @@
 - Logged the initiating prompt for timing-verification overhaul.
 - Audited manifest/session plumbing to pinpoint where deterministic timing should attach.
 - Added explicit timing status fields for sessions/chunks with backwards-compatible defaults.
-- Introduced `SessionChunkProvider` orchestration (volume hydration + verification + caching) with extensive inline commentary.
+- Introduced `SessionAnalysisProvider` orchestration (volume hydration + verification + caching) with extensive inline commentary.
 - Implemented manifest-level timing verification pass that rewrites start/end timestamps from verified durations.
 - Updated `App` flow to automatically verify sessions on load and consume provider-generated analyses.
 - Captured focused unit coverage for the sequential timing calculator.

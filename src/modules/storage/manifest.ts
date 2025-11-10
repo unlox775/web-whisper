@@ -1,5 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
-import type { ChunkVolumeProfile } from '../analysis/chunking'
+import type { ChunkVolumeProfile } from './chunk-volume'
 import { DEFAULT_CHUNK_TIMING_STATUS, computeSequentialTimings } from './chunk-timing'
 
 export type SessionStatus = 'recording' | 'ready' | 'error'

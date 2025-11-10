@@ -21,7 +21,7 @@ export interface QuietRegion {
   normalizedMax: number
 }
 
-export interface ChunkBoundary {
+export interface SegmentBoundary {
   index: number
   positionMs: number
   precedingDurationMs: number
@@ -30,7 +30,7 @@ export interface ChunkBoundary {
   reason: 'pause'
 }
 
-export interface ChunkSummary {
+export interface SegmentSummary {
   index: number
   startMs: number
   endMs: number
@@ -39,26 +39,11 @@ export interface ChunkSummary {
   boundaryIndex: number | null
 }
 
-export interface ChunkVolumeProfile {
-  chunkId: string
-  sessionId: string
-  seq: number
-  chunkStartMs: number
-  chunkEndMs: number
-  durationMs: number
-  sampleRate: number
-  frameDurationMs: number
-  frames: number[]
-  maxNormalized: number
-  averageNormalized: number
-  scalingFactor: number
-}
-
-export interface RecordingChunkAnalysis {
+export interface SessionAnalysis {
   frames: VolumeFrame[]
   quietRegions: QuietRegion[]
-  chunkBoundaries: ChunkBoundary[]
-  chunks: ChunkSummary[]
+  boundaries: SegmentBoundary[]
+  segments: SegmentSummary[]
   stats: {
     sampleRate: number
     totalDurationMs: number
@@ -73,12 +58,12 @@ export interface RecordingChunkAnalysis {
   }
 }
 
-export interface ChunkingAnalysisConfig {
+export interface SessionAnalysisConfig {
   frameDurationMs: number
   minQuietDurationMs: number
-  minChunkMs: number
-  targetChunkMs: number
-  maxChunkMs: number
+  minSegmentMs: number
+  targetSegmentMs: number
+  maxSegmentMs: number
   silencePaddingMs: number
   thresholdMultiplier: number
   quietPercentile: number
@@ -86,12 +71,12 @@ export interface ChunkingAnalysisConfig {
   initialIgnoreMs: number
 }
 
-const DEFAULT_CONFIG: ChunkingAnalysisConfig = {
+export const DEFAULT_SESSION_ANALYSIS_CONFIG: SessionAnalysisConfig = {
   frameDurationMs: 50,
   minQuietDurationMs: 600,
-  minChunkMs: 5000,
-  targetChunkMs: 10000,
-  maxChunkMs: 60000,
+  minSegmentMs: 5_000,
+  targetSegmentMs: 10_000,
+  maxSegmentMs: 60_000,
   silencePaddingMs: 200,
   thresholdMultiplier: 1.6,
   quietPercentile: 0.3,
@@ -122,7 +107,7 @@ export const mixDownToMono = (buffer: AudioBuffer) => {
   return output
 }
 
-export const computeFrames = (
+export const computeVolumeFrames = (
   samples: Float32Array,
   sampleRate: number,
   frameDurationMs: number,
@@ -183,6 +168,31 @@ export const computeFrames = (
   }
 
   return { frames, rmsValues, minRms: globalMin, maxRms: globalMax }
+}
+
+export const computeNormalizedFrames = ({
+  audioBuffer,
+  frameDurationMs = DEFAULT_SESSION_ANALYSIS_CONFIG.frameDurationMs,
+}: {
+  audioBuffer: AudioBuffer
+  frameDurationMs?: number
+}) => {
+  const monoData = mixDownToMono(audioBuffer)
+  const { frames } = computeVolumeFrames(monoData, audioBuffer.sampleRate, frameDurationMs)
+  const peakRms = frames.reduce((max, frame) => Math.max(max, frame.rms), 0)
+  const scalingFactor = peakRms > 0 ? 0.92 / peakRms : 1
+  const normalizedFrames = frames.map((frame) => Math.min(frame.rms * scalingFactor, 1))
+  const frameCount = normalizedFrames.length
+  const averageNormalized =
+    frameCount > 0 ? normalizedFrames.reduce((sum, value) => sum + value, 0) / frameCount : 0
+  const maxNormalized = frameCount > 0 ? Math.max(...normalizedFrames) : 0
+  return {
+    normalizedFrames,
+    scalingFactor,
+    maxNormalized,
+    averageNormalized,
+    frameDurationMs,
+  }
 }
 
 const detectQuietRegions = (
@@ -270,26 +280,26 @@ const attachNormalizedExtents = (regions: QuietRegion[], frames: VolumeFrame[]) 
     }
   })
 
-const proposeChunkBoundaries = (
+const proposeSegments = (
   quietRegions: QuietRegion[],
   totalDurationMs: number,
-  config: ChunkingAnalysisConfig,
-): { boundaries: ChunkBoundary[]; chunks: ChunkSummary[] } => {
-  const boundaries: ChunkBoundary[] = []
+  config: SessionAnalysisConfig,
+): { boundaries: SegmentBoundary[]; segments: SegmentSummary[] } => {
+  const boundaries: SegmentBoundary[] = []
   let lastCutMs = 0
 
   for (const region of quietRegions) {
-    const chunkDuration = region.centerMs - lastCutMs
-    if (chunkDuration < config.minChunkMs) {
+    const segmentDuration = region.centerMs - lastCutMs
+    if (segmentDuration < config.minSegmentMs) {
       continue
     }
 
-    if (chunkDuration >= config.targetChunkMs || chunkDuration >= config.maxChunkMs) {
+    if (segmentDuration >= config.targetSegmentMs || segmentDuration >= config.maxSegmentMs) {
       const score = Math.max(0, 1 - region.normalizedMax)
       boundaries.push({
         index: boundaries.length,
         positionMs: region.centerMs,
-        precedingDurationMs: chunkDuration,
+        precedingDurationMs: segmentDuration,
         quietRegionIndex: region.index,
         score,
         reason: 'pause',
@@ -298,13 +308,13 @@ const proposeChunkBoundaries = (
     }
   }
 
-  const chunks: ChunkSummary[] = []
+  const segments: SegmentSummary[] = []
   const sortedBoundaries = [...boundaries].sort((a, b) => a.positionMs - b.positionMs)
   let currentStart = 0
   sortedBoundaries.forEach((boundary, idx) => {
     const end = Math.min(boundary.positionMs, totalDurationMs)
     const durationMs = Math.max(0, end - currentStart)
-    chunks.push({
+    segments.push({
       index: idx,
       startMs: currentStart,
       endMs: end,
@@ -316,8 +326,8 @@ const proposeChunkBoundaries = (
   })
 
   if (currentStart < totalDurationMs) {
-    chunks.push({
-      index: chunks.length,
+    segments.push({
+      index: segments.length,
       startMs: currentStart,
       endMs: totalDurationMs,
       durationMs: Math.max(0, totalDurationMs - currentStart),
@@ -326,161 +336,29 @@ const proposeChunkBoundaries = (
     })
   }
 
-  return { boundaries, chunks }
+  return { boundaries, segments }
 }
 
-export async function computeChunkVolumeProfile(
-  blob: Blob,
-  options: {
-    chunkId: string
-    sessionId: string
-    seq: number
-    chunkStartMs: number
-    chunkEndMs: number
-    frameDurationMs?: number
-  },
-): Promise<ChunkVolumeProfile> {
-  if (typeof window === 'undefined' || typeof window.AudioContext === 'undefined') {
-    throw new Error('AudioContext is not supported in this environment.')
-  }
-
-  const {
-    chunkId,
-    sessionId,
-    seq,
-    chunkStartMs,
-    chunkEndMs,
-    frameDurationMs = DEFAULT_CONFIG.frameDurationMs,
-  } = options
-
-  const audioContext = new AudioContext()
-  try {
-    const arrayBuffer = await blob.arrayBuffer()
-    const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0))
-    const monoData = mixDownToMono(audioBuffer)
-    const { frames, maxRms } = computeFrames(
-      monoData,
-      audioBuffer.sampleRate,
-      frameDurationMs,
-    )
-
-    const peakRms = maxRms
-    const scalingFactor = peakRms > 0 ? 0.92 / peakRms : 1
-    const normalizedFrames = frames.map((frame) => Math.min(frame.rms * scalingFactor, 1))
-    const frameCount = normalizedFrames.length
-    const averageNormalized =
-      frameCount > 0 ? normalizedFrames.reduce((sum, value) => sum + value, 0) / frameCount : 0
-    const maxNormalized = frameCount > 0 ? Math.max(...normalizedFrames) : 0
-
-    return {
-      chunkId,
-      sessionId,
-      seq,
-      chunkStartMs,
-      chunkEndMs,
-      durationMs: audioBuffer.duration * 1000,
-      sampleRate: audioBuffer.sampleRate,
-      frameDurationMs,
-      frames: normalizedFrames,
-      maxNormalized,
-      averageNormalized,
-      scalingFactor,
-    }
-  } finally {
-    await audioContext.close().catch(() => {
-      /* noop */
-    })
-  }
-}
-
-export function analyzeRecordingChunkingFromProfiles(
-  profiles: ChunkVolumeProfile[],
+export function analyzeSessionFromFrames(
+  frames: VolumeFrame[],
   options: {
     totalDurationMs?: number
-    config?: Partial<ChunkingAnalysisConfig>
+    config?: Partial<SessionAnalysisConfig>
+    sampleRate?: number
+    frameDurationMs?: number
   } = {},
-): RecordingChunkAnalysis | null {
-  const { totalDurationMs: overrideTotalDuration, config = {} } = options
-  if (profiles.length === 0) {
-    return null
-  }
-
-  const mergedConfig: ChunkingAnalysisConfig = { ...DEFAULT_CONFIG, ...config }
-  const sortedProfiles = [...profiles].sort((a, b) => {
-    if (a.chunkStartMs !== b.chunkStartMs) return a.chunkStartMs - b.chunkStartMs
-    return a.seq - b.seq
-  })
-
-  const minChunkStartMs = sortedProfiles.reduce(
-    (min, profile) => Math.min(min, profile.chunkStartMs),
-    Number.POSITIVE_INFINITY,
-  )
-
-  const frames: VolumeFrame[] = []
-  const normalizedValues: number[] = []
-  let globalMin = Number.POSITIVE_INFINITY
-  let globalMax = 0
-  let frameIndex = 0
-  let inferredTotalDuration = 0
-
-  sortedProfiles.forEach((profile) => {
-    const startOffset = profile.chunkStartMs - minChunkStartMs
-    const durationMs = Number.isFinite(profile.durationMs) ? profile.durationMs : 0
-    inferredTotalDuration = Math.max(inferredTotalDuration, startOffset + durationMs)
-
-    const frameValues = Array.isArray(profile.frames)
-      ? profile.frames
-      : []
-    const coercedValues: number[] =
-      frameValues.length > 0 && typeof frameValues[0] === 'number'
-        ? (frameValues as number[])
-        : frameValues.map((frame: unknown) => {
-            if (frame && typeof frame === 'object' && 'normalized' in (frame as Record<string, unknown>)) {
-              const normalized = (frame as Record<string, unknown>).normalized
-              return typeof normalized === 'number' ? normalized : 0
-            }
-            if (frame && typeof frame === 'object' && 'rms' in (frame as Record<string, unknown>)) {
-              const rms = (frame as Record<string, unknown>).rms
-              return typeof rms === 'number' ? rms : 0
-            }
-            return 0
-          })
-
-    const frameDuration = profile.frameDurationMs > 0 ? profile.frameDurationMs : mergedConfig.frameDurationMs
-
-    coercedValues.forEach((value, idx) => {
-      const clampedValue = Number.isFinite(value) ? Math.max(0, value) : 0
-      const startMs = startOffset + idx * frameDuration
-      const endMs = Math.min(startOffset + durationMs, startMs + frameDuration)
-      frames.push({
-        index: frameIndex,
-        startMs,
-        endMs,
-        rms: clampedValue,
-        normalized: clampedValue,
-      })
-      normalizedValues.push(clampedValue)
-      if (clampedValue < globalMin) {
-        globalMin = clampedValue
-      }
-      if (clampedValue > globalMax) {
-        globalMax = clampedValue
-      }
-      frameIndex += 1
-    })
-  })
-
+): SessionAnalysis | null {
+  const { totalDurationMs: overrideTotalDuration, config = {}, sampleRate = 0, frameDurationMs } = options
   if (frames.length === 0) {
     return null
   }
 
-  if (!Number.isFinite(globalMin)) {
-    globalMin = 0
-  }
+  const mergedConfig: SessionAnalysisConfig = { ...DEFAULT_SESSION_ANALYSIS_CONFIG, ...config }
 
-  const peakRms = globalMax
+  const normalizedValues = frames.map((frame) => frame.normalized)
+  const peakRms = frames.reduce((max, frame) => Math.max(max, frame.rms), 0)
+  const minRms = frames.reduce((min, frame) => Math.min(min, frame.rms), Number.POSITIVE_INFINITY)
   const scalingFactor = 1
-  const framesWithScaling = frames
 
   const noiseFloor = percentile(normalizedValues, mergedConfig.noisePercentile)
   const quietBand = percentile(normalizedValues, mergedConfig.quietPercentile)
@@ -491,36 +369,34 @@ export function analyzeRecordingChunkingFromProfiles(
   const threshold = Math.min(thresholdCandidate, peakRms * 0.7)
   const normalizedThreshold = Math.min(threshold, 0.98)
 
-  const inferredDurationMs =
-    framesWithScaling.length > 0 ? Math.max(inferredTotalDuration, framesWithScaling[framesWithScaling.length - 1].endMs) : 0
-  const totalDurationMs = Math.max(overrideTotalDuration ?? 0, inferredDurationMs)
+  const totalDurationMs = Math.max(
+    overrideTotalDuration ?? 0,
+    frames[frames.length - 1]?.endMs ?? 0,
+  )
 
   const quietRegions = attachNormalizedExtents(
     detectQuietRegions(
-      framesWithScaling,
+      frames,
       threshold,
       mergedConfig.minQuietDurationMs,
       mergedConfig.initialIgnoreMs,
     ),
-    framesWithScaling,
+    frames,
   )
-  const { boundaries, chunks } = proposeChunkBoundaries(quietRegions, totalDurationMs, mergedConfig)
-
-  const sampleRate = sortedProfiles[0]?.sampleRate ?? 0
-  const frameDurationMs = sortedProfiles[0]?.frameDurationMs ?? mergedConfig.frameDurationMs
+  const { boundaries, segments } = proposeSegments(quietRegions, totalDurationMs, mergedConfig)
 
   return {
-    frames: framesWithScaling,
+    frames,
     quietRegions,
-    chunkBoundaries: boundaries,
-    chunks,
+    boundaries,
+    segments,
     stats: {
       sampleRate,
       totalDurationMs,
-      frameDurationMs,
-      frameCount: framesWithScaling.length,
+      frameDurationMs: frameDurationMs ?? mergedConfig.frameDurationMs,
+      frameCount: frames.length,
       maxRms: peakRms,
-      minRms: globalMin,
+      minRms: Number.isFinite(minRms) ? minRms : 0,
       scalingFactor,
       noiseFloor,
       threshold,
@@ -529,22 +405,22 @@ export function analyzeRecordingChunkingFromProfiles(
   }
 }
 
-export async function analyzeRecordingChunking(
+export async function analyzeSession(
   blob: Blob,
-  config: Partial<ChunkingAnalysisConfig> = {},
-): Promise<RecordingChunkAnalysis> {
+  config: Partial<SessionAnalysisConfig> = {},
+): Promise<SessionAnalysis> {
   if (typeof window === 'undefined' || typeof window.AudioContext === 'undefined') {
     throw new Error('AudioContext is not supported in this environment.')
   }
 
-  const mergedConfig: ChunkingAnalysisConfig = { ...DEFAULT_CONFIG, ...config }
+  const mergedConfig: SessionAnalysisConfig = { ...DEFAULT_SESSION_ANALYSIS_CONFIG, ...config }
   const audioContext = new AudioContext()
   try {
     const arrayBuffer = await blob.arrayBuffer()
     const audioBuffer = await audioContext.decodeAudioData(arrayBuffer.slice(0))
     const totalDurationMs = audioBuffer.duration * 1000
     const monoData = mixDownToMono(audioBuffer)
-    const { frames, rmsValues, minRms, maxRms } = computeFrames(
+    const { frames, rmsValues, minRms, maxRms } = computeVolumeFrames(
       monoData,
       audioBuffer.sampleRate,
       mergedConfig.frameDurationMs,
@@ -575,13 +451,13 @@ export async function analyzeRecordingChunking(
       ),
       framesWithScaling,
     )
-    const { boundaries, chunks } = proposeChunkBoundaries(quietRegions, totalDurationMs, mergedConfig)
+    const { boundaries, segments } = proposeSegments(quietRegions, totalDurationMs, mergedConfig)
 
     return {
       frames: framesWithScaling,
       quietRegions,
-      chunkBoundaries: boundaries,
-      chunks,
+      boundaries,
+      segments,
       stats: {
         sampleRate: audioBuffer.sampleRate,
         totalDurationMs,
@@ -601,4 +477,3 @@ export async function analyzeRecordingChunking(
     })
   }
 }
-

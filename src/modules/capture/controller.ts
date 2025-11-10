@@ -1,4 +1,4 @@
-import { computeChunkVolumeProfile } from '../analysis/chunking'
+import { computeChunkVolumeProfile } from '../storage/chunk-volume'
 import { manifestService, type SessionRecord, type SessionStatus } from '../storage/manifest'
 import { logDebug, logError, logInfo, logWarn } from '../logging/logger'
 
