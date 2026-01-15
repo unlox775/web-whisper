@@ -305,7 +305,6 @@ function App() {
   const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null)
   const [isTranscriptionMounted, setTranscriptionMounted] = useState(false)
   const [isTranscriptionVisible, setTranscriptionVisible] = useState(false)
-  const [recordingElapsedMs, setRecordingElapsedMs] = useState(0)
   const [chunkPlayingId, setChunkPlayingId] = useState<string | null>(null)
   const [snipPlayingId, setSnipPlayingId] = useState<string | null>(null)
   const [playbackVolume, setPlaybackVolume] = useState(1)
@@ -533,17 +532,6 @@ function App() {
     }, 3200)
     return () => window.clearInterval(interval)
   }, [captureState.sessionId, captureState.state, loadSessions])
-
-  useEffect(() => {
-    if (captureState.state === 'recording' && captureState.startedAt) {
-      const tick = () => setRecordingElapsedMs(Date.now() - captureState.startedAt!)
-      tick()
-      const interval = window.setInterval(tick, 250)
-      return () => window.clearInterval(interval)
-    }
-    setRecordingElapsedMs(0)
-    return () => {}
-  }, [captureState.state, captureState.startedAt])
 
   useEffect(() => {
     if (captureState.state === 'recording') {
@@ -2896,23 +2884,19 @@ function App() {
   }, [loadDeveloperTables, loadLogSessions])
 
   const bufferLabel = `${formatDataSize(bufferTotals.totalBytes)} / ${formatDataSize(bufferTotals.limitBytes)}`
-  const hasAudioFlow = captureState.state === 'recording' && captureState.chunksRecorded > 0
-  const capturedAudioMs =
-    captureState.state === 'recording'
-      ? Math.max(0, recordingElapsedMs)
-      : captureState.startedAt && captureState.lastChunkAt
-        ? Math.max(0, captureState.lastChunkAt - captureState.startedAt)
-        : 0
+  const hasAudioFlow = captureState.state === 'recording' && captureState.capturedMs > 0
+  const capturedAudioMs = Math.max(0, captureState.capturedMs)
   const capturedAudioLabel = `${(capturedAudioMs / 1000).toFixed(1)}s`
   const estimatedBytes =
     captureState.state === 'recording' && settings?.targetBitrate
-      ? Math.round((Math.max(0, recordingElapsedMs) / 1000) * (settings.targetBitrate / 8))
+      ? Math.round((capturedAudioMs / 1000) * (settings.targetBitrate / 8))
       : 0
   const displayedBytes =
     captureState.state === 'recording' ? Math.max(captureState.bytesBuffered, estimatedBytes) : captureState.bytesBuffered
-  const displayDurationMs = selectedRecording && selectedRecording.id === captureState.sessionId && captureState.state === 'recording'
-    ? recordingElapsedMs
-    : selectedRecordingDurationMs ?? selectedRecording?.durationMs ?? 0
+  const displayDurationMs =
+    selectedRecording && selectedRecording.id === captureState.sessionId && captureState.state === 'recording'
+      ? capturedAudioMs
+      : selectedRecordingDurationMs ?? selectedRecording?.durationMs ?? 0
   const resolvedPlaybackDurationSeconds = selectedRecordingDurationMs !== null
     ? Math.max(selectedRecordingDurationMs / 1000, audioState.duration)
     : Math.max(displayDurationMs / 1000, audioState.duration)
@@ -2989,7 +2973,7 @@ function App() {
             <p className="controls-copy">
               {captureState.state === 'recording'
                 ? hasAudioFlow
-                  ? `Recording — ${formatTimecode(Math.floor(Math.max(recordingElapsedMs, 0) / 1000))} elapsed`
+                  ? `Recording — ${formatTimecode(Math.floor(capturedAudioMs / 1000))} elapsed`
                   : 'Starting recorder…'
                 : 'Recorder idle — tap start to begin a durable session.'}
             </p>
@@ -3009,7 +2993,7 @@ function App() {
               const statusMeta = STATUS_META[session.status]
               const isActiveRecording = session.id === captureState.sessionId && captureState.state === 'recording'
               const durationLabel = isActiveRecording
-                ? formatTimecode(Math.floor(Math.max(recordingElapsedMs, 0) / 1000))
+                ? formatTimecode(Math.floor(capturedAudioMs / 1000))
                 : formatSessionDuration(session.durationMs)
               const transcriptionPreview = transcriptionPreviews[session.id] ?? ''
               const transcriptionErrorCount = transcriptionErrorCounts[session.id] ?? 0

@@ -46,6 +46,7 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-223934: Capture dev strip labels shortened and moved under the capture controls to avoid blocking the stop button.
 - 20260115-223934: Session list now shows a delete button, logs delete attempts, and adds retry/spinner states for pending or in-flight transcriptions.
 - 20260115-225125: Delete actions now log confirmation outcomes, verify deletes, and list delete buttons only show for no-audio or error sessions.
+- 20260115-230214: Capture progress now reports PCM-sample time and drives stop-button readiness.
 
 ## 🚧 In progress
 
