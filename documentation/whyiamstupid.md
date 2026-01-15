@@ -1,13 +1,11 @@
 ## `whyiamstupid.md` — What exactly happens when you press Play
 
-This document is a “trace log in English”: what the app does, in order, when you press the different **Play** buttons.
+This document is a strict, **function-by-function execution trace** of what the UI does when you press:
 
-The goal is to make the “mystery” concrete:
+- **A)** the “normal” session Play button (plays the entire recording)
+- **B)** the 🐞 debug panel “Chunks” per-row Play button (plays exactly the stored chunk blob for that row)
 
-- **Full-session play** sounds correct end-to-end.
-- **Chunk play / Snip play** (in the 🐞 debug panel) can sound like it repeats the beginning, loops, or blends audio from different places.
-
-That can only happen if those buttons are **not using the same decoding/timebase assumptions**, even if they’re reading from the same IndexedDB rows.
+Nothing else is described here (no snips).
 
 ---
 
@@ -118,143 +116,110 @@ The chunk list rows call:
 
 - `handleChunkPlayToggle(chunk)`
 
-### The old (problematic) mental model
-“Each chunk row plays only that chunk’s audio from 0..4 seconds.”
+### What is read from IndexedDB, and when
 
-### What actually happens in browsers that emit cumulative MP4 chunks
-Some MediaRecorder implementations can output “chunks” where each `dataavailable` blob is effectively:
+There are **two separate times** IndexedDB is touched:
 
-- chunk 1 blob: audio 0..t1
-- chunk 2 blob: audio 0..t2
-- chunk 3 blob: audio 0..t3
+1) **When the detail view opens** (not when you press the per-row Play button):
+   - `useEffect([selectedRecordingId])` runs in `src/App.tsx`
+   - It calls `manifestService.getChunkData(selectedRecordingId)`
+   - That performs the IndexedDB query:
+     - `db.transaction('chunks').store.index('by-session').getAll(sessionId)`
+   - React state `chunkData` is set to the result (sorted by `seq` inside `getChunkData()`).
 
-Even though we *intend* timeslices, the blob content can be cumulative in time.
+2) **When you press the per-row Play button**:
+   - The UI does **not** query IndexedDB again.
+   - It uses the `StoredChunk` object already in memory (from `chunkData`), including `chunk.blob`.
 
-If you then do:
+### Step-by-step call chain (exact functions in order)
 
-- createObjectURL(chunk2.blob)
-- `audio.currentTime = 0`
-- play for 4 seconds
+When you click the Play button on a chunk row, these functions run (in order):
 
-you will hear **the beginning of the recording again**.
+1) **React click handler**
+   - `onClick={() => void handleChunkPlayToggle(chunk)}`
 
-That’s exactly your symptom: “chunk 2 starts with the beginning of chunk 1”.
+2) **`handleChunkPlayToggle(chunk)`** (in `src/App.tsx`)
+   - Reads:
+     - `chunk.id`
+     - `chunk.seq`
+     - `chunk.blob`
+   - Uses:
+     - `chunkAudioRef.current` (a `Map<string, ChunkPlaybackEntry>`) to track currently playing chunk-audios.
 
-### What the code does today (current branch state)
+3) **Stop/pause any prior per-chunk playback**
+   - Iterates `chunkAudioRef.current.entries()`
+   - For each prior entry:
+     - calls `entry.cleanup()`
+     - calls `entry.audio.pause()`
+     - resets `entry.audio.currentTime = entry.startTime`
+     - removes it from the map
 
-To make this path robust (and simpler), we changed debug chunk playback to **not play the MP4 chunk blob directly**.
+4) **Header chunk guard**
+   - Calls `isHeaderSegment(chunk)`
+   - If true, returns early (header/init segment is not played)
 
-Instead it:
+5) **Resolve a blob URL for *that exact chunk blob***
+   - Calls `ensureChunkPlaybackUrl(chunk)`
+   - `ensureChunkPlaybackUrl`:
+     - checks `chunkUrlMapRef.current.get(chunk.id)`
+     - if missing, calls `createChunkCompositeBlob(chunk)`
 
-1) Computes the chunk’s time window in “session offset ms”:
-   - base start = `seq0.startMs` (header) or `session.startedAt`
-   - `startOffsetMs = chunk.startMs - baseStartMs`
-   - `endOffsetMs = chunk.endMs - baseStartMs`
+6) **`createChunkCompositeBlob(chunk)`**
+   - If the recording is MP4-like and there is a header/init chunk (`headerChunk`), it may return:
+     - `new Blob([headerChunk.blob, chunk.blob], { type: mimeType })`
+   - Otherwise it returns:
+     - `chunk.blob`
 
-2) Uses the same range-extraction API as snips/doctor:
-   - `recordingSlicesApi.getRangeAudio(session, startOffsetMs, endOffsetMs)`
+7) **`ensureChunkPlaybackUrl` creates a URL**
+   - Calls `URL.createObjectURL(blob)`
+   - Stores it in `chunkUrlMapRef.current.set(chunk.id, url)`
+   - Returns the URL
 
-3) That returns a **WAV** blob for exactly that time span.
+8) **Create a dedicated audio element for this chunk**
+   - `const audio = new Audio()`
+   - `audio.src = url`
+   - `audio.volume = playbackVolume`
 
-4) Creates `URL.createObjectURL(wavBlob)` and plays it with `new Audio(url)` from t=0.
+9) **Stop the “normal play” audio element**
+   - `audioRef.current?.pause()`
+   - (This is the *full-session* `<audio>` element; chunk playback uses its own `new Audio()`.)
 
-### Why chunk 2 used to differ from chunk 1 / chunk 3
+10) **Attach completion/error listeners**
+   - `audio.addEventListener('ended', handlePlaybackComplete)`
+   - `audio.addEventListener('error', handlePlaybackComplete)`
+   - `handlePlaybackComplete()` calls `finishPlayback()` which:
+     - pauses the audio
+     - resets `audio.currentTime = 0`
+     - removes the entry from `chunkAudioRef.current`
+     - clears the UI “playing” state
 
-If the browser makes cumulative blobs, then:
+11) **Record the playback entry**
+   - `chunkAudioRef.current.set(chunk.id, { audio, cleanup, startTime: 0, endTime: 0 })`
+   - (Note: `endTime` is not used to truncate playback here; it plays the blob until `ended`.)
 
-- chunk 1 (0..t1) played at t=0 sounds “right”
-- chunk 2 (0..t2) played at t=0 repeats the beginning
-- chunk 3 repeats even more
+12) **Start playback**
+   - `audio.currentTime = 0`
+   - `await audio.play()`
+   - `setChunkPlayingId(chunk.id)` so the UI row shows “pause”
 
-So the *difference* is not “our code treats chunk2 differently” — it’s that the blob content is different: it’s cumulative.
+### “Difference between chunk 2 and chunk 3”
 
----
+There is no “special-casing” logic in the click handler for chunk 2 vs chunk 3.
 
-## C. 🐞 Debug panel → “Snips” → per-row Play
+If chunk 2 sounds like “a snippet from the beginning of chunk 1” mixed into it, the only ways that can happen (given the flow above) are:
 
-File: `src/App.tsx`
+- **The blob stored in IndexedDB for that chunk row actually contains that audio** (for example, cumulative MediaRecorder blobs); or
+- **The header/init segment prepending** changes what the decoder outputs when decoding the chunk blob (MP4 timing metadata), even though we are still “playing that blob”.
 
-Snips are derived from `SessionAnalysisProvider` (volume profiles → analysis frames → boundaries → segments).
-
-When you press snip Play:
-
-- `handleSnipPlayToggle(segment)`
-
-### Step-by-step
-
-1) `handleSnipPlayToggle(segment)` resolves a URL via `ensureSnipPlaybackUrl(segment)`
-2) `ensureSnipPlaybackUrl` calls `ensureSnipSlice(segment)`
-3) `ensureSnipSlice` calls:
-   - `recordingSlicesApi.getRangeAudio(session, segment.startMs, segment.endMs)`
-4) That returns a **WAV** blob.
-5) The UI plays that WAV blob from t=0 using `new Audio(url)`.
-
-### Why snips could “loop the first second” (the classic symptom)
-
-There are two distinct failure modes we’ve seen in this repo:
-
-#### 1) **Range extraction is wrong**
-If range extraction maps “session time” to “chunk time” incorrectly (especially with cumulative blobs), you can repeatedly extract from near t=0.
-
-That produces audio that is “there once was a…” over and over, because the extracted buffer is effectively the same first second.
-
-This is why `recordingSlicesApi` had to learn about cumulative chunks and, when detected, slice by absolute session offsets inside a single cumulative buffer (instead of subtracting chunk start offsets and stitching).
-
-#### 2) **Caching key collisions**
-If the app uses a cache key that collides across snips, multiple snip rows can reuse the same URL/blob.
-
-Example: `Math.round(startMs)` based keys can collide when boundaries are close or fractional.
-
-That’s why snip caching keys were moved to stable identifiers (e.g. `snip-${segment.index}`).
-
----
-
-## D. Why “full play works” but “chunk/snip play fails” (the short diagnosis)
-
-Full play:
-- Uses `manifestService.buildSessionBlob()` → one MP4 blob → browser decodes as a continuous stream.
-
-Chunk/snip play:
-- Works in **session offset space**, and must map offsets to the right decoded audio samples.
-- If the underlying MediaRecorder blobs are cumulative, naive “play blob from t=0” or naive offset mapping will replay the beginning.
-
-So the app needs to either:
-
-- treat chunk blobs as *containers that may contain other times* (cumulative), or
-- avoid MP4 fragment playback for debug buttons and always play extracted WAV ranges.
-
-This repo is moving toward the second approach for debug buttons because it’s deterministic and debuggable.
+The chunk debug button is intentionally “dumb” in the sense that it is playing the bytes of that chunk blob (plus optional header) and letting the browser decode it as-is.
 
 ---
+## Why “Normal Play” can be correct while “Chunk Play” is weird
 
-## E. The exact “mystery” you described
+Given the traces above:
 
-> Full play is perfect. Chunk 1 plays fine. Chunk 2 starts with a snippet from the beginning of chunk 1, then continues with its own stuff.
+- Normal play decodes a **single concatenated Blob** for the whole session.
+- Chunk play decodes **one selected chunk blob** (optionally with the init/header prepended).
 
-That is exactly what you get when:
-
-- chunk2’s underlying blob includes audio starting at 0 (cumulative timeline),
-- and the UI plays chunk2 starting at t=0,
-- or slices chunk2 using an offset mapping that assumes the blob starts at the chunk’s start time.
-
-The correct fixes are:
-
-- detect “cumulative chunk” behavior and slice by absolute session offsets; and/or
-- switch debug playback to generated WAV slices so playback is always “play exactly these samples”.
-
----
-
-## F. Where to look in code (quick pointers)
-
-- **Full play:**
-  - `src/App.tsx` → `handlePlaybackToggle()` → `preparePlaybackSource()`
-  - `src/modules/storage/manifest.ts` → `buildSessionBlob()`
-
-- **Chunk debug play:**
-  - `src/App.tsx` → `handleChunkPlayToggle()`
-  - `src/modules/playback/recording-slices.ts` → `getRangeAudio()` / range decoding helpers
-
-- **Snip debug play:**
-  - `src/App.tsx` → `handleSnipPlayToggle()` → `recordingSlicesApi.getRangeAudio()`
-  - `src/modules/analysis/session-analysis-provider.ts` → volume profile concatenation
+If the content of “chunk 2 blob” is not “only chunk 2’s audio”, but instead contains some earlier audio (or has MP4 timing metadata that makes the decoder render earlier audio), then **chunk play will surface that**, while normal play may still sound correct when decoding the full stream.
 
