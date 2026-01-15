@@ -1167,6 +1167,11 @@ function App() {
     [updateTranscriptionPreviewForSession],
   )
 
+  const selectSnipsForRetry = useCallback((snips: SnipRecord[]) => {
+    const failed = snips.filter((snip) => Boolean(snip.transcriptionError))
+    return failed.length > 0 ? failed : snips
+  }, [])
+
   const transcribeSnip = useCallback(
     async ({
       session,
@@ -1315,13 +1320,14 @@ function App() {
         return
       }
       setSnipRecords(snips)
-      for (const snip of snips) {
+      const targets = selectSnipsForRetry(snips)
+      for (const snip of targets) {
         await transcribeSnip({ session: selectedRecording, snip, updateUi: true, force: true, ignoreBusy: true })
       }
     } finally {
       setIsBulkTranscribing(false)
     }
-  }, [isBulkTranscribing, selectedRecording, transcribeSnip])
+  }, [isBulkTranscribing, selectSnipsForRetry, selectedRecording, transcribeSnip])
 
   const handleRetryTranscriptionsForSession = useCallback(
     async (sessionId: string) => {
@@ -1343,7 +1349,8 @@ function App() {
         if (selectedRecording?.id === sessionId) {
           setSnipRecords(snips)
         }
-        for (const snip of snips) {
+        const targets = selectSnipsForRetry(snips)
+        for (const snip of targets) {
           await transcribeSnip({
             session,
             snip,
@@ -1361,7 +1368,7 @@ function App() {
         })
       }
     },
-    [retryingSessionIds, selectedRecording?.id, transcribeSnip],
+    [retryingSessionIds, selectSnipsForRetry, selectedRecording?.id, transcribeSnip],
   )
 
   const autoTranscribeSnipsForSession = useCallback(
@@ -2775,6 +2782,12 @@ function App() {
   }, [loadDeveloperTables, loadLogSessions])
 
   const bufferLabel = `${formatDataSize(bufferTotals.totalBytes)} / ${formatDataSize(bufferTotals.limitBytes)}`
+  const hasAudioFlow = captureState.state === 'recording' && captureState.chunksRecorded > 0
+  const capturedAudioMs =
+    hasAudioFlow && captureState.startedAt && captureState.lastChunkAt
+      ? Math.max(0, captureState.lastChunkAt - captureState.startedAt)
+      : 0
+  const capturedAudioLabel = `${(capturedAudioMs / 1000).toFixed(1)}s`
   const displayDurationMs = selectedRecording && selectedRecording.id === captureState.sessionId && captureState.state === 'recording'
     ? recordingElapsedMs
     : selectedRecordingDurationMs ?? selectedRecording?.durationMs ?? 0
@@ -2822,13 +2835,10 @@ function App() {
         {developerMode && captureState.state === 'recording' ? (
           <div className="dev-strip" role="status" aria-live="polite">
             <span>
-              Segments: {effectiveChunkCount}
+              Audio captured: {capturedAudioLabel} · Segments: {effectiveChunkCount}
               {hasInitSegment ? ' + init' : ''}
             </span>
-            <span>Buffered: {formatDataSize(captureState.bytesBuffered)}</span>
-            {captureState.lastChunkAt ? (
-              <span>Last chunk: {formatClock(captureState.lastChunkAt)}</span>
-            ) : null}
+            <span>Data size: {formatDataSize(captureState.bytesBuffered)}</span>
           </div>
         ) : null}
 
@@ -2928,12 +2938,19 @@ function App() {
               type="button"
               onClick={handleRecordToggle}
               aria-pressed={captureState.state === 'recording'}
+              disabled={captureState.state === 'recording' && !hasAudioFlow}
             >
-              {captureState.state === 'recording' ? 'Stop recording' : 'Start recording'}
+              {captureState.state === 'recording'
+                ? hasAudioFlow
+                  ? 'Stop recording'
+                  : 'Starting…'
+                : 'Start recording'}
             </button>
             <p className="controls-copy">
               {captureState.state === 'recording'
-                ? `Recording — ${formatTimecode(Math.floor(Math.max(recordingElapsedMs, 0) / 1000))} elapsed`
+                ? hasAudioFlow
+                  ? `Recording — ${formatTimecode(Math.floor(Math.max(recordingElapsedMs, 0) / 1000))} elapsed`
+                  : 'Starting recorder…'
                 : 'Recorder idle — tap start to begin a durable session.'}
             </p>
           </div>

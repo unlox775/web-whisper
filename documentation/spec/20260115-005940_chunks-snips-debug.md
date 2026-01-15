@@ -41,6 +41,7 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-235500: Added verbose decode error context and skip Groq when snip audio slice is empty.
 - 20260115-241500: Auto-transcribe waits and retries decode failures; no-audio alert now flashes screen.
 - 20260115-245500: Session list shows transcription errors with per-session Retry TX and auto-selects transcript on open.
+- 20260115-252500: Retry TX now targets failed snips first; stop button waits for audio flow and dev strip labels updated.
 
 ## 🚧 In progress
 
