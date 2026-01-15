@@ -1,6 +1,13 @@
 import { SessionAnalysisProvider } from '../analysis/session-analysis-provider'
 import type { SegmentSummary } from '../analysis/session-analysis'
-import { manifestService, type ManifestService, type SessionRecord, type StoredChunk } from '../storage/manifest'
+import {
+  manifestService,
+  type ManifestService,
+  type SessionRecord,
+  type SnipRecord,
+  type SnipSeed,
+  type StoredChunk,
+} from '../storage/manifest'
 
 export type RecordingSliceKind = 'chunk' | 'snip'
 
@@ -147,13 +154,34 @@ export class RecordingSlicesApi {
     return await this.#manifest.getChunkData(sessionId)
   }
 
-  async listSnips(session: SessionRecord, mimeTypeHint?: string | null): Promise<SegmentSummary[]> {
+  async listSnips(session: SessionRecord, mimeTypeHint?: string | null): Promise<SnipRecord[]> {
     await this.#ensureInit()
+    const storedSnips = await this.#manifest.listSnips(session.id)
+    const lastEndMs = storedSnips.length > 0 ? storedSnips[storedSnips.length - 1].endMs : 0
+    const needsRefresh =
+      storedSnips.length === 0 ||
+      (session.durationMs > 0 && lastEndMs < Math.max(0, session.durationMs - 1000))
+    if (!needsRefresh) {
+      return storedSnips
+    }
+
     const result = await this.#analysisProvider.prepareAnalysisForSession({
       session,
       mimeTypeHint: mimeTypeHint ?? session.mimeType ?? null,
     })
-    return result.analysis?.segments ?? []
+    const segments = result.analysis?.segments ?? []
+    if (segments.length === 0) {
+      return storedSnips
+    }
+    const seeds: SnipSeed[] = segments.map((segment) => ({
+      index: segment.index,
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      durationMs: segment.durationMs,
+      breakReason: segment.breakReason,
+      boundaryIndex: segment.boundaryIndex,
+    }))
+    return await this.#manifest.appendSnips(session.id, seeds)
   }
 
   async getChunkAudio(session: SessionRecord, seq: number): Promise<RecordingAudioSlice | null> {
@@ -398,11 +426,11 @@ export class RecordingSlicesApi {
   }
 
   async getSnipAudio(session: SessionRecord, snipNumber: number, mimeTypeHint?: string | null): Promise<RecordingAudioSlice | null> {
-    const segments = await this.listSnips(session, mimeTypeHint)
+    const snips = await this.listSnips(session, mimeTypeHint)
     const index = snipNumber - 1
-    const segment = segments[index]
-    if (!segment) return null
-    return await this.getRangeAudio(session, segment.startMs, segment.endMs, mimeTypeHint)
+    const snip = snips[index]
+    if (!snip) return null
+    return await this.getRangeAudio(session, snip.startMs, snip.endMs, mimeTypeHint)
   }
 
   clearSession(sessionId: string): void {

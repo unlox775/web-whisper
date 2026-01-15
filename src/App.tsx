@@ -14,6 +14,9 @@ import {
   type ChunkVolumeProfileRecord,
   type LogEntryRecord,
   type LogSessionRecord,
+  type SnipRecord,
+  type SnipSeed,
+  type SnipTranscription,
   type StoredChunk,
   type SessionRecord,
 } from './modules/storage/manifest'
@@ -25,8 +28,10 @@ import {
   initializeLogger,
   logError,
   logInfo,
+  logWarn,
   shutdownLogger,
 } from './modules/logging/logger'
+import { transcriptionService } from './modules/transcription/service'
 
 type DeveloperTable = {
   name: string
@@ -125,6 +130,7 @@ const STATUS_META: Record<SessionRecord['status'], { label: string; pillClass: s
 
 const MB = 1024 * 1024
 const DEFAULT_STORAGE_LIMIT_BYTES = 200 * MB
+const DEFAULT_GROQ_MODEL = 'whisper-large-v3'
 
 const formatClock = (timestamp: number) =>
   new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp))
@@ -252,11 +258,21 @@ const formatLogTime = (timestamp: number) => {
   return formatter.format(new Date(timestamp))
 }
 
+const toSnipSeed = (segment: SegmentSummary): SnipSeed => ({
+  index: segment.index,
+  startMs: segment.startMs,
+  endMs: segment.endMs,
+  durationMs: segment.durationMs,
+  breakReason: segment.breakReason,
+  boundaryIndex: segment.boundaryIndex,
+})
+
 function App() {
   const [settings, setSettings] = useState<RecorderSettings | null>(null)
   const [recordings, setRecordings] = useState<SessionRecord[]>([])
   const [selectedRecordingId, setSelectedRecordingId] = useState<string | null>(null)
   const [chunkData, setChunkData] = useState<StoredChunk[]>([])
+  const [snipRecords, setSnipRecords] = useState<SnipRecord[]>([])
   const [captureState, setCaptureState] = useState(captureController.state)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [bufferTotals, setBufferTotals] = useState<{ totalBytes: number; limitBytes: number }>({
@@ -311,6 +327,7 @@ function App() {
   const [analysisState, setAnalysisState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [sessionAnalysis, setSessionAnalysis] = useState<SessionAnalysis | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
+  const [snipTranscriptionState, setSnipTranscriptionState] = useState<Record<string, boolean>>({})
 
   const streamCursor = useRef(1)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -508,6 +525,8 @@ function App() {
     let cancelled = false
     if (!selectedRecordingId) {
       setChunkData([])
+      setSnipRecords([])
+      setSnipTranscriptionState({})
       setDebugDetailsOpen(false)
       setAnalysisGraphOpen(false)
       setSessionAnalysis(null)
@@ -515,10 +534,15 @@ function App() {
       setAnalysisError(null)
       return
     }
+    setSnipTranscriptionState({})
     ;(async () => {
-      const metadata = await manifestService.getChunkData(selectedRecordingId)
+      const [metadata, snips] = await Promise.all([
+        manifestService.getChunkData(selectedRecordingId),
+        manifestService.listSnips(selectedRecordingId),
+      ])
       if (!cancelled) {
         setChunkData(metadata)
+        setSnipRecords(snips)
       }
     })()
     return () => {
@@ -576,6 +600,36 @@ function App() {
 
     setChunkPlayingId((prev) => (prev && currentIds.has(prev) ? prev : null))
   }, [chunkData])
+
+  useEffect(() => {
+    const urlMap = snipUrlMapRef.current
+    const audioEntries = snipAudioRef.current
+    const currentIds = new Set(snipRecords.map((snip) => snip.id))
+
+    Array.from(urlMap.entries()).forEach(([id, url]) => {
+      if (!currentIds.has(id)) {
+        URL.revokeObjectURL(url)
+        urlMap.delete(id)
+      }
+    })
+
+    Array.from(snipSliceCacheRef.current.keys()).forEach((id) => {
+      if (!currentIds.has(id)) {
+        snipSliceCacheRef.current.delete(id)
+      }
+    })
+
+    for (const [id, entry] of audioEntries.entries()) {
+      if (!currentIds.has(id)) {
+        entry.cleanup()
+        entry.audio.pause()
+        entry.audio.currentTime = entry.startTime
+        audioEntries.delete(id)
+      }
+    }
+
+    setSnipPlayingId((prev) => (prev && currentIds.has(prev) ? prev : null))
+  }, [snipRecords])
 
   useEffect(() => {
     return () => {
@@ -671,6 +725,27 @@ function App() {
     [recordings, selectedRecordingId],
   )
 
+  const snipTranscriptionSummary = useMemo(() => {
+    const transcribedSnips = snipRecords.filter(
+      (snip) => Boolean(snip.transcription) && ((snip.transcription?.text?.trim() ?? '') || snip.transcription?.words?.length),
+    )
+    const texts = transcribedSnips
+      .map((snip) => {
+        const direct = snip.transcription?.text?.trim() ?? ''
+        if (direct) return direct
+        const words = snip.transcription?.words?.map((word) => word.text).join(' ').trim() ?? ''
+        return words
+      })
+      .filter((text) => text.length > 0)
+    const errorCount = snipRecords.filter((snip) => Boolean(snip.transcriptionError)).length
+    return {
+      text: texts.join(' ').trim(),
+      transcribedCount: transcribedSnips.length,
+      errorCount,
+      total: snipRecords.length,
+    }
+  }, [snipRecords])
+
   useEffect(() => {
     if (!selectedRecording) {
       setSelectedRecordingDurationMs(null)
@@ -717,6 +792,22 @@ function App() {
           setSessionAnalysis(result.analysis)
           setAnalysisState('ready')
           setAnalysisError(null)
+          const seeds = result.analysis.segments.map((segment) => toSnipSeed(segment))
+          if (seeds.length > 0) {
+            try {
+              const updatedSnips = await manifestService.appendSnips(selectedRecording.id, seeds)
+              if (!cancelled) {
+                setSnipRecords(updatedSnips)
+              }
+            } catch (error) {
+              if (!cancelled) {
+                await logError('Failed to persist snip segments', {
+                  sessionId: selectedRecording.id,
+                  error: error instanceof Error ? error.message : String(error),
+                })
+              }
+            }
+          }
         } else {
           // Surface a friendlier warning when volumes are still baking.
           setSessionAnalysis(null)
@@ -833,19 +924,19 @@ function App() {
     )
 
   const ensureSnipSlice = useCallback(
-    async (segment: SegmentSummary): Promise<RecordingAudioSlice | null> => {
+    async (snip: SnipRecord): Promise<RecordingAudioSlice | null> => {
       if (!selectedRecording) {
         return null
       }
-      const cacheKey = `snip-${segment.index}`
+      const cacheKey = snip.id
       const existing = snipSliceCacheRef.current.get(cacheKey)
       if (existing) {
         return existing
       }
       const slice = await recordingSlicesApi.getRangeAudio(
         selectedRecording,
-        segment.startMs,
-        segment.endMs,
+        snip.startMs,
+        snip.endMs,
         selectedRecording.mimeType ?? null,
       )
       snipSliceCacheRef.current.set(cacheKey, slice)
@@ -855,10 +946,10 @@ function App() {
   )
 
   const ensureSnipPlaybackUrl = useCallback(
-    async (segment: SegmentSummary): Promise<{ url: string; slice: RecordingAudioSlice } | null> => {
-      const cacheKey = `snip-${segment.index}`
+    async (snip: SnipRecord): Promise<{ url: string; slice: RecordingAudioSlice } | null> => {
+      const cacheKey = snip.id
       const existingUrl = snipUrlMapRef.current.get(cacheKey)
-      const slice = await ensureSnipSlice(segment)
+      const slice = await ensureSnipSlice(snip)
       if (!slice) {
         return null
       }
@@ -873,8 +964,8 @@ function App() {
   )
 
   const handleSnipDownload = useCallback(
-    async (segment: SegmentSummary, snipNumber: number) => {
-      const resolved = await ensureSnipPlaybackUrl(segment)
+    async (snip: SnipRecord, snipNumber: number) => {
+      const resolved = await ensureSnipPlaybackUrl(snip)
       if (!resolved) {
         return
       }
@@ -888,6 +979,91 @@ function App() {
       document.body.removeChild(link)
     },
     [ensureSnipPlaybackUrl],
+  )
+
+  const handleSnipTranscription = useCallback(
+    async (snip: SnipRecord) => {
+      if (!selectedRecording) {
+        return
+      }
+      const apiKey = settings?.groqApiKey?.trim() ?? ''
+      if (!apiKey) {
+        const message = 'Groq API key missing. Add it in Settings before retrying.'
+        await logWarn('Snip transcription blocked (missing key)', {
+          sessionId: selectedRecording.id,
+          snipId: snip.id,
+        })
+        const updated = await manifestService.updateSnipTranscription(snip.id, { transcriptionError: message })
+        if (updated) {
+          setSnipRecords((prev) => prev.map((record) => (record.id === updated.id ? updated : record)))
+        }
+        return
+      }
+      if (snipTranscriptionState[snip.id]) {
+        return
+      }
+
+      setSnipTranscriptionState((prev) => ({ ...prev, [snip.id]: true }))
+      try {
+        const slice = await ensureSnipSlice(snip)
+        if (!slice) {
+          throw new Error('Unable to resolve snip audio for transcription.')
+        }
+        await logInfo('Snip transcription started', {
+          sessionId: selectedRecording.id,
+          snipId: snip.id,
+          model: DEFAULT_GROQ_MODEL,
+          startMs: snip.startMs,
+          endMs: snip.endMs,
+        })
+
+        const result = await transcriptionService.transcribeAudio({
+          apiKey,
+          audio: slice.blob,
+          model: DEFAULT_GROQ_MODEL,
+          temperature: 0,
+        })
+        const transcription: SnipTranscription = {
+          text: result.text,
+          words: result.words,
+          model: result.model,
+          language: result.language ?? null,
+          createdAt: Date.now(),
+        }
+        const updated = await manifestService.updateSnipTranscription(snip.id, {
+          transcription,
+          transcriptionError: null,
+        })
+        if (updated) {
+          setSnipRecords((prev) => prev.map((record) => (record.id === updated.id ? updated : record)))
+        }
+        await logInfo('Snip transcription completed', {
+          sessionId: selectedRecording.id,
+          snipId: snip.id,
+          model: result.model,
+          textLength: result.text.length,
+          wordCount: result.words.length,
+        })
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        await logError('Snip transcription failed', {
+          sessionId: selectedRecording.id,
+          snipId: snip.id,
+          error: message,
+        })
+        const updated = await manifestService.updateSnipTranscription(snip.id, { transcriptionError: message })
+        if (updated) {
+          setSnipRecords((prev) => prev.map((record) => (record.id === updated.id ? updated : record)))
+        }
+      } finally {
+        setSnipTranscriptionState((prev) => {
+          const next = { ...prev }
+          delete next[snip.id]
+          return next
+        })
+      }
+    },
+    [ensureSnipSlice, selectedRecording, settings?.groqApiKey, snipTranscriptionState],
   )
 
   const refreshAndClearErrors = useCallback(async () => {
@@ -1967,11 +2143,11 @@ function App() {
   )
 
   const handleSnipPlayToggle = useCallback(
-    async (segment: SegmentSummary) => {
+    async (snip: SnipRecord) => {
       if (!selectedRecording) {
         return
       }
-      const snipKey = `snip-${segment.index}`
+      const snipKey = snip.id
       const audioEntries = snipAudioRef.current
       const activeEntry = audioEntries.get(snipKey)
 
@@ -2004,7 +2180,7 @@ function App() {
       }
       setSnipPlayingId(null)
 
-      const resolved = await ensureSnipPlaybackUrl(segment)
+      const resolved = await ensureSnipPlaybackUrl(snip)
       if (!resolved) {
         return
       }
@@ -2013,7 +2189,7 @@ function App() {
       audio.src = resolved.url
       audio.volume = playbackVolume
 
-      const durationSeconds = Math.max(0, (segment.endMs - segment.startMs) / 1000)
+      const durationSeconds = Math.max(0, snip.durationMs / 1000)
       const startTime = 0
       const endTime = durationSeconds
 
@@ -2069,10 +2245,11 @@ function App() {
 
     const loadDeveloperTables = useCallback(async () => {
       try {
-        const [sessions, chunks, chunkVolumes] = await Promise.all([
+        const [sessions, chunks, chunkVolumes, snips] = await Promise.all([
           manifestService.listSessions(),
           manifestService.getChunksForInspection(),
           manifestService.listChunkVolumeProfiles(),
+          manifestService.listSnips(),
         ])
         setDeveloperTables([
           { name: 'sessions', rows: sessions.map((row) => ({ ...row })) },
@@ -2083,6 +2260,14 @@ function App() {
               ...row,
               framesPreview: row.frames.slice(0, 24),
               framesTotal: row.frames.length,
+            })),
+          },
+          {
+            name: 'snips',
+            rows: snips.map((row) => ({
+              ...row,
+              wordsPreview: row.transcription?.words?.slice(0, 6) ?? [],
+              wordsCount: row.transcription?.words?.length ?? 0,
             })),
           },
         ])
@@ -2459,7 +2644,26 @@ function App() {
                   ) : null}
                 <div className="detail-transcription">
                   <h3>Transcription</h3>
-                  <p className="detail-transcription-placeholder">Not yet implemented — will stream from Groq once wired.</p>
+                  {snipRecords.length === 0 ? (
+                    <p className="detail-transcription-placeholder">No snips recorded yet.</p>
+                  ) : snipTranscriptionSummary.transcribedCount === 0 ? (
+                    <p className="detail-transcription-placeholder">
+                      No snip transcriptions yet. Open the snip list to retry each segment.
+                    </p>
+                  ) : (
+                    <p className="detail-transcription-text">{snipTranscriptionSummary.text}</p>
+                  )}
+                  {snipRecords.length > 0 ? (
+                    <p className="detail-transcription-meta">
+                      Transcribed {snipTranscriptionSummary.transcribedCount} of {snipTranscriptionSummary.total} snips.
+                    </p>
+                  ) : null}
+                  {snipTranscriptionSummary.errorCount > 0 ? (
+                    <p className="detail-transcription-error" role="alert">
+                      {snipTranscriptionSummary.errorCount} snip transcription error
+                      {snipTranscriptionSummary.errorCount === 1 ? '' : 's'} recorded. See the snip list for details.
+                    </p>
+                  ) : null}
                 </div>
                 {developerMode && doctorOpen ? (
                   <div className="detail-doctor">
@@ -2947,7 +3151,7 @@ function App() {
                       <h3>
                         {detailSliceMode === 'chunks'
                           ? `Chunks (${playableChunkCount}${headerChunk ? ' + init' : ''})`
-                          : `Snips (${sessionAnalysis?.segments?.length ?? 0})`}{' '}
+                          : `Snips (${snipRecords.length})`}{' '}
                         · {selectedRecording.mimeType ?? 'pending'}
                       </h3>
                       <div className="detail-slice-toggle" role="tablist" aria-label="Slice mode">
@@ -3021,50 +3225,81 @@ function App() {
                           })}
                         </ul>
                       )
-                    ) : analysisState === 'loading' ? (
+                    ) : analysisState === 'loading' && snipRecords.length === 0 ? (
                       <p className="detail-transcription-placeholder">Analyzing audio for snips…</p>
-                    ) : analysisState === 'error' ? (
+                    ) : analysisState === 'error' && snipRecords.length === 0 ? (
                       <p className="detail-transcription-placeholder" role="alert">
                         {analysisError ?? 'Unable to analyze audio.'}
                       </p>
-                    ) : sessionAnalysis?.segments?.length ? (
-                      <ul className="chunk-list">
-                        {sessionAnalysis.segments.map((segment) => {
-                          const snipNumber = segment.index + 1
-                          const durationSeconds = Math.max(0, segment.durationMs / 1000)
-                          const decimalPlaces = durationSeconds < 10 ? 2 : 1
-                          const durationLabel = `${durationSeconds.toFixed(decimalPlaces)} s`
-                          const snipKey = `snip-${segment.index}`
-                          const isSnipPlaying = snipPlayingId === snipKey
-                          const playLabel = isSnipPlaying ? `Pause snip ${snipNumber}` : `Play snip ${snipNumber}`
-                          return (
-                            <li key={snipKey} className="chunk-item">
-                              <button
-                                type="button"
-                                className={`chunk-play ${isSnipPlaying ? 'is-playing' : ''}`}
-                                onClick={() => void handleSnipPlayToggle(segment)}
-                                aria-pressed={isSnipPlaying}
-                                aria-label={playLabel}
-                              >
-                                {isSnipPlaying ? '⏸' : '▶'}
-                              </button>
-                              <span>#{snipNumber}</span>
-                              <span>{durationLabel}</span>
-                              <span>
-                                {formatTimecode(Math.round(segment.startMs / 1000))} → {formatTimecode(Math.round(segment.endMs / 1000))}
-                              </span>
-                              <button
-                                type="button"
-                                className="chunk-download"
-                                onClick={() => void handleSnipDownload(segment, snipNumber)}
-                                aria-label={`Download snip ${snipNumber}`}
-                              >
-                                ⬇
-                              </button>
-                            </li>
-                          )
-                        })}
-                      </ul>
+                    ) : snipRecords.length ? (
+                      <>
+                        {analysisState === 'error' && analysisError ? (
+                          <p className="detail-transcription-placeholder" role="alert">
+                            Snip refresh failed: {analysisError}
+                          </p>
+                        ) : null}
+                        <ul className="chunk-list">
+                          {snipRecords.map((snip) => {
+                            const snipNumber = snip.index + 1
+                            const durationSeconds = Math.max(0, snip.durationMs / 1000)
+                            const decimalPlaces = durationSeconds < 10 ? 2 : 1
+                            const durationLabel = `${durationSeconds.toFixed(decimalPlaces)} s`
+                            const snipKey = snip.id
+                            const isSnipPlaying = snipPlayingId === snipKey
+                            const isTranscribing = Boolean(snipTranscriptionState[snip.id])
+                            const hasTranscript = Boolean(snip.transcription?.text?.trim())
+                            const playLabel = isSnipPlaying ? `Pause snip ${snipNumber}` : `Play snip ${snipNumber}`
+                            const transcribeLabel = isTranscribing
+                              ? `Transcribing snip ${snipNumber}`
+                              : hasTranscript
+                                ? `Retry transcription for snip ${snipNumber}`
+                                : `Transcribe snip ${snipNumber}`
+                            return (
+                              <li key={snipKey} className="chunk-item">
+                                <button
+                                  type="button"
+                                  className={`chunk-play ${isSnipPlaying ? 'is-playing' : ''}`}
+                                  onClick={() => void handleSnipPlayToggle(snip)}
+                                  aria-pressed={isSnipPlaying}
+                                  aria-label={playLabel}
+                                >
+                                  {isSnipPlaying ? '⏸' : '▶'}
+                                </button>
+                                <span>#{snipNumber}</span>
+                                <span>{durationLabel}</span>
+                                <span>
+                                  {formatTimecode(Math.round(snip.startMs / 1000))} → {formatTimecode(Math.round(snip.endMs / 1000))}
+                                </span>
+                                <span className={`snip-transcription-status ${hasTranscript ? 'is-ready' : 'is-pending'}`}>
+                                  {isTranscribing ? 'Transcribing…' : hasTranscript ? 'Transcribed' : 'Pending'}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="chunk-download"
+                                  onClick={() => void handleSnipDownload(snip, snipNumber)}
+                                  aria-label={`Download snip ${snipNumber}`}
+                                >
+                                  ⬇
+                                </button>
+                                <button
+                                  type="button"
+                                  className="snip-transcribe"
+                                  onClick={() => void handleSnipTranscription(snip)}
+                                  aria-label={transcribeLabel}
+                                  disabled={isTranscribing}
+                                >
+                                  {hasTranscript ? 'Retry' : 'Tx'}
+                                </button>
+                                {snip.transcriptionError ? (
+                                  <span className="snip-transcription-error" role="alert">
+                                    {snip.transcriptionError}
+                                  </span>
+                                ) : null}
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      </>
                     ) : (
                       <p className="detail-transcription-placeholder">No snips available yet.</p>
                     )}

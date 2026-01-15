@@ -27,6 +27,9 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-175214: PCM capture now updates the session `startedAt` to the actual capture-start time (after mic/audio graph setup), so `session.durationMs` and Doctor range-based checks don’t include setup latency.
 - 20260115-175214: Doctor “volume profile” sanity check now includes `seq=0` for MP3 sessions (it previously filtered `seq > 0`, creating a false “missing 1 profile” warning).
 - 20260115-180115: Doctor now forces a stable snapshot (fresh session from IndexedDB + cache clear + best-effort timing verification) so results don’t change just because you refreshed.
+- 20260115-203800: Added first-class snip records in IndexedDB, including transcription payloads and errors, plus a new developer console table to inspect them.
+- 20260115-203800: Snip list now renders stored snips, with per-snip retry transcription and Groq error surfaces.
+- 20260115-203800: Detail view shows concatenated snip transcription text with status/error metadata.
 
 ## 🚧 In progress
 
@@ -37,7 +40,7 @@ Fix the recording detail “debug” (bug icon) panel so:
 
 ## ⏭️ Next actions
 
-- Update `documentation/README.md` status line(s) once snips are actually surfaced in the UI.
 - Add/extend unit tests around slice resolution and stitching (where feasible without real audio fixtures).
 - Ensure `npm run build` passes and commit build artifacts as required by repo policy.
+- Add auto-transcription (post-snip) and optional word-level playback highlighting.
 
