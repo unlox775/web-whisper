@@ -7,7 +7,7 @@ import {
 } from 'react'
 import { captureController } from './modules/capture/controller'
 import { RecordingAnalysisGraph } from './components/RecordingAnalysisGraph'
-import { type SessionAnalysis } from './modules/analysis/session-analysis'
+import { type SessionAnalysis, type SegmentSummary } from './modules/analysis/session-analysis'
 import './App.css'
 import {
   manifestService,
@@ -18,6 +18,7 @@ import {
   type SessionRecord,
 } from './modules/storage/manifest'
 import { SessionAnalysisProvider } from './modules/analysis/session-analysis-provider'
+import { recordingSlicesApi, type RecordingAudioSlice } from './modules/playback/recording-slices'
 import { settingsStore, type RecorderSettings } from './modules/settings/store'
 import {
   getActiveLogSession,
@@ -217,6 +218,7 @@ function App() {
   const [isTranscriptionVisible, setTranscriptionVisible] = useState(false)
   const [recordingElapsedMs, setRecordingElapsedMs] = useState(0)
   const [chunkPlayingId, setChunkPlayingId] = useState<string | null>(null)
+  const [snipPlayingId, setSnipPlayingId] = useState<string | null>(null)
   const [playbackVolume, setPlaybackVolume] = useState(1)
   const [isVolumeSliderOpen, setVolumeSliderOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
@@ -229,6 +231,7 @@ function App() {
   const [selectedLogSession, setSelectedLogSession] = useState<LogSessionRecord | null>(null)
   const [logEntries, setLogEntries] = useState<LogEntryRecord[]>([])
   const [debugDetailsOpen, setDebugDetailsOpen] = useState(false)
+  const [detailSliceMode, setDetailSliceMode] = useState<'chunks' | 'snips'>('chunks')
   const [isLoadingPlayback, setIsLoadingPlayback] = useState(false)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
   const [audioState, setAudioState] = useState<AudioState>({ playing: false, duration: 0, position: 0 })
@@ -243,6 +246,9 @@ function App() {
   const audioUrlRef = useRef<string | null>(null)
   const chunkUrlMapRef = useRef<Map<string, string>>(new Map())
   const chunkAudioRef = useRef<Map<string, ChunkPlaybackEntry>>(new Map())
+  const snipUrlMapRef = useRef<Map<string, string>>(new Map())
+  const snipAudioRef = useRef<Map<string, ChunkPlaybackEntry>>(new Map())
+  const snipSliceCacheRef = useRef<Map<string, RecordingAudioSlice>>(new Map())
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
   const sessionAnalysisProviderRef = useRef<SessionAnalysisProvider | null>(null)
@@ -519,8 +525,33 @@ function App() {
       })
       chunkAudioRef.current.clear()
       setChunkPlayingId(null)
+      snipAudioRef.current.forEach((entry) => {
+        entry.cleanup()
+        entry.audio.pause()
+        entry.audio.currentTime = entry.startTime
+      })
+      snipAudioRef.current.clear()
+      setSnipPlayingId(null)
     }
   }, [debugDetailsOpen])
+
+  useEffect(() => {
+    // Switching modes should not keep stale per-slice playback alive.
+    chunkAudioRef.current.forEach((entry) => {
+      entry.cleanup()
+      entry.audio.pause()
+      entry.audio.currentTime = entry.startTime
+    })
+    chunkAudioRef.current.clear()
+    setChunkPlayingId(null)
+    snipAudioRef.current.forEach((entry) => {
+      entry.cleanup()
+      entry.audio.pause()
+      entry.audio.currentTime = entry.startTime
+    })
+    snipAudioRef.current.clear()
+    setSnipPlayingId(null)
+  }, [detailSliceMode])
 
   useEffect(() => {
     const mainAudio = audioRef.current
@@ -528,6 +559,9 @@ function App() {
       mainAudio.volume = playbackVolume
     }
     chunkAudioRef.current.forEach((entry) => {
+      entry.audio.volume = playbackVolume
+    })
+    snipAudioRef.current.forEach((entry) => {
       entry.audio.volume = playbackVolume
     })
   }, [playbackVolume])
@@ -572,7 +606,9 @@ function App() {
   }, [selectedRecording])
 
   useEffect(() => {
-    if (!developerMode || !selectedRecording || !isAnalysisGraphOpen) {
+    const wantsSessionAnalysis =
+      developerMode && selectedRecording && (isAnalysisGraphOpen || (debugDetailsOpen && detailSliceMode === 'snips'))
+    if (!wantsSessionAnalysis) {
       setAnalysisState('idle')
       setSessionAnalysis(null)
       setAnalysisError(null)
@@ -638,6 +674,8 @@ function App() {
     }
   }, [
     developerMode,
+    debugDetailsOpen,
+    detailSliceMode,
     isAnalysisGraphOpen,
     selectedRecording?.id,
     selectedRecording?.updatedAt,
@@ -706,6 +744,64 @@ function App() {
       },
       [ensureChunkPlaybackUrl, selectedRecording?.startedAt],
     )
+
+  const ensureSnipSlice = useCallback(
+    async (segment: SegmentSummary): Promise<RecordingAudioSlice | null> => {
+      if (!selectedRecording) {
+        return null
+      }
+      const cacheKey = `${Math.round(segment.startMs)}-${Math.round(segment.endMs)}`
+      const existing = snipSliceCacheRef.current.get(cacheKey)
+      if (existing) {
+        return existing
+      }
+      const slice = await recordingSlicesApi.getRangeAudio(
+        selectedRecording,
+        segment.startMs,
+        segment.endMs,
+        selectedRecording.mimeType ?? null,
+      )
+      snipSliceCacheRef.current.set(cacheKey, slice)
+      return slice
+    },
+    [selectedRecording],
+  )
+
+  const ensureSnipPlaybackUrl = useCallback(
+    async (segment: SegmentSummary): Promise<{ url: string; slice: RecordingAudioSlice } | null> => {
+      const cacheKey = `${Math.round(segment.startMs)}-${Math.round(segment.endMs)}`
+      const existingUrl = snipUrlMapRef.current.get(cacheKey)
+      const slice = await ensureSnipSlice(segment)
+      if (!slice) {
+        return null
+      }
+      if (existingUrl) {
+        return { url: existingUrl, slice }
+      }
+      const url = URL.createObjectURL(slice.blob)
+      snipUrlMapRef.current.set(cacheKey, url)
+      return { url, slice }
+    },
+    [ensureSnipSlice],
+  )
+
+  const handleSnipDownload = useCallback(
+    async (segment: SegmentSummary, snipNumber: number) => {
+      const resolved = await ensureSnipPlaybackUrl(segment)
+      if (!resolved) {
+        return
+      }
+      const { url, slice } = resolved
+      const link = document.createElement('a')
+      link.href = url
+      link.download = slice.suggestedFilename || `snip-${String(snipNumber).padStart(2, '0')}.wav`
+      link.rel = 'noopener'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    },
+    [ensureSnipPlaybackUrl],
+  )
 
   const refreshAndClearErrors = useCallback(async () => {
     setErrorMessage(null)
@@ -882,6 +978,17 @@ function App() {
     chunkUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url))
     chunkUrlMapRef.current.clear()
     setChunkPlayingId(null)
+    snipAudioRef.current.forEach((entry) => {
+      entry.cleanup()
+      entry.audio.pause()
+      entry.audio.currentTime = entry.startTime
+    })
+    snipAudioRef.current.clear()
+    snipUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url))
+    snipUrlMapRef.current.clear()
+    snipSliceCacheRef.current.clear()
+    setSnipPlayingId(null)
+    setDetailSliceMode('chunks')
     setVolumeSliderOpen(false)
     setSelectedRecordingId(null)
     setChunkData([])
@@ -895,6 +1002,9 @@ function App() {
     setAudioState({ playing: false, duration: 0, position: 0 })
     if (selectedRecordingId) {
       await logInfo('Detail view closed', { sessionId: selectedRecordingId })
+    }
+    if (selectedRecordingId) {
+      recordingSlicesApi.clearSession(selectedRecordingId)
     }
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current)
@@ -971,10 +1081,12 @@ function App() {
       audio.src = url
       audio.volume = playbackVolume
 
-      const sessionStartMs = selectedRecording?.startedAt ?? chunk.startMs
       const chunkDurationSeconds = Math.max(0, (chunk.endMs - chunk.startMs) / 1000)
-      const startTime = Math.max(0, (chunk.startMs - sessionStartMs) / 1000)
-      const endTime = startTime + chunkDurationSeconds
+      // This audio source is the chunk blob itself (optionally prefixed with an init segment),
+      // so it always starts at t=0. (Using session-relative offsets here causes every chunk to
+      // seek to 0 due to clamping, which looks like "always plays from the beginning".)
+      const startTime = 0
+      const endTime = chunkDurationSeconds
 
       audioRef.current?.pause()
 
@@ -1040,7 +1152,108 @@ function App() {
         finishPlayback()
       }
     },
-    [chunkPlayingId, ensureChunkPlaybackUrl, isHeaderSegment, playbackVolume, selectedRecording?.startedAt],
+    [chunkPlayingId, ensureChunkPlaybackUrl, isHeaderSegment, playbackVolume],
+  )
+
+  const handleSnipPlayToggle = useCallback(
+    async (segment: SegmentSummary) => {
+      if (!selectedRecording) {
+        return
+      }
+      const snipKey = `${Math.round(segment.startMs)}-${Math.round(segment.endMs)}`
+      const audioEntries = snipAudioRef.current
+      const activeEntry = audioEntries.get(snipKey)
+
+      const stopEntry = (entryId: string, entry: ChunkPlaybackEntry) => {
+        entry.cleanup()
+        entry.audio.pause()
+        entry.audio.currentTime = entry.startTime
+        audioEntries.delete(entryId)
+      }
+
+      if (snipPlayingId === snipKey) {
+        if (activeEntry) {
+          stopEntry(snipKey, activeEntry)
+        }
+        setSnipPlayingId(null)
+        return
+      }
+
+      // Ensure any existing chunk playback is stopped before we start a snip.
+      chunkAudioRef.current.forEach((entry, entryId) => {
+        entry.cleanup()
+        entry.audio.pause()
+        entry.audio.currentTime = entry.startTime
+        chunkAudioRef.current.delete(entryId)
+      })
+      setChunkPlayingId(null)
+
+      for (const [entryId, entry] of audioEntries.entries()) {
+        stopEntry(entryId, entry)
+      }
+      setSnipPlayingId(null)
+
+      const resolved = await ensureSnipPlaybackUrl(segment)
+      if (!resolved) {
+        return
+      }
+
+      const audio = new Audio()
+      audio.src = resolved.url
+      audio.volume = playbackVolume
+
+      const durationSeconds = Math.max(0, (segment.endMs - segment.startMs) / 1000)
+      const startTime = 0
+      const endTime = durationSeconds
+
+      audioRef.current?.pause()
+
+      function cleanupListeners() {
+        audio.removeEventListener('timeupdate', handleTimeUpdate)
+        audio.removeEventListener('ended', handlePlaybackComplete)
+        audio.removeEventListener('error', handlePlaybackComplete)
+      }
+
+      function finishPlayback() {
+        cleanupListeners()
+        audio.pause()
+        audio.currentTime = startTime
+        audioEntries.delete(snipKey)
+        setSnipPlayingId((prev) => (prev === snipKey ? null : prev))
+      }
+
+      function handlePlaybackComplete() {
+        finishPlayback()
+      }
+
+      function handleTimeUpdate() {
+        if (durationSeconds > 0 && audio.currentTime >= endTime - 0.05) {
+          finishPlayback()
+        }
+      }
+
+      audio.addEventListener('timeupdate', handleTimeUpdate)
+      audio.addEventListener('ended', handlePlaybackComplete)
+      audio.addEventListener('error', handlePlaybackComplete)
+
+      const cleanup = () => cleanupListeners()
+
+      audioEntries.set(snipKey, {
+        audio,
+        cleanup,
+        startTime,
+        endTime,
+      })
+
+      try {
+        await audio.play()
+        setSnipPlayingId(snipKey)
+      } catch (error) {
+        console.error('[UI] Failed to play snip', error)
+        finishPlayback()
+      }
+    },
+    [ensureSnipPlaybackUrl, playbackVolume, selectedRecording, snipPlayingId],
   )
 
     const loadDeveloperTables = useCallback(async () => {
@@ -1431,12 +1644,39 @@ function App() {
                 </div>
                 {developerMode && debugDetailsOpen ? (
                   <div className="detail-chunks">
-                    <h3>
-                      Chunks ({playableChunkCount}{headerChunk ? ' + init' : ''}) · {selectedRecording.mimeType ?? 'pending'}
-                    </h3>
-                    {chunkData.length === 0 ? (
-                      <p className="detail-transcription-placeholder">No chunks persisted yet.</p>
-                    ) : (
+                    <div className="detail-slices-header">
+                      <h3>
+                        {detailSliceMode === 'chunks'
+                          ? `Chunks (${playableChunkCount}${headerChunk ? ' + init' : ''})`
+                          : `Snips (${sessionAnalysis?.segments?.length ?? 0})`}{' '}
+                        · {selectedRecording.mimeType ?? 'pending'}
+                      </h3>
+                      <div className="detail-slice-toggle" role="tablist" aria-label="Slice mode">
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={detailSliceMode === 'chunks'}
+                          className={detailSliceMode === 'chunks' ? 'is-selected' : ''}
+                          onClick={() => setDetailSliceMode('chunks')}
+                        >
+                          Chunks
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={detailSliceMode === 'snips'}
+                          className={detailSliceMode === 'snips' ? 'is-selected' : ''}
+                          onClick={() => setDetailSliceMode('snips')}
+                        >
+                          Snips
+                        </button>
+                      </div>
+                    </div>
+
+                    {detailSliceMode === 'chunks' ? (
+                      chunkData.length === 0 ? (
+                        <p className="detail-transcription-placeholder">No chunks persisted yet.</p>
+                      ) : (
                         <ul className="chunk-list">
                           {chunkData.map((chunk) => {
                             const durationSeconds = Math.max(0, (chunk.endMs - chunk.startMs) / 1000)
@@ -1481,6 +1721,53 @@ function App() {
                             )
                           })}
                         </ul>
+                      )
+                    ) : analysisState === 'loading' ? (
+                      <p className="detail-transcription-placeholder">Analyzing audio for snips…</p>
+                    ) : analysisState === 'error' ? (
+                      <p className="detail-transcription-placeholder" role="alert">
+                        {analysisError ?? 'Unable to analyze audio.'}
+                      </p>
+                    ) : sessionAnalysis?.segments?.length ? (
+                      <ul className="chunk-list">
+                        {sessionAnalysis.segments.map((segment) => {
+                          const snipNumber = segment.index + 1
+                          const durationSeconds = Math.max(0, segment.durationMs / 1000)
+                          const decimalPlaces = durationSeconds < 10 ? 2 : 1
+                          const durationLabel = `${durationSeconds.toFixed(decimalPlaces)} s`
+                          const snipKey = `${Math.round(segment.startMs)}-${Math.round(segment.endMs)}`
+                          const isSnipPlaying = snipPlayingId === snipKey
+                          const playLabel = isSnipPlaying ? `Pause snip ${snipNumber}` : `Play snip ${snipNumber}`
+                          return (
+                            <li key={snipKey} className="chunk-item">
+                              <button
+                                type="button"
+                                className={`chunk-play ${isSnipPlaying ? 'is-playing' : ''}`}
+                                onClick={() => void handleSnipPlayToggle(segment)}
+                                aria-pressed={isSnipPlaying}
+                                aria-label={playLabel}
+                              >
+                                {isSnipPlaying ? '⏸' : '▶'}
+                              </button>
+                              <span>#{snipNumber}</span>
+                              <span>{durationLabel}</span>
+                              <span>
+                                {formatTimecode(Math.round(segment.startMs / 1000))} → {formatTimecode(Math.round(segment.endMs / 1000))}
+                              </span>
+                              <button
+                                type="button"
+                                className="chunk-download"
+                                onClick={() => void handleSnipDownload(segment, snipNumber)}
+                                aria-label={`Download snip ${snipNumber}`}
+                              >
+                                ⬇
+                              </button>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="detail-transcription-placeholder">No snips available yet.</p>
                     )}
                   </div>
                 ) : null}

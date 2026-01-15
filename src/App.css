@@ -773,6 +773,38 @@ body {
   font-size: 0.95rem;
 }
 
+.detail-slices-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.detail-slice-toggle {
+  display: inline-flex;
+  gap: 0.15rem;
+  padding: 0.15rem;
+  border-radius: 999px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.detail-slice-toggle button {
+  border: none;
+  background: transparent;
+  color: #cbd5f5;
+  font-size: 0.78rem;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.detail-slice-toggle button.is-selected {
+  background: rgba(94, 234, 212, 0.22);
+  color: #5eead4;
+}
+
 .chunk-list {
   margin: 0;
   padding: 0;
