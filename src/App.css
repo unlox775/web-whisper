@@ -549,6 +549,15 @@ body {
   font-weight: 600;
 }
 
+.detail-delete {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.12);
+  color: #fecaca;
+  padding: 0.35rem 0.7rem;
+  font-size: 1rem;
+}
+
 .detail-body {
   display: grid;
   gap: 0.8rem;
@@ -592,6 +601,14 @@ body {
   line-height: 1.5;
   color: #e2e8f0;
   white-space: pre-wrap;
+  font-family: inherit;
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.6rem;
+  padding: 0.5rem 0.65rem;
+  background: rgba(15, 23, 42, 0.35);
+  resize: none;
+  outline: none;
 }
 
 .detail-transcription-meta {
@@ -1185,6 +1202,21 @@ body {
   flex-basis: 100%;
   font-size: 0.72rem;
   color: #fca5a5;
+}
+
+.snip-transcription-text {
+  flex-basis: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  background: rgba(15, 23, 42, 0.35);
+  color: #e2e8f0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  font-family: inherit;
+  resize: none;
+  outline: none;
+  width: 100%;
 }
 
 .chunk-download:disabled {

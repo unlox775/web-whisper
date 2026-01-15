@@ -31,6 +31,9 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-203800: Snip list now renders stored snips, with per-snip retry transcription and Groq error surfaces.
 - 20260115-203800: Detail view shows concatenated snip transcription text with status/error metadata.
 - 20260115-211200: Simplified snip transcription payloads to store timestamped phrase segments instead of word-level entries.
+- 20260115-221500: Snip list now displays transcription text with tap-to-select for easy copying.
+- 20260115-221500: Auto-transcribe snips when recording stops (serial Groq calls) and show previews in the session list.
+- 20260115-221500: Added per-recording delete action plus a 15s no-audio timeout that beeps and stops recording.
 
 ## 🚧 In progress
 

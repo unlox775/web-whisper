@@ -131,6 +131,7 @@ const STATUS_META: Record<SessionRecord['status'], { label: string; pillClass: s
 const MB = 1024 * 1024
 const DEFAULT_STORAGE_LIMIT_BYTES = 200 * MB
 const DEFAULT_GROQ_MODEL = 'whisper-large-v3'
+const MAX_TRANSCRIPTION_PREVIEW_CHARS = 180
 
 const formatClock = (timestamp: number) =>
   new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp))
@@ -258,6 +259,21 @@ const formatLogTime = (timestamp: number) => {
   return formatter.format(new Date(timestamp))
 }
 
+const getSnipTranscriptionText = (snip: SnipRecord): string => {
+  const direct = snip.transcription?.text?.trim() ?? ''
+  if (direct) return direct
+  const segments = snip.transcription?.segments ?? []
+  if (segments.length === 0) return ''
+  return segments.map((segment) => segment[1]).join(' ').trim()
+}
+
+const buildTranscriptionPreview = (snips: SnipRecord[]): string => {
+  const text = snips.map((snip) => getSnipTranscriptionText(snip)).filter((value) => value.length > 0).join(' ').trim()
+  if (!text) return ''
+  if (text.length <= MAX_TRANSCRIPTION_PREVIEW_CHARS) return text
+  return `${text.slice(0, MAX_TRANSCRIPTION_PREVIEW_CHARS).trimEnd()}...`
+}
+
 const toSnipSeed = (segment: SegmentSummary): SnipSeed => ({
   index: segment.index,
   startMs: segment.startMs,
@@ -273,6 +289,7 @@ function App() {
   const [selectedRecordingId, setSelectedRecordingId] = useState<string | null>(null)
   const [chunkData, setChunkData] = useState<StoredChunk[]>([])
   const [snipRecords, setSnipRecords] = useState<SnipRecord[]>([])
+  const [transcriptionPreviews, setTranscriptionPreviews] = useState<Record<string, string>>({})
   const [captureState, setCaptureState] = useState(captureController.state)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [bufferTotals, setBufferTotals] = useState<{ totalBytes: number; limitBytes: number }>({
@@ -341,9 +358,47 @@ function App() {
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
   const sessionAnalysisProviderRef = useRef<SessionAnalysisProvider | null>(null)
+  const autoTranscribeSessionsRef = useRef<Set<string>>(new Set())
 
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
+
+  const updateTranscriptionPreviewForSession = useCallback((sessionId: string, snips: SnipRecord[]) => {
+    const preview = buildTranscriptionPreview(snips)
+    setTranscriptionPreviews((prev) => {
+      if (!preview) {
+        if (!(sessionId in prev)) return prev
+        const next = { ...prev }
+        delete next[sessionId]
+        return next
+      }
+      if (prev[sessionId] === preview) return prev
+      return { ...prev, [sessionId]: preview }
+    })
+  }, [])
+
+  const refreshTranscriptionPreviews = useCallback(async (sessions: SessionRecord[]) => {
+    try {
+      const entries = await Promise.all(
+        sessions.map(async (session) => {
+          if (session.status !== 'ready') return [session.id, ''] as const
+          const snips = await manifestService.listSnips(session.id)
+          return [session.id, buildTranscriptionPreview(snips)] as const
+        }),
+      )
+      const next: Record<string, string> = {}
+      entries.forEach(([sessionId, preview]) => {
+        if (preview) {
+          next[sessionId] = preview
+        }
+      })
+      setTranscriptionPreviews(next)
+    } catch (error) {
+      await logError('Transcription preview load failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }, [])
 
   /** Loads the latest session manifest snapshot and triggers background verification. */
   const loadSessions = useCallback(async () => {
@@ -385,6 +440,7 @@ function App() {
     setRecordings(sessions)
     // Update the buffer usage indicator with the latest totals and quota.
     setBufferTotals({ totalBytes: totals.totalBytes, limitBytes: storageLimitBytes })
+    void refreshTranscriptionPreviews(sessions)
 
     // Identify sessions that still need timing verification so charts remain monotonic.
     const sessionsNeedingVerification = sessions.filter(
@@ -415,7 +471,7 @@ function App() {
           })
         })
     })
-  }, [storageLimitBytes])
+  }, [refreshTranscriptionPreviews, storageLimitBytes])
 
   useEffect(() => settingsStore.subscribe((value) => setSettings({ ...value })), [])
 
@@ -462,6 +518,29 @@ function App() {
     setRecordingElapsedMs(0)
     return () => {}
   }, [captureState.state, captureState.startedAt])
+
+  useEffect(() => {
+    if (captureState.state !== 'recording' || !captureState.startedAt) {
+      return
+    }
+    const timeout = window.setTimeout(() => {
+      const current = captureController.state
+      if (current.state !== 'recording') {
+        return
+      }
+      if (current.chunksRecorded > 0) {
+        return
+      }
+      void logWarn('No audio captured after timeout; stopping recording', {
+        sessionId: current.sessionId,
+        timeoutMs: 15000,
+        error: current.error ?? null,
+      })
+      void playAlertBeep()
+      void stopRecording()
+    }, 15000)
+    return () => window.clearTimeout(timeout)
+  }, [captureState.startedAt, captureState.state, playAlertBeep, stopRecording])
 
   useEffect(() => {
     if (captureState.state === 'recording') {
@@ -726,23 +805,11 @@ function App() {
   )
 
   const snipTranscriptionSummary = useMemo(() => {
-    const transcribedSnips = snipRecords.filter(
-      (snip) =>
-        Boolean(snip.transcription) &&
-        ((snip.transcription?.text?.trim() ?? '') || (snip.transcription?.segments?.length ?? 0) > 0),
-    )
-    const texts = transcribedSnips
-      .map((snip) => {
-        const direct = snip.transcription?.text?.trim() ?? ''
-        if (direct) return direct
-        const segments = snip.transcription?.segments?.map((segment) => segment[1]).join(' ').trim() ?? ''
-        return segments
-      })
-      .filter((text) => text.length > 0)
+    const texts = snipRecords.map((snip) => getSnipTranscriptionText(snip)).filter((text) => text.length > 0)
     const errorCount = snipRecords.filter((snip) => Boolean(snip.transcriptionError)).length
     return {
       text: texts.join(' ').trim(),
-      transcribedCount: transcribedSnips.length,
+      transcribedCount: texts.length,
       errorCount,
       total: snipRecords.length,
     }
@@ -755,6 +822,12 @@ function App() {
     }
     setSelectedRecordingDurationMs(selectedRecording.durationMs)
   }, [selectedRecording])
+
+  useEffect(() => {
+    if (selectedRecording?.id) {
+      updateTranscriptionPreviewForSession(selectedRecording.id, snipRecords)
+    }
+  }, [selectedRecording?.id, snipRecords, updateTranscriptionPreviewForSession])
 
   useEffect(() => {
     const wantsSessionAnalysis =
@@ -925,6 +998,33 @@ function App() {
       [ensureChunkPlaybackUrl, selectedRecording?.mimeType, selectedRecording?.startedAt],
     )
 
+  const handleSelectTextArea = useCallback((event: React.MouseEvent<HTMLTextAreaElement>) => {
+    event.currentTarget.focus()
+    event.currentTarget.select()
+  }, [])
+
+  const playAlertBeep = useCallback(async () => {
+    const AudioContextCtor =
+      window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+    if (typeof AudioContextCtor !== 'function') {
+      return
+    }
+    const context = new AudioContextCtor()
+    const oscillator = context.createOscillator()
+    const gain = context.createGain()
+    gain.gain.value = 0.12
+    oscillator.type = 'sine'
+    oscillator.frequency.value = 880
+    oscillator.connect(gain)
+    gain.connect(context.destination)
+    const stopAt = context.currentTime + 0.35
+    oscillator.start()
+    oscillator.stop(stopAt)
+    oscillator.onended = () => {
+      void context.close().catch(() => undefined)
+    }
+  }, [])
+
   const ensureSnipSlice = useCallback(
     async (snip: SnipRecord): Promise<RecordingAudioSlice | null> => {
       if (!selectedRecording) {
@@ -983,36 +1083,66 @@ function App() {
     [ensureSnipPlaybackUrl],
   )
 
-  const handleSnipTranscription = useCallback(
-    async (snip: SnipRecord) => {
-      if (!selectedRecording) {
+  const resolveSnipSlice = useCallback(
+    async (session: SessionRecord, snip: SnipRecord): Promise<RecordingAudioSlice | null> => {
+      if (selectedRecording?.id === session.id) {
+        return await ensureSnipSlice(snip)
+      }
+      return await recordingSlicesApi.getRangeAudio(session, snip.startMs, snip.endMs, session.mimeType ?? null)
+    },
+    [ensureSnipSlice, selectedRecording?.id],
+  )
+
+  const refreshTranscriptionPreviewForSession = useCallback(
+    async (sessionId: string) => {
+      const snips = await manifestService.listSnips(sessionId)
+      updateTranscriptionPreviewForSession(sessionId, snips)
+    },
+    [updateTranscriptionPreviewForSession],
+  )
+
+  const transcribeSnip = useCallback(
+    async ({
+      session,
+      snip,
+      updateUi,
+      force,
+    }: {
+      session: SessionRecord
+      snip: SnipRecord
+      updateUi: boolean
+      force: boolean
+    }) => {
+      if (!force && getSnipTranscriptionText(snip)) {
+        return
+      }
+      if (updateUi && snipTranscriptionState[snip.id]) {
         return
       }
       const apiKey = settings?.groqApiKey?.trim() ?? ''
       if (!apiKey) {
         const message = 'Groq API key missing. Add it in Settings before retrying.'
         await logWarn('Snip transcription blocked (missing key)', {
-          sessionId: selectedRecording.id,
+          sessionId: session.id,
           snipId: snip.id,
         })
         const updated = await manifestService.updateSnipTranscription(snip.id, { transcriptionError: message })
-        if (updated) {
+        if (updateUi && updated) {
           setSnipRecords((prev) => prev.map((record) => (record.id === updated.id ? updated : record)))
         }
         return
       }
-      if (snipTranscriptionState[snip.id]) {
-        return
-      }
 
-      setSnipTranscriptionState((prev) => ({ ...prev, [snip.id]: true }))
+      if (updateUi) {
+        setSnipTranscriptionState((prev) => ({ ...prev, [snip.id]: true }))
+      }
       try {
-        const slice = await ensureSnipSlice(snip)
+        const slice = await resolveSnipSlice(session, snip)
         if (!slice) {
           throw new Error('Unable to resolve snip audio for transcription.')
         }
         await logInfo('Snip transcription started', {
-          sessionId: selectedRecording.id,
+          sessionId: session.id,
           snipId: snip.id,
           model: DEFAULT_GROQ_MODEL,
           startMs: snip.startMs,
@@ -1036,11 +1166,11 @@ function App() {
           transcription,
           transcriptionError: null,
         })
-        if (updated) {
+        if (updateUi && updated) {
           setSnipRecords((prev) => prev.map((record) => (record.id === updated.id ? updated : record)))
         }
         await logInfo('Snip transcription completed', {
-          sessionId: selectedRecording.id,
+          sessionId: session.id,
           snipId: snip.id,
           model: result.model,
           textLength: result.text.length,
@@ -1049,23 +1179,93 @@ function App() {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         await logError('Snip transcription failed', {
-          sessionId: selectedRecording.id,
+          sessionId: session.id,
           snipId: snip.id,
           error: message,
         })
         const updated = await manifestService.updateSnipTranscription(snip.id, { transcriptionError: message })
-        if (updated) {
+        if (updateUi && updated) {
           setSnipRecords((prev) => prev.map((record) => (record.id === updated.id ? updated : record)))
         }
       } finally {
-        setSnipTranscriptionState((prev) => {
-          const next = { ...prev }
-          delete next[snip.id]
-          return next
-        })
+        if (updateUi) {
+          setSnipTranscriptionState((prev) => {
+            const next = { ...prev }
+            delete next[snip.id]
+            return next
+          })
+        }
+        await refreshTranscriptionPreviewForSession(session.id)
       }
     },
-    [ensureSnipSlice, selectedRecording, settings?.groqApiKey, snipTranscriptionState],
+    [
+      refreshTranscriptionPreviewForSession,
+      resolveSnipSlice,
+      settings?.groqApiKey,
+      snipTranscriptionState,
+    ],
+  )
+
+  const handleSnipTranscription = useCallback(
+    async (snip: SnipRecord) => {
+      if (!selectedRecording) {
+        return
+      }
+      await transcribeSnip({ session: selectedRecording, snip, updateUi: true, force: true })
+    },
+    [selectedRecording, transcribeSnip],
+  )
+
+  const autoTranscribeSnipsForSession = useCallback(
+    async (sessionId: string) => {
+      if (autoTranscribeSessionsRef.current.has(sessionId)) {
+        return
+      }
+      autoTranscribeSessionsRef.current.add(sessionId)
+      try {
+        const session = await manifestService.getSession(sessionId)
+        if (!session || session.status !== 'ready') {
+          return
+        }
+        const snips = await recordingSlicesApi.listSnips(session, session.mimeType ?? null)
+        if (snips.length === 0) {
+          return
+        }
+        const apiKey = settings?.groqApiKey?.trim() ?? ''
+        if (!apiKey) {
+          const message = 'Groq API key missing. Add it in Settings before retrying.'
+          await logWarn('Auto transcription blocked (missing key)', {
+            sessionId,
+            snipCount: snips.length,
+          })
+          const updatedSnips: SnipRecord[] = []
+          for (const snip of snips) {
+            if (getSnipTranscriptionText(snip)) continue
+            const updated = await manifestService.updateSnipTranscription(snip.id, { transcriptionError: message })
+            if (updated) {
+              updatedSnips.push(updated)
+            }
+          }
+          if (selectedRecording?.id === sessionId && updatedSnips.length > 0) {
+            setSnipRecords((prev) =>
+              prev.map((record) => updatedSnips.find((item) => item.id === record.id) ?? record),
+            )
+          }
+          return
+        }
+
+        for (const snip of snips) {
+          if (getSnipTranscriptionText(snip)) {
+            continue
+          }
+          await transcribeSnip({ session, snip, updateUi: selectedRecording?.id === sessionId, force: false })
+        }
+      } finally {
+        autoTranscribeSessionsRef.current.delete(sessionId)
+        await refreshTranscriptionPreviewForSession(sessionId)
+      }
+    },
+    [refreshTranscriptionPreviewForSession, selectedRecording?.id, settings?.groqApiKey, transcribeSnip],
   )
 
   const refreshAndClearErrors = useCallback(async () => {
@@ -1130,21 +1330,25 @@ function App() {
 
   const stopRecording = useCallback(async () => {
     if (captureState.state !== 'recording') return
+    const sessionId = captureState.sessionId
     try {
-      await logInfo('Recorder stop requested', { sessionId: captureState.sessionId })
+      await logInfo('Recorder stop requested', { sessionId })
       await captureController.stop()
-      await logInfo('Recorder stopped', { sessionId: captureState.sessionId })
+      await logInfo('Recorder stopped', { sessionId })
     } catch (error) {
       console.error('[UI] Failed to stop recording', error)
       setErrorMessage(error instanceof Error ? error.message : String(error))
       await logError('Recorder failed to stop', {
-        sessionId: captureState.sessionId,
+        sessionId,
         error: error instanceof Error ? error.message : String(error),
       })
     } finally {
       await loadSessions()
+      if (sessionId) {
+        void autoTranscribeSnipsForSession(sessionId)
+      }
     }
-  }, [captureState.sessionId, captureState.state, loadSessions])
+  }, [autoTranscribeSnipsForSession, captureState.sessionId, captureState.state, loadSessions])
 
   const handleRecordToggle = async () => {
     if (captureState.state === 'recording') {
@@ -1285,6 +1489,25 @@ function App() {
       audioRef.current.currentTime = 0
     }
     await refreshAndClearErrors()
+  }
+
+  const handleDeleteRecording = async () => {
+    if (!selectedRecording) return
+    const confirmed = window.confirm('Delete this recording? This cannot be undone.')
+    if (!confirmed) return
+    try {
+      await manifestService.deleteSession(selectedRecording.id)
+      await logInfo('Recording deleted', { sessionId: selectedRecording.id })
+      await handleCloseDetail()
+      await loadSessions()
+    } catch (error) {
+      console.error('[UI] Failed to delete recording', error)
+      setErrorMessage(error instanceof Error ? error.message : String(error))
+      await logError('Recording delete failed', {
+        sessionId: selectedRecording.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
   }
 
   const formatPercent = (count: number, total: number) =>
@@ -2421,7 +2644,8 @@ function App() {
                 const durationLabel = isActiveRecording
                   ? formatTimecode(Math.floor(Math.max(recordingElapsedMs, 0) / 1000))
                   : formatSessionDuration(session.durationMs)
-                const notes = session.notes ?? 'Transcription pending…'
+                const transcriptionPreview = transcriptionPreviews[session.id] ?? ''
+                const errorNotes = session.status === 'error' ? session.notes ?? 'Recording error.' : ''
                 const metadataLabel = `${formatSessionDateTime(session.startedAt)} · ${formatCompactDataSize(session.totalBytes)}`
                 const isHighlighted = session.id === highlightedSessionId
                 const cardClasses = ['session-card']
@@ -2431,7 +2655,11 @@ function App() {
                 if (session.status === 'error') {
                   cardClasses.push('has-error')
                 }
-                const previewText = isActiveRecording ? 'Recording in progress…' : notes
+                const previewText = isActiveRecording
+                  ? 'Recording in progress...'
+                  : errorNotes
+                    ? errorNotes
+                    : transcriptionPreview || 'Transcription pending...'
                 return (
                   <li key={session.id}>
                     <article
@@ -2562,6 +2790,9 @@ function App() {
                     🐞
                   </button>
                 ) : null}
+                  <button className="detail-delete" type="button" onClick={handleDeleteRecording} aria-label="Delete recording">
+                    🗑
+                  </button>
                 <button className="detail-close" type="button" onClick={handleCloseDetail}>
                   Close
                 </button>
@@ -2653,7 +2884,14 @@ function App() {
                       No snip transcriptions yet. Open the snip list to retry each segment.
                     </p>
                   ) : (
-                    <p className="detail-transcription-text">{snipTranscriptionSummary.text}</p>
+                    <textarea
+                      className="detail-transcription-text"
+                      readOnly
+                      value={snipTranscriptionSummary.text}
+                      onClick={handleSelectTextArea}
+                      aria-label="Session transcription text"
+                      rows={Math.min(8, Math.max(3, Math.ceil(snipTranscriptionSummary.text.length / 90)))}
+                    />
                   )}
                   {snipRecords.length > 0 ? (
                     <p className="detail-transcription-meta">
@@ -3249,9 +3487,8 @@ function App() {
                             const snipKey = snip.id
                             const isSnipPlaying = snipPlayingId === snipKey
                             const isTranscribing = Boolean(snipTranscriptionState[snip.id])
-                            const hasTranscript = Boolean(
-                              snip.transcription?.text?.trim() || (snip.transcription?.segments?.length ?? 0) > 0,
-                            )
+                            const snipTranscript = getSnipTranscriptionText(snip)
+                            const hasTranscript = snipTranscript.length > 0
                             const playLabel = isSnipPlaying ? `Pause snip ${snipNumber}` : `Play snip ${snipNumber}`
                             const transcribeLabel = isTranscribing
                               ? `Transcribing snip ${snipNumber}`
@@ -3294,6 +3531,16 @@ function App() {
                                 >
                                   {hasTranscript ? 'Retry' : 'Tx'}
                                 </button>
+                                {snipTranscript ? (
+                                  <textarea
+                                    className="snip-transcription-text"
+                                    readOnly
+                                    value={snipTranscript}
+                                    onClick={handleSelectTextArea}
+                                    aria-label={`Snip ${snipNumber} transcription`}
+                                    rows={Math.min(6, Math.max(2, Math.ceil(snipTranscript.length / 80)))}
+                                  />
+                                ) : null}
                                 {snip.transcriptionError ? (
                                   <span className="snip-transcription-error" role="alert">
                                     {snip.transcriptionError}
@@ -3309,7 +3556,9 @@ function App() {
                     )}
                   </div>
                 ) : null}
-              {selectedRecording.notes ? <p className="detail-notes">{selectedRecording.notes}</p> : null}
+              {selectedRecording.status === 'error' && selectedRecording.notes ? (
+                <p className="detail-notes">{selectedRecording.notes}</p>
+              ) : null}
             </div>
           </div>
         </div>
