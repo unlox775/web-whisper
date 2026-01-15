@@ -292,6 +292,8 @@ function App() {
   const [chunkData, setChunkData] = useState<StoredChunk[]>([])
   const [snipRecords, setSnipRecords] = useState<SnipRecord[]>([])
   const [transcriptionPreviews, setTranscriptionPreviews] = useState<Record<string, string>>({})
+  const [transcriptionErrorCounts, setTranscriptionErrorCounts] = useState<Record<string, number>>({})
+  const [retryingSessionIds, setRetryingSessionIds] = useState<Record<string, boolean>>({})
   const [captureState, setCaptureState] = useState(captureController.state)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [bufferTotals, setBufferTotals] = useState<{ totalBytes: number; limitBytes: number }>({
@@ -352,6 +354,8 @@ function App() {
 
   const streamCursor = useRef(1)
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const transcriptionTextRef = useRef<HTMLTextAreaElement | null>(null)
+  const lastAutoSelectSessionRef = useRef<string | null>(null)
   const audioUrlRef = useRef<string | null>(null)
   const chunkUrlMapRef = useRef<Map<string, string>>(new Map())
   const chunkAudioRef = useRef<Map<string, ChunkPlaybackEntry>>(new Map())
@@ -369,6 +373,7 @@ function App() {
 
   const updateTranscriptionPreviewForSession = useCallback((sessionId: string, snips: SnipRecord[]) => {
     const preview = buildTranscriptionPreview(snips)
+    const errorCount = snips.filter((snip) => Boolean(snip.transcriptionError)).length
     setTranscriptionPreviews((prev) => {
       if (!preview) {
         if (!(sessionId in prev)) return prev
@@ -379,24 +384,40 @@ function App() {
       if (prev[sessionId] === preview) return prev
       return { ...prev, [sessionId]: preview }
     })
+    setTranscriptionErrorCounts((prev) => {
+      if (errorCount === 0) {
+        if (!(sessionId in prev)) return prev
+        const next = { ...prev }
+        delete next[sessionId]
+        return next
+      }
+      if (prev[sessionId] === errorCount) return prev
+      return { ...prev, [sessionId]: errorCount }
+    })
   }, [])
 
   const refreshTranscriptionPreviews = useCallback(async (sessions: SessionRecord[]) => {
     try {
       const entries = await Promise.all(
         sessions.map(async (session) => {
-          if (session.status !== 'ready') return [session.id, ''] as const
+          if (session.status !== 'ready') return [session.id, '', 0] as const
           const snips = await manifestService.listSnips(session.id)
-          return [session.id, buildTranscriptionPreview(snips)] as const
+          const errorCount = snips.filter((snip) => Boolean(snip.transcriptionError)).length
+          return [session.id, buildTranscriptionPreview(snips), errorCount] as const
         }),
       )
       const next: Record<string, string> = {}
-      entries.forEach(([sessionId, preview]) => {
+      const nextErrors: Record<string, number> = {}
+      entries.forEach(([sessionId, preview, errorCount]) => {
         if (preview) {
           next[sessionId] = preview
         }
+        if (errorCount > 0) {
+          nextErrors[sessionId] = errorCount
+        }
       })
       setTranscriptionPreviews(next)
+      setTranscriptionErrorCounts(nextErrors)
     } catch (error) {
       await logError('Transcription preview load failed', {
         error: error instanceof Error ? error.message : String(error),
@@ -809,6 +830,28 @@ function App() {
       updateTranscriptionPreviewForSession(selectedRecording.id, snipRecords)
     }
   }, [selectedRecording?.id, snipRecords, updateTranscriptionPreviewForSession])
+
+  useEffect(() => {
+    if (!selectedRecording?.id) {
+      lastAutoSelectSessionRef.current = null
+      return
+    }
+    if (!snipTranscriptionSummary.text) {
+      return
+    }
+    if (lastAutoSelectSessionRef.current === selectedRecording.id) {
+      return
+    }
+    lastAutoSelectSessionRef.current = selectedRecording.id
+    const timeout = window.setTimeout(() => {
+      const target = transcriptionTextRef.current
+      if (target) {
+        target.focus()
+        target.select()
+      }
+    }, 80)
+    return () => window.clearTimeout(timeout)
+  }, [selectedRecording?.id, snipTranscriptionSummary.text])
 
   useEffect(() => {
     const wantsSessionAnalysis =
@@ -1275,6 +1318,47 @@ function App() {
       setIsBulkTranscribing(false)
     }
   }, [isBulkTranscribing, selectedRecording, transcribeSnip])
+
+  const handleRetryTranscriptionsForSession = useCallback(
+    async (sessionId: string) => {
+      if (retryingSessionIds[sessionId]) {
+        return
+      }
+      setRetryingSessionIds((prev) => ({ ...prev, [sessionId]: true }))
+      try {
+        const session = await manifestService.getSession(sessionId)
+        if (!session) {
+          return
+        }
+        const storedSnips = await manifestService.listSnips(sessionId)
+        const snips =
+          storedSnips.length > 0 ? storedSnips : await recordingSlicesApi.listSnips(session, session.mimeType ?? null)
+        if (snips.length === 0) {
+          return
+        }
+        if (selectedRecording?.id === sessionId) {
+          setSnipRecords(snips)
+        }
+        for (const snip of snips) {
+          await transcribeSnip({
+            session,
+            snip,
+            updateUi: selectedRecording?.id === sessionId,
+            force: true,
+            ignoreBusy: true,
+          })
+        }
+      } finally {
+        setRetryingSessionIds((prev) => {
+          if (!prev[sessionId]) return prev
+          const next = { ...prev }
+          delete next[sessionId]
+          return next
+        })
+      }
+    },
+    [retryingSessionIds, selectedRecording?.id, transcribeSnip],
+  )
 
   const autoTranscribeSnipsForSession = useCallback(
     async (sessionId: string) => {
@@ -2750,7 +2834,10 @@ function App() {
                   ? formatTimecode(Math.floor(Math.max(recordingElapsedMs, 0) / 1000))
                   : formatSessionDuration(session.durationMs)
                 const transcriptionPreview = transcriptionPreviews[session.id] ?? ''
+                const transcriptionErrorCount = transcriptionErrorCounts[session.id] ?? 0
+                const hasTranscriptionError = transcriptionErrorCount > 0
                 const errorNotes = session.status === 'error' ? session.notes ?? 'Recording error.' : ''
+                const isRetrying = Boolean(retryingSessionIds[session.id])
                 const metadataLabel = `${formatSessionDateTime(session.startedAt)} · ${formatCompactDataSize(session.totalBytes)}`
                 const isHighlighted = session.id === highlightedSessionId
                 const cardClasses = ['session-card']
@@ -2764,7 +2851,11 @@ function App() {
                   ? 'Recording in progress...'
                   : errorNotes
                     ? errorNotes
-                    : transcriptionPreview || 'Transcription pending...'
+                    : transcriptionPreview
+                      ? transcriptionPreview
+                      : hasTranscriptionError
+                        ? `Error transcribing (${transcriptionErrorCount})`
+                        : 'Transcription pending...'
                 return (
                   <li key={session.id}>
                     <article
@@ -2788,7 +2879,23 @@ function App() {
                             <span className="session-meta">{metadataLabel}</span>
                           </div>
                         </header>
-                        <p className="session-preview">{previewText}</p>
+                        <div className="session-preview-row">
+                          <p className="session-preview">{previewText}</p>
+                          {hasTranscriptionError && session.status === 'ready' ? (
+                            <button
+                              type="button"
+                              className="session-retry"
+                              onClick={(event) => {
+                                event.stopPropagation()
+                                void handleRetryTranscriptionsForSession(session.id)
+                              }}
+                              disabled={isRetrying}
+                              aria-label={`Retry transcription for ${session.title}`}
+                            >
+                              {isRetrying ? 'Retrying…' : 'Retry TX'}
+                            </button>
+                          ) : null}
+                        </div>
                     </article>
                   </li>
                 )
@@ -3011,6 +3118,7 @@ function App() {
                     </p>
                   ) : (
                     <textarea
+                      ref={transcriptionTextRef}
                       className="detail-transcription-text"
                       readOnly
                       value={snipTranscriptionSummary.text}
