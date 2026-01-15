@@ -317,6 +317,8 @@ function App() {
   const audioUrlRef = useRef<string | null>(null)
   const chunkUrlMapRef = useRef<Map<string, string>>(new Map())
   const chunkAudioRef = useRef<Map<string, ChunkPlaybackEntry>>(new Map())
+  const chunkWavUrlMapRef = useRef<Map<string, string>>(new Map())
+  const chunkWavSliceCacheRef = useRef<Map<string, RecordingAudioSlice>>(new Map())
   const snipUrlMapRef = useRef<Map<string, string>>(new Map())
   const snipAudioRef = useRef<Map<string, ChunkPlaybackEntry>>(new Map())
   const snipSliceCacheRef = useRef<Map<string, RecordingAudioSlice>>(new Map())
@@ -597,6 +599,9 @@ function App() {
       })
       chunkAudioRef.current.clear()
       setChunkPlayingId(null)
+      chunkWavUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url))
+      chunkWavUrlMapRef.current.clear()
+      chunkWavSliceCacheRef.current.clear()
       snipAudioRef.current.forEach((entry) => {
         entry.cleanup()
         entry.audio.pause()
@@ -616,6 +621,9 @@ function App() {
     })
     chunkAudioRef.current.clear()
     setChunkPlayingId(null)
+    chunkWavUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url))
+    chunkWavUrlMapRef.current.clear()
+    chunkWavSliceCacheRef.current.clear()
     snipAudioRef.current.forEach((entry) => {
       entry.cleanup()
       entry.audio.pause()
@@ -817,12 +825,53 @@ function App() {
       [ensureChunkPlaybackUrl, selectedRecording?.startedAt],
     )
 
+  const ensureChunkSlice = useCallback(
+    async (chunk: StoredChunk): Promise<RecordingAudioSlice | null> => {
+      if (!selectedRecording) {
+        return null
+      }
+      const cacheKey = chunk.id
+      const existing = chunkWavSliceCacheRef.current.get(cacheKey)
+      if (existing) {
+        return existing
+      }
+      const baseStartMsCandidate = headerChunk?.startMs ?? selectedRecording.startedAt ?? chunk.startMs
+      const baseStartMs = Number.isFinite(baseStartMsCandidate) ? Math.round(baseStartMsCandidate) : chunk.startMs
+      const startOffsetMs = Math.max(0, chunk.startMs - baseStartMs)
+      const endOffsetMs = Math.max(startOffsetMs, chunk.endMs - baseStartMs)
+
+      const slice = await recordingSlicesApi.getRangeAudio(
+        selectedRecording,
+        startOffsetMs,
+        endOffsetMs,
+        selectedRecording.mimeType ?? null,
+      )
+      chunkWavSliceCacheRef.current.set(cacheKey, slice)
+      return slice
+    },
+    [headerChunk?.startMs, selectedRecording],
+  )
+
+  const ensureChunkWavPlaybackUrl = useCallback(
+    async (chunk: StoredChunk): Promise<{ url: string; slice: RecordingAudioSlice } | null> => {
+      const cacheKey = chunk.id
+      const existingUrl = chunkWavUrlMapRef.current.get(cacheKey)
+      const slice = await ensureChunkSlice(chunk)
+      if (!slice) return null
+      if (existingUrl) return { url: existingUrl, slice }
+      const url = URL.createObjectURL(slice.blob)
+      chunkWavUrlMapRef.current.set(cacheKey, url)
+      return { url, slice }
+    },
+    [ensureChunkSlice],
+  )
+
   const ensureSnipSlice = useCallback(
     async (segment: SegmentSummary): Promise<RecordingAudioSlice | null> => {
       if (!selectedRecording) {
         return null
       }
-      const cacheKey = `${Math.round(segment.startMs)}-${Math.round(segment.endMs)}`
+      const cacheKey = `snip-${segment.index}`
       const existing = snipSliceCacheRef.current.get(cacheKey)
       if (existing) {
         return existing
@@ -841,7 +890,7 @@ function App() {
 
   const ensureSnipPlaybackUrl = useCallback(
     async (segment: SegmentSummary): Promise<{ url: string; slice: RecordingAudioSlice } | null> => {
-      const cacheKey = `${Math.round(segment.startMs)}-${Math.round(segment.endMs)}`
+      const cacheKey = `snip-${segment.index}`
       const existingUrl = snipUrlMapRef.current.get(cacheKey)
       const slice = await ensureSnipSlice(segment)
       if (!slice) {
@@ -1050,6 +1099,9 @@ function App() {
     chunkUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url))
     chunkUrlMapRef.current.clear()
     setChunkPlayingId(null)
+    chunkWavUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url))
+    chunkWavUrlMapRef.current.clear()
+    chunkWavSliceCacheRef.current.clear()
     snipAudioRef.current.forEach((entry) => {
       entry.cleanup()
       entry.audio.pause()
@@ -1882,24 +1934,19 @@ function App() {
         return
       }
 
-      const url = ensureChunkPlaybackUrl(chunk)
-      if (!url) {
-        console.error('[UI] Missing chunk URL for playback', id)
+      const resolved = await ensureChunkWavPlaybackUrl(chunk)
+      if (!resolved) {
+        console.error('[UI] Missing chunk audio for playback', id)
         return
       }
 
       const audio = new Audio()
-      audio.src = url
+      audio.src = resolved.url
       audio.volume = playbackVolume
 
-      const chunkDurationSeconds = Math.max(0, (chunk.endMs - chunk.startMs) / 1000)
-      // Some browsers emit cumulative MP4 chunks (each chunk contains audio from 0..current).
-      // In that case we must seek to the chunk's offset within the recording; otherwise play from 0.
-      const baseStartMsCandidate = headerChunk?.startMs ?? selectedRecording?.startedAt ?? chunk.startMs
-      const baseStartMs = Number.isFinite(baseStartMsCandidate) ? Math.round(baseStartMsCandidate) : chunk.startMs
-      const desiredOffsetSeconds = Math.max(0, (chunk.startMs - baseStartMs) / 1000)
-      let startTime = 0
-      let endTime = chunkDurationSeconds
+      const chunkDurationSeconds = Math.max(0, resolved.slice.durationMs / 1000)
+      const startTime = 0
+      const endTime = chunkDurationSeconds
 
       audioRef.current?.pause()
 
@@ -1941,27 +1988,6 @@ function App() {
       })
 
       try {
-        if (audio.readyState < HTMLMediaElement.HAVE_METADATA) {
-          await new Promise<void>((resolve, reject) => {
-            const handleLoadedMetadata = () => {
-              audio.removeEventListener('loadedmetadata', handleLoadedMetadata)
-              audio.removeEventListener('error', handleMetadataError)
-              resolve()
-            }
-            const handleMetadataError = () => {
-              audio.removeEventListener('loadedmetadata', handleLoadedMetadata)
-              audio.removeEventListener('error', handleMetadataError)
-              reject(new Error('Failed to load chunk metadata'))
-            }
-            audio.addEventListener('loadedmetadata', handleLoadedMetadata)
-            audio.addEventListener('error', handleMetadataError)
-          })
-        }
-        // Decide whether this chunk is cumulative based on its decoded duration.
-        if (Number.isFinite(audio.duration) && audio.duration >= desiredOffsetSeconds + chunkDurationSeconds - 0.05) {
-          startTime = desiredOffsetSeconds
-          endTime = startTime + chunkDurationSeconds
-        }
         audio.currentTime = startTime
         await audio.play()
         setChunkPlayingId(id)
@@ -1970,7 +1996,7 @@ function App() {
         finishPlayback()
       }
     },
-    [chunkPlayingId, ensureChunkPlaybackUrl, headerChunk?.startMs, isHeaderSegment, playbackVolume, selectedRecording?.startedAt],
+    [chunkPlayingId, ensureChunkWavPlaybackUrl, isHeaderSegment, playbackVolume],
   )
 
   const handleSnipPlayToggle = useCallback(
@@ -1978,7 +2004,7 @@ function App() {
       if (!selectedRecording) {
         return
       }
-      const snipKey = `${Math.round(segment.startMs)}-${Math.round(segment.endMs)}`
+      const snipKey = `snip-${segment.index}`
       const audioEntries = snipAudioRef.current
       const activeEntry = audioEntries.get(snipKey)
 
@@ -3044,7 +3070,7 @@ function App() {
                           const durationSeconds = Math.max(0, segment.durationMs / 1000)
                           const decimalPlaces = durationSeconds < 10 ? 2 : 1
                           const durationLabel = `${durationSeconds.toFixed(decimalPlaces)} s`
-                          const snipKey = `${Math.round(segment.startMs)}-${Math.round(segment.endMs)}`
+                          const snipKey = `snip-${segment.index}`
                           const isSnipPlaying = snipPlayingId === snipKey
                           const playLabel = isSnipPlaying ? `Pause snip ${snipNumber}` : `Play snip ${snipNumber}`
                           return (
