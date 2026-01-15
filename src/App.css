@@ -919,6 +919,39 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+.doctor-export {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.doctor-export-actions {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+}
+
+.doctor-export-actions button {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.6);
+  color: #cbd5f5;
+  padding: 0.25rem 0.6rem;
+  font-weight: 600;
+  font-size: 0.78rem;
+}
+
+.doctor-export-textarea {
+  width: 100%;
+  resize: vertical;
+  border-radius: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(2, 6, 23, 0.55);
+  color: #e2e8f0;
+  padding: 0.6rem;
+  font-size: 0.75rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace;
+}
+
 .doctor-report-actions {
   margin-top: 0.4rem;
 }

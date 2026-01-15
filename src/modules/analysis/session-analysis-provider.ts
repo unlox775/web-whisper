@@ -29,6 +29,7 @@ export interface PrepareSessionAnalysisOptions {
 }
 
 const MP4_MIME_PATTERN = /mp4|m4a/i
+const ANALYSIS_TIMELINE_VERSION = 2
 
 export class SessionAnalysisProvider {
   #manifest: ManifestService
@@ -90,6 +91,7 @@ export class SessionAnalysisProvider {
     )
 
     const cacheKey = [
+      `timeline-v${ANALYSIS_TIMELINE_VERSION}`,
       session.id,
       session.chunkCount,
       session.updatedAt ?? 0,
@@ -111,7 +113,28 @@ export class SessionAnalysisProvider {
       }
     }
 
-    const { frames, sampleRate, frameDurationMs, totalDurationMs } = this.#concatVolumeProfiles(orderedProfiles)
+    const chunkRows = await this.#manifest.getChunkMetadata(session.id)
+    const durationsBySeq = new Map<number, number>()
+    chunkRows.forEach((chunk) => {
+      if (chunk.seq <= 0) return
+      const verified =
+        typeof chunk.verifiedAudioMsec === 'number' && chunk.verifiedAudioMsec > 0 ? Math.round(chunk.verifiedAudioMsec) : 0
+      const fallback = Math.max(0, Math.round(chunk.endMs - chunk.startMs))
+      const duration = verified > 0 ? verified : fallback
+      if (duration > 0) {
+        durationsBySeq.set(chunk.seq, duration)
+      }
+    })
+    const durationLimitMs =
+      typeof verification.totalVerifiedDurationMs === 'number' && verification.totalVerifiedDurationMs > 0
+        ? Math.round(verification.totalVerifiedDurationMs)
+        : chunkRows.reduce((sum, chunk) => sum + (chunk.seq > 0 ? Math.max(0, Math.round(chunk.endMs - chunk.startMs)) : 0), 0)
+
+    const { frames, sampleRate, frameDurationMs, totalDurationMs } = this.#concatVolumeProfiles({
+      volumeProfiles: orderedProfiles,
+      durationsBySeq,
+      durationLimitMs,
+    })
 
     const analysis = frames.length > 0
       ? analyzeSessionFromFrames(frames, {
@@ -136,7 +159,15 @@ export class SessionAnalysisProvider {
     }
   }
 
-  #concatVolumeProfiles(volumeProfiles: ChunkVolumeProfileRecord[]) {
+  #concatVolumeProfiles({
+    volumeProfiles,
+    durationsBySeq,
+    durationLimitMs,
+  }: {
+    volumeProfiles: ChunkVolumeProfileRecord[]
+    durationsBySeq: Map<number, number>
+    durationLimitMs: number
+  }) {
     let cumulativeOffsetMs = 0
     const frames: VolumeFrame[] = []
     let frameIndex = 0
@@ -155,25 +186,27 @@ export class SessionAnalysisProvider {
       // decodeAudioData sometimes returning inflated durations for individual fragments due to
       // timestamp/edit-list quirks, which can cause the analysis timeline (and thus snips) to run
       // beyond the real session audio length.
-      const timingDurationMs =
-        Number.isFinite(profile.chunkEndMs) && Number.isFinite(profile.chunkStartMs)
-          ? Math.max(0, Math.round(profile.chunkEndMs - profile.chunkStartMs))
-          : 0
+      const timingDurationMs = durationsBySeq.get(profile.seq) ?? 0
       const fallbackDurationMs = Math.max(
         0,
         Math.round(profile.durationMs ?? framesArray.length * segmentFrameDuration),
       )
       const durationMs = timingDurationMs > 0 ? timingDurationMs : fallbackDurationMs
+      if (durationLimitMs > 0 && cumulativeOffsetMs >= durationLimitMs) {
+        return
+      }
       const startMs = cumulativeOffsetMs
+      const clampedDurationMs =
+        durationLimitMs > 0 ? Math.max(0, Math.min(durationMs, durationLimitMs - cumulativeOffsetMs)) : durationMs
 
-      const expectedFrameCount = durationMs > 0 ? Math.ceil(durationMs / segmentFrameDuration) : framesArray.length
+      const expectedFrameCount = clampedDurationMs > 0 ? Math.ceil(clampedDurationMs / segmentFrameDuration) : framesArray.length
       const usableFrameCount = Math.max(0, Math.min(framesArray.length, expectedFrameCount))
 
       for (let idx = 0; idx < usableFrameCount; idx += 1) {
         const value = framesArray[idx]
         const clampedValue = Number.isFinite(value) ? Math.max(0, value) : 0
         const frameStart = startMs + idx * segmentFrameDuration
-        const frameEnd = Math.min(startMs + durationMs, frameStart + segmentFrameDuration)
+        const frameEnd = Math.min(startMs + clampedDurationMs, frameStart + segmentFrameDuration)
         frames.push({
           index: frameIndex,
           startMs: frameStart,
@@ -188,7 +221,7 @@ export class SessionAnalysisProvider {
       // segments don't shift earlier than their chunk timing implies.
       for (let idx = usableFrameCount; idx < expectedFrameCount; idx += 1) {
         const frameStart = startMs + idx * segmentFrameDuration
-        const frameEnd = Math.min(startMs + durationMs, frameStart + segmentFrameDuration)
+        const frameEnd = Math.min(startMs + clampedDurationMs, frameStart + segmentFrameDuration)
         if (frameEnd <= frameStart) {
           break
         }
@@ -201,7 +234,7 @@ export class SessionAnalysisProvider {
         })
         frameIndex += 1
       }
-      cumulativeOffsetMs += durationMs
+      cumulativeOffsetMs += clampedDurationMs
       frameDurationMs = segmentFrameDuration
       if (sampleRate === 0 && profile.sampleRate > 0) {
         sampleRate = profile.sampleRate
@@ -212,7 +245,7 @@ export class SessionAnalysisProvider {
       frames,
       sampleRate,
       frameDurationMs,
-      totalDurationMs: cumulativeOffsetMs,
+      totalDurationMs: durationLimitMs > 0 ? Math.min(cumulativeOffsetMs, durationLimitMs) : cumulativeOffsetMs,
     }
   }
 

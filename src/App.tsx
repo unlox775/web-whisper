@@ -295,6 +295,7 @@ function App() {
   const [doctorProgress, setDoctorProgress] = useState<{ label: string; completed: number; total: number } | null>(null)
   const [doctorError, setDoctorError] = useState<string | null>(null)
   const [doctorCopyStatus, setDoctorCopyStatus] = useState<string | null>(null)
+  const [doctorExportText, setDoctorExportText] = useState<string | null>(null)
   const [doctorReports, setDoctorReports] = useState<{
     chunkCoverage?: DoctorReport
     rangeAccess?: DoctorReport
@@ -2337,6 +2338,7 @@ function App() {
                           onClick={async () => {
                             if (!selectedRecording) return
                             setDoctorCopyStatus(null)
+                            setDoctorExportText(null)
                             try {
                               await manifestService.init()
                               const activeLogSession = getActiveLogSession()
@@ -2360,9 +2362,15 @@ function App() {
                                   entries: logs,
                                 },
                               }
-                              await copyToClipboard(JSON.stringify(payload, null, 2))
-                              setDoctorCopyStatus('Copied diagnosis + logs to clipboard.')
-                              window.setTimeout(() => setDoctorCopyStatus(null), 2500)
+                              const text = JSON.stringify(payload, null, 2)
+                              setDoctorExportText(text)
+                              try {
+                                await copyToClipboard(text)
+                                setDoctorCopyStatus('Copied diagnosis + logs to clipboard.')
+                                window.setTimeout(() => setDoctorCopyStatus(null), 2500)
+                              } catch (error) {
+                                setDoctorCopyStatus('Clipboard copy blocked; export text shown below (tap Select all).')
+                              }
                             } catch (error) {
                               setDoctorCopyStatus(
                                 `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -2390,6 +2398,34 @@ function App() {
                       </div>
                     </div>
                     {doctorCopyStatus ? <p className="detail-transcription-placeholder">{doctorCopyStatus}</p> : null}
+                    {doctorExportText ? (
+                      <div className="doctor-export">
+                        <div className="doctor-export-actions">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const textarea = document.getElementById('doctor-export-textarea') as HTMLTextAreaElement | null
+                              if (textarea) {
+                                textarea.focus()
+                                textarea.select()
+                              }
+                            }}
+                          >
+                            Select all
+                          </button>
+                          <button type="button" onClick={() => setDoctorExportText(null)}>
+                            Hide
+                          </button>
+                        </div>
+                        <textarea
+                          id="doctor-export-textarea"
+                          className="doctor-export-textarea"
+                          readOnly
+                          value={doctorExportText}
+                          rows={10}
+                        />
+                      </div>
+                    ) : null}
 
                     <p className="detail-transcription-placeholder">
                       Runs quick integrity checks to help identify whether corruption is in stored chunks or in range access/decoding.
