@@ -1063,6 +1063,14 @@ function App() {
   const formatPercent = (count: number, total: number) =>
     total > 0 ? `${Math.round((count / total) * 100)}%` : '0%'
 
+  const formatTimecodeTenths = (ms: number) => {
+    const totalSeconds = Math.max(0, ms / 1000)
+    const minutes = Math.floor(totalSeconds / 60)
+    const seconds = totalSeconds - minutes * 60
+    const secondsFixed = seconds < 10 ? `0${seconds.toFixed(1)}` : seconds.toFixed(1)
+    return `${minutes}:${secondsFixed}`
+  }
+
   const summarizeReport = (segments: DoctorSegmentResult[]): DoctorReport['summary'] => {
     const summary = { ok: 0, warn: 0, error: 0, total: segments.length }
     segments.forEach((segment) => {
@@ -1071,6 +1079,40 @@ function App() {
       else summary.error += 1
     })
     return summary
+  }
+
+  const groupSegmentsByReason = (segments: DoctorSegmentResult[]) => {
+    const groups = new Map<string, { reason: string; status: DoctorSegmentStatus; count: number; examples: DoctorSegmentResult[] }>()
+    segments.forEach((segment) => {
+      const reason = segment.reason ?? '(no reason)'
+      const key = `${segment.status}:${reason}`
+      const existing = groups.get(key)
+      if (existing) {
+        existing.count += 1
+        if (existing.examples.length < 6) existing.examples.push(segment)
+      } else {
+        groups.set(key, { reason, status: segment.status, count: 1, examples: [segment] })
+      }
+    })
+    return Array.from(groups.values()).sort((a, b) => {
+      const statusOrder: Record<DoctorSegmentStatus, number> = { error: 0, warn: 1, ok: 2 }
+      if (statusOrder[a.status] !== statusOrder[b.status]) return statusOrder[a.status] - statusOrder[b.status]
+      return b.count - a.count
+    })
+  }
+
+  const downloadDoctorJson = (label: string, payload: unknown) => {
+    const json = JSON.stringify(payload, null, 2)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${label.replace(/\s+/g, '-').toLowerCase()}-doctor-report.json`
+    link.rel = 'noopener'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
   }
 
   const runDoctorDiagnostics = useCallback(async () => {
@@ -1084,9 +1126,13 @@ function App() {
     setDoctorError(null)
     setDoctorReports(null)
 
+    await manifestService.init()
+    // Pull fresh chunk data for diagnostics so we don't race the detail-open effect.
+    const chunksForDoctor = await manifestService.getChunkData(selectedRecording.id)
+
     const durationMsGuess =
       selectedRecordingDurationMs ??
-      (chunkData.length > 0 ? Math.max(...chunkData.map((chunk) => chunk.endMs)) : selectedRecording.durationMs ?? 0)
+      (chunksForDoctor.length > 0 ? Math.max(...chunksForDoctor.map((chunk) => chunk.endMs)) : selectedRecording.durationMs ?? 0)
     const totalDurationMs = Math.max(0, durationMsGuess)
     const stepMs = 100
     const segmentCount = totalDurationMs > 0 ? Math.ceil(totalDurationMs / stepMs) : 0
@@ -1105,7 +1151,7 @@ function App() {
         if (isCancelled()) return
         const startMs = i * stepMs
         const endMs = Math.min(totalDurationMs, startMs + stepMs)
-        const chunk = chunkData.find((row) => row.seq > 0 && row.startMs <= startMs && row.endMs > startMs) ?? null
+        const chunk = chunksForDoctor.find((row) => row.seq > 0 && row.startMs <= startMs && row.endMs > startMs) ?? null
         if (!chunk) {
           segments.push({ index: i, startMs, endMs, status: 'error', reason: 'No chunk covers this time range' })
         } else if (!Number.isFinite(chunk.byteLength) || chunk.byteLength <= 0) {
@@ -1208,7 +1254,7 @@ function App() {
     }
 
     const runChunkDecodeScan = async () => {
-      const playableChunks = chunkData.filter((chunk) => chunk.seq > 0)
+      const playableChunks = chunksForDoctor.filter((chunk) => chunk.seq > 0)
       setDoctorProgress({ label: 'Per-chunk decode scan', completed: 0, total: playableChunks.length })
       const segments: DoctorSegmentResult[] = []
       if (typeof window === 'undefined' || typeof window.AudioContext === 'undefined') {
@@ -1316,7 +1362,6 @@ function App() {
       }
     }
   }, [
-    chunkData,
     doctorSelections.chunkCoverageScan,
     doctorSelections.chunkDecodeScan,
     doctorSelections.rangeAccessScan,
@@ -2033,96 +2078,198 @@ function App() {
                       </p>
                     ) : null}
 
-                    {doctorReports?.chunkCoverage ? (
-                      <div className="doctor-report">
-                        <h4>Chunk coverage scan</h4>
-                        <div className="doctor-bar" role="img" aria-label="Chunk coverage results timeline">
-                          {doctorReports.chunkCoverage.segments.map((segment) => (
-                            <span
-                              key={segment.index}
-                              className={`doctor-segment is-${segment.status}`}
-                              title={`${formatTimecode(Math.round(segment.startMs / 1000))}–${formatTimecode(
-                                Math.round(segment.endMs / 1000),
-                              )}${segment.reason ? ` · ${segment.reason}` : ''}`}
-                            />
-                          ))}
+                    {(() => {
+                      const report = doctorReports?.chunkCoverage
+                      if (!report) return null
+                      return (
+                        <div className="doctor-report">
+                          <h4>Chunk coverage scan</h4>
+                          <div className="doctor-bar" role="img" aria-label="Chunk coverage results timeline">
+                            {report.segments.map((segment) => (
+                              <span
+                                key={segment.index}
+                                className={`doctor-segment is-${segment.status}`}
+                                title={`${formatTimecodeTenths(segment.startMs)}–${formatTimecodeTenths(segment.endMs)}${
+                                  segment.reason ? ` · ${segment.reason}` : ''
+                                }`}
+                              />
+                            ))}
+                          </div>
+                          <p className="doctor-summary">
+                            OK {report.summary.ok} ({formatPercent(report.summary.ok, report.summary.total)}) · Warn{' '}
+                            {report.summary.warn} ({formatPercent(report.summary.warn, report.summary.total)}) · Error{' '}
+                            {report.summary.error} ({formatPercent(report.summary.error, report.summary.total)})
+                          </p>
+                          <div className="doctor-report-actions">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                downloadDoctorJson(`chunk-coverage-${selectedRecording.id}`, {
+                                  sessionId: selectedRecording.id,
+                                  mimeType: selectedRecording.mimeType,
+                                  report,
+                                })
+                              }
+                            >
+                              Download JSON
+                            </button>
+                          </div>
+                          <div className="doctor-details">
+                            {groupSegmentsByReason(report.segments)
+                              .filter((group) => group.status !== 'ok')
+                              .map((group) => (
+                                <div
+                                  key={`${group.status}:${group.reason}`}
+                                  className={`doctor-detail-row is-${group.status}`}
+                                >
+                                  <div className="doctor-detail-main">
+                                    <span className="doctor-detail-badge">{group.status.toUpperCase()}</span>
+                                    <span className="doctor-detail-reason">{group.reason}</span>
+                                    <span className="doctor-detail-count">
+                                      {group.count} ({formatPercent(group.count, report.summary.total)})
+                                    </span>
+                                  </div>
+                                  <div className="doctor-detail-examples">
+                                    {group.examples.map((segment) => (
+                                      <span key={segment.index} className="doctor-detail-example">
+                                        {formatTimecodeTenths(segment.startMs)}–{formatTimecodeTenths(segment.endMs)}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
                         </div>
-                        <p className="doctor-summary">
-                          OK {doctorReports.chunkCoverage.summary.ok} ({formatPercent(
-                            doctorReports.chunkCoverage.summary.ok,
-                            doctorReports.chunkCoverage.summary.total,
-                          )})
-                          · Warn {doctorReports.chunkCoverage.summary.warn} ({formatPercent(
-                            doctorReports.chunkCoverage.summary.warn,
-                            doctorReports.chunkCoverage.summary.total,
-                          )})
-                          · Error {doctorReports.chunkCoverage.summary.error} ({formatPercent(
-                            doctorReports.chunkCoverage.summary.error,
-                            doctorReports.chunkCoverage.summary.total,
-                          )})
-                        </p>
-                      </div>
-                    ) : null}
+                      )
+                    })()}
 
-                    {doctorReports?.rangeAccess ? (
-                      <div className="doctor-report">
-                        <h4>Range access scan (0.1s)</h4>
-                        <div className="doctor-bar" role="img" aria-label="Range access results timeline">
-                          {doctorReports.rangeAccess.segments.map((segment) => (
-                            <span
-                              key={segment.index}
-                              className={`doctor-segment is-${segment.status}`}
-                              title={`${formatTimecode(Math.round(segment.startMs / 1000))}–${formatTimecode(
-                                Math.round(segment.endMs / 1000),
-                              )}${segment.reason ? ` · ${segment.reason}` : ''}`}
-                            />
-                          ))}
+                    {(() => {
+                      const report = doctorReports?.rangeAccess
+                      if (!report) return null
+                      return (
+                        <div className="doctor-report">
+                          <h4>Range access scan (0.1s)</h4>
+                          <div className="doctor-bar" role="img" aria-label="Range access results timeline">
+                            {report.segments.map((segment) => (
+                              <span
+                                key={segment.index}
+                                className={`doctor-segment is-${segment.status}`}
+                                title={`${formatTimecodeTenths(segment.startMs)}–${formatTimecodeTenths(segment.endMs)}${
+                                  segment.reason ? ` · ${segment.reason}` : ''
+                                }`}
+                              />
+                            ))}
+                          </div>
+                          <p className="doctor-summary">
+                            OK {report.summary.ok} ({formatPercent(report.summary.ok, report.summary.total)}) · Warn{' '}
+                            {report.summary.warn} ({formatPercent(report.summary.warn, report.summary.total)}) · Error{' '}
+                            {report.summary.error} ({formatPercent(report.summary.error, report.summary.total)})
+                          </p>
+                          <div className="doctor-report-actions">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                downloadDoctorJson(`range-access-${selectedRecording.id}`, {
+                                  sessionId: selectedRecording.id,
+                                  mimeType: selectedRecording.mimeType,
+                                  report,
+                                })
+                              }
+                            >
+                              Download JSON
+                            </button>
+                          </div>
+                          <div className="doctor-details">
+                            {groupSegmentsByReason(report.segments)
+                              .filter((group) => group.status !== 'ok')
+                              .map((group) => (
+                                <div
+                                  key={`${group.status}:${group.reason}`}
+                                  className={`doctor-detail-row is-${group.status}`}
+                                >
+                                  <div className="doctor-detail-main">
+                                    <span className="doctor-detail-badge">{group.status.toUpperCase()}</span>
+                                    <span className="doctor-detail-reason">{group.reason}</span>
+                                    <span className="doctor-detail-count">
+                                      {group.count} ({formatPercent(group.count, report.summary.total)})
+                                    </span>
+                                  </div>
+                                  <div className="doctor-detail-examples">
+                                    {group.examples.map((segment) => (
+                                      <span key={segment.index} className="doctor-detail-example">
+                                        {formatTimecodeTenths(segment.startMs)}–{formatTimecodeTenths(segment.endMs)}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
                         </div>
-                        <p className="doctor-summary">
-                          OK {doctorReports.rangeAccess.summary.ok} ({formatPercent(
-                            doctorReports.rangeAccess.summary.ok,
-                            doctorReports.rangeAccess.summary.total,
-                          )})
-                          · Warn {doctorReports.rangeAccess.summary.warn} ({formatPercent(
-                            doctorReports.rangeAccess.summary.warn,
-                            doctorReports.rangeAccess.summary.total,
-                          )})
-                          · Error {doctorReports.rangeAccess.summary.error} ({formatPercent(
-                            doctorReports.rangeAccess.summary.error,
-                            doctorReports.rangeAccess.summary.total,
-                          )})
-                        </p>
-                      </div>
-                    ) : null}
+                      )
+                    })()}
 
-                    {doctorReports?.chunkDecode ? (
-                      <div className="doctor-report">
-                        <h4>Per-chunk decode scan</h4>
-                        <div className="doctor-bar" role="img" aria-label="Per-chunk decode results timeline">
-                          {doctorReports.chunkDecode.segments.map((segment) => (
-                            <span
-                              key={segment.index}
-                              className={`doctor-segment is-${segment.status}`}
-                              title={`Chunk #${segment.index + 1}${segment.reason ? ` · ${segment.reason}` : ''}`}
-                            />
-                          ))}
+                    {(() => {
+                      const report = doctorReports?.chunkDecode
+                      if (!report) return null
+                      return (
+                        <div className="doctor-report">
+                          <h4>Per-chunk decode scan</h4>
+                          <div className="doctor-bar" role="img" aria-label="Per-chunk decode results timeline">
+                            {report.segments.map((segment) => (
+                              <span
+                                key={segment.index}
+                                className={`doctor-segment is-${segment.status}`}
+                                title={`Chunk #${segment.index + 1}${segment.reason ? ` · ${segment.reason}` : ''}`}
+                              />
+                            ))}
+                          </div>
+                          <p className="doctor-summary">
+                            OK {report.summary.ok} ({formatPercent(report.summary.ok, report.summary.total)}) · Warn{' '}
+                            {report.summary.warn} ({formatPercent(report.summary.warn, report.summary.total)}) · Error{' '}
+                            {report.summary.error} ({formatPercent(report.summary.error, report.summary.total)})
+                          </p>
+                          <div className="doctor-report-actions">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                downloadDoctorJson(`chunk-decode-${selectedRecording.id}`, {
+                                  sessionId: selectedRecording.id,
+                                  mimeType: selectedRecording.mimeType,
+                                  report,
+                                })
+                              }
+                            >
+                              Download JSON
+                            </button>
+                          </div>
+                          <div className="doctor-details">
+                            {groupSegmentsByReason(report.segments)
+                              .filter((group) => group.status !== 'ok')
+                              .map((group) => (
+                                <div
+                                  key={`${group.status}:${group.reason}`}
+                                  className={`doctor-detail-row is-${group.status}`}
+                                >
+                                  <div className="doctor-detail-main">
+                                    <span className="doctor-detail-badge">{group.status.toUpperCase()}</span>
+                                    <span className="doctor-detail-reason">{group.reason}</span>
+                                    <span className="doctor-detail-count">
+                                      {group.count} ({formatPercent(group.count, report.summary.total)})
+                                    </span>
+                                  </div>
+                                  <div className="doctor-detail-examples">
+                                    {group.examples.map((segment) => (
+                                      <span key={segment.index} className="doctor-detail-example">
+                                        #{segment.index + 1}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
                         </div>
-                        <p className="doctor-summary">
-                          OK {doctorReports.chunkDecode.summary.ok} ({formatPercent(
-                            doctorReports.chunkDecode.summary.ok,
-                            doctorReports.chunkDecode.summary.total,
-                          )})
-                          · Warn {doctorReports.chunkDecode.summary.warn} ({formatPercent(
-                            doctorReports.chunkDecode.summary.warn,
-                            doctorReports.chunkDecode.summary.total,
-                          )})
-                          · Error {doctorReports.chunkDecode.summary.error} ({formatPercent(
-                            doctorReports.chunkDecode.summary.error,
-                            doctorReports.chunkDecode.summary.total,
-                          )})
-                        </p>
-                      </div>
-                    ) : null}
+                      )
+                    })()}
                   </div>
                 ) : null}
                 {developerMode && debugDetailsOpen ? (
