@@ -1135,6 +1135,77 @@ function App() {
     })
   }
 
+  const buildCompactDoctorReport = (payload: {
+    session: SessionRecord
+    doctorReports: typeof doctorReports
+    logs: Array<{ level?: string; message?: string; timestamp?: number }>
+  }) => {
+    const { session, doctorReports, logs } = payload
+    const lines: string[] = []
+    lines.push('Web Whisper — Doctor Report (compact)')
+    lines.push(`Session: ${session.id}`)
+    lines.push(`StartedAt: ${new Date(session.startedAt).toISOString()}`)
+    lines.push(`DurationMs: ${session.durationMs}  (=${(session.durationMs / 1000).toFixed(1)}s)`)
+    lines.push(`Mime: ${session.mimeType ?? 'unknown'}  Chunks: ${session.chunkCount}  Timing: ${session.timingStatus ?? 'unverified'}`)
+    lines.push('')
+
+    if (doctorReports?.sanity) {
+      const m = doctorReports.sanity.metrics
+      lines.push('Sanity:')
+      lines.push(
+        `- chunkTimebase=${m.chunkTimebase} session=${((m.sessionDurationMs ?? 0) / 1000).toFixed(1)}s chunkMax=${(
+          (m.chunkMaxOffsetMs ?? 0) / 1000
+        ).toFixed(1)}s chunkSum=${((m.chunkSumDurationMs ?? 0) / 1000).toFixed(1)}s snips=${m.snipCount ?? 0} snipMax=${(
+          (m.snipMaxEndMs ?? 0) / 1000
+        ).toFixed(1)}s`,
+      )
+      doctorReports.sanity.findings.forEach((f) => lines.push(`- ${f.level.toUpperCase()}: ${f.message}`))
+      lines.push('')
+    }
+
+    const addScan = (label: string, report?: DoctorReport) => {
+      if (!report) return
+      lines.push(`${label}: OK=${report.summary.ok} WARN=${report.summary.warn} ERR=${report.summary.error} TOTAL=${report.summary.total}`)
+      lines.push(
+        `- expected=${((report.metrics.expectedDurationMs ?? 0) / 1000).toFixed(1)}s observed=${(
+          (report.metrics.observedDurationMs ?? 0) / 1000
+        ).toFixed(1)}s items=${report.metrics.observedItemCount ?? 0}/${report.metrics.expectedItemCount ?? 0}`,
+      )
+      const groups = groupSegmentsByReason(report.segments).filter((g) => g.status !== 'ok').slice(0, 5)
+      groups.forEach((g) => {
+        const examples = g.examples
+          .slice(0, 3)
+          .map((seg) => `${formatTimecodeTenths(seg.startMs)}–${formatTimecodeTenths(seg.endMs)}`)
+          .join(', ')
+        lines.push(`- ${g.status.toUpperCase()}: ${g.reason} (${g.count}) e.g. ${examples}`)
+      })
+      lines.push('')
+    }
+
+    addScan('Chunk coverage', doctorReports?.chunkCoverage)
+    addScan('Range access', doctorReports?.rangeAccess)
+    addScan('Per-chunk decode', doctorReports?.chunkDecode)
+    addScan('Snip scan', doctorReports?.snipScan)
+
+    if (logs.length > 0) {
+      lines.push('Recent logs (last 30):')
+      logs.slice(-30).forEach((entry) => {
+        const ts = typeof entry.timestamp === 'number' ? new Date(entry.timestamp).toISOString() : ''
+        const level = entry.level ?? ''
+        const msg = (entry.message ?? '').replace(/\s+/g, ' ').slice(0, 200)
+        lines.push(`- ${ts} ${level} ${msg}`.trim())
+      })
+      lines.push('')
+    }
+
+    let text = lines.join('\n')
+    const MAX = 45_000
+    if (text.length > MAX) {
+      text = `${text.slice(0, MAX)}\n\n[TRUNCATED: report exceeded ${MAX} chars]\n`
+    }
+    return text
+  }
+
   const downloadDoctorJson = (label: string, payload: unknown) => {
     const json = JSON.stringify(payload, null, 2)
     const blob = new Blob([json], { type: 'application/json' })
@@ -1518,6 +1589,12 @@ function App() {
             message: 'Snips extend beyond the expected session duration by >2s.',
             meta: { baselineDurationMs, snipMaxEndMs, driftMs: snipMaxEndMs - baselineDurationMs },
           })
+        } else if (baselineDurationMs > 0 && snips.length > 0 && snipMaxEndMs < baselineDurationMs - 2000) {
+          findings.push({
+            level: 'error',
+            message: 'Snips do not cover the full expected session duration (end too early).',
+            meta: { baselineDurationMs, snipMaxEndMs, driftMs: snipMaxEndMs - baselineDurationMs },
+          })
         } else {
           findings.push({
             level: 'info',
@@ -1533,10 +1610,30 @@ function App() {
         })
       }
 
-      // Volume profile duration sanity (to debug snips extending too far).
+      // Volume profile sanity (durations, presence, and non-zero content).
       try {
         const profiles = await manifestService.listChunkVolumeProfiles(selectedRecording.id)
         const orderedProfiles = profiles.filter((profile) => profile.seq > 0).sort((a, b) => a.seq - b.seq)
+        const profileSeqSet = new Set(orderedProfiles.map((profile) => profile.seq))
+        const chunkSeqSet = new Set(playableChunkOffsets.map((chunk) => chunk.seq))
+        const missingProfiles = [...chunkSeqSet].filter((seq) => !profileSeqSet.has(seq))
+
+        const zeroDuration = orderedProfiles.filter(
+          (profile) => !(typeof profile.durationMs === 'number' && profile.durationMs > 0),
+        )
+        const zeroFrames = orderedProfiles.filter((profile) => !Array.isArray(profile.frames) || profile.frames.length === 0)
+        const allZeroFrames = orderedProfiles.filter((profile) => {
+          const frames = Array.isArray(profile.frames) ? profile.frames : []
+          if (frames.length === 0) return false
+          return frames.every((v) => !Number.isFinite(v) || v <= 0)
+        })
+        const invalidRates = orderedProfiles.filter(
+          (profile) => !(typeof profile.sampleRate === 'number' && profile.sampleRate > 0),
+        )
+        const invalidFrameDur = orderedProfiles.filter(
+          (profile) => !(typeof profile.frameDurationMs === 'number' && profile.frameDurationMs > 0),
+        )
+
         const mismatch: Array<{ seq: number; expectedMs: number; profileMs: number; driftMs: number }> = []
         orderedProfiles.forEach((profile) => {
           const chunk = playableChunkOffsets.find((c) => c.seq === profile.seq) ?? null
@@ -1548,6 +1645,40 @@ function App() {
             mismatch.push({ seq: profile.seq, expectedMs, profileMs, driftMs })
           }
         })
+
+        if (missingProfiles.length > 0) {
+          findings.push({
+            level: 'warn',
+            message: `Missing chunk volume profiles for ${missingProfiles.length} chunk(s).`,
+            meta: { examples: missingProfiles.slice(0, 10) },
+          })
+        } else {
+          findings.push({ level: 'info', message: 'Chunk volume profiles exist for all chunks.' })
+        }
+
+        if (zeroDuration.length > 0 || zeroFrames.length > 0 || invalidRates.length > 0 || invalidFrameDur.length > 0) {
+          findings.push({
+            level: 'warn',
+            message: 'Some chunk volume profiles have invalid metadata (duration/frames/sampleRate/frameDuration).',
+            meta: {
+              zeroDuration: zeroDuration.length,
+              zeroFrames: zeroFrames.length,
+              invalidSampleRate: invalidRates.length,
+              invalidFrameDuration: invalidFrameDur.length,
+            },
+          })
+        } else {
+          findings.push({ level: 'info', message: 'Chunk volume profile metadata looks well-formed.' })
+        }
+
+        if (allZeroFrames.length > 0) {
+          findings.push({
+            level: 'warn',
+            message: `Some chunk volume profiles are all zeros (silent/failed decode) (${allZeroFrames.length}).`,
+            meta: { examples: allZeroFrames.slice(0, 6).map((p) => p.seq) },
+          })
+        }
+
         if (mismatch.length > 0) {
           findings.push({
             level: 'warn',
@@ -1560,7 +1691,7 @@ function App() {
       } catch (error) {
         findings.push({
           level: 'warn',
-          message: 'Unable to compare chunk volume profile durations.',
+          message: 'Unable to validate chunk volume profiles.',
           meta: { error: error instanceof Error ? error.message : String(error) },
         })
       }
@@ -2348,43 +2479,32 @@ function App() {
                               await manifestService.init()
                               const activeLogSession = getActiveLogSession()
                               const logSessionId = activeLogSession?.id ?? null
-                              const logs = logSessionId ? await manifestService.getLogEntries(logSessionId, 2000) : []
-                              const payload = {
-                                kind: 'web-whisper-doctor-bundle',
-                                createdAt: new Date().toISOString(),
-                                session: {
-                                  id: selectedRecording.id,
-                                  startedAt: selectedRecording.startedAt,
-                                  durationMs: selectedRecording.durationMs,
-                                  mimeType: selectedRecording.mimeType,
-                                  chunkCount: selectedRecording.chunkCount,
-                                  timingStatus: selectedRecording.timingStatus,
-                                },
+                              const logEntriesRaw = logSessionId ? await manifestService.getLogEntries(logSessionId, 400) : []
+                              const compactText = buildCompactDoctorReport({
+                                session: selectedRecording,
                                 doctorReports,
-                                logs: {
-                                  logSessionId,
-                                  entryCount: logs.length,
-                                  entries: logs,
-                                },
-                              }
-                              const text = JSON.stringify(payload, null, 2)
-                              setDoctorExportText(text)
+                                logs: logEntriesRaw.map((entry) => ({
+                                  level: entry.level,
+                                  message: entry.message,
+                                  timestamp: entry.timestamp,
+                                })),
+                              })
+                              // Keep a small export text visible so users can manual-copy on iOS.
+                              setDoctorExportText(compactText)
                               try {
-                                await copyToClipboard(text)
-                                setDoctorCopyStatus('Copied diagnosis + logs to clipboard.')
+                                await copyToClipboard(compactText)
+                                setDoctorCopyStatus('Copied compact report to clipboard.')
                                 window.setTimeout(() => setDoctorCopyStatus(null), 2500)
                               } catch (error) {
-                                setDoctorCopyStatus('Clipboard copy blocked; export text shown below (tap Select all).')
+                                setDoctorCopyStatus('Clipboard copy blocked; compact report shown below (tap Select all).')
                               }
                             } catch (error) {
-                              setDoctorCopyStatus(
-                                `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
-                              )
+                              setDoctorCopyStatus(`Copy failed: ${error instanceof Error ? error.message : String(error)}`)
                             }
                           }}
                           disabled={doctorRunning}
                         >
-                          Copy logs + diagnosis
+                          Copy compact report
                         </button>
                         <button
                           type="button"

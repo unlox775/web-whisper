@@ -84,3 +84,7 @@ Ok there is your doctor diagnosis, determine (1) what of your tests are broken, 
 Also, add a copy-logs (also copy all-diagnosis-tests) function that copies all logs this session, to the clipboard, so I can paste them here more easily
 
 Did you do anything to examine and fix the analysis timeline?  What is causing it to make snips up to 2 minutes for a source audio that is only 55 seconds long. Figure out where it is going wrong and fix that
+
+All right, the thing that I need you to add another doc or test for, we haven't been checking our volume profiles. Something just to test the health, our volume profiles should line up to our chunks, should line up to the raw data, could be a sanity check in there as well, make sure the volume profiles aren't zero, whatever sanity things you can do to check that that data looks healthy. Add that check.
+
+Oh yeah that's another good test to add. By the way your copy text area was so data enormous that it crashed my phone so I totally can't use that. I think you need to give me a text report that isn't like verbose JSON dumps of stuff. Just useful things condensed make it lean enough that I can copy it without it being gigantic but still enough data that you need.
