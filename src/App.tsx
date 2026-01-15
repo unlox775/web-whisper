@@ -332,6 +332,8 @@ function App() {
   const loadSessions = useCallback(async () => {
     // Ensure the manifest is usable before any list or summary calls.
     await manifestService.init()
+    // Data-loss OK migration: purge legacy MP4 sessions/chunks/volumes.
+    await manifestService.purgeLegacyMp4Sessions()
     // Reuse or create a single provider instance so verification caching survives reloads.
     const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
     sessionAnalysisProviderRef.current = provider

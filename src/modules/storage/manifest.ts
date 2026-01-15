@@ -208,6 +208,7 @@ export interface ManifestService {
     getChunkVolumeProfile(chunkId: string): Promise<ChunkVolumeProfileRecord | null>
     listChunkVolumeProfiles(sessionId?: string): Promise<ChunkVolumeProfileRecord[]>
     deleteSession(sessionId: string): Promise<void>
+    purgeLegacyMp4Sessions(): Promise<{ deletedSessions: number }>
     storageTotals(): Promise<{ totalBytes: number }>
     verifySessionChunkTimings(sessionId: string): Promise<SessionTimingVerificationResult>
     reconcileDanglingSessions(): Promise<void>
@@ -409,6 +410,15 @@ class IndexedDBManifestService implements ManifestService {
       await cursor.delete()
     }
     await tx.done
+  }
+
+  async purgeLegacyMp4Sessions(): Promise<{ deletedSessions: number }> {
+    const sessions = await this.listSessions()
+    const legacy = sessions.filter((session) => /mp4|m4a/i.test(session.mimeType ?? ''))
+    for (const session of legacy) {
+      await this.deleteSession(session.id)
+    }
+    return { deletedSessions: legacy.length }
   }
 
   async storageTotals(): Promise<{ totalBytes: number }> {
