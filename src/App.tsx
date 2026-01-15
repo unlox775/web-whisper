@@ -1628,9 +1628,11 @@ function App() {
       // Volume profile sanity (durations, presence, and non-zero content).
       try {
         const profiles = await manifestService.listChunkVolumeProfiles(selectedRecording.id)
-        const orderedProfiles = profiles.filter((profile) => profile.seq > 0).sort((a, b) => a.seq - b.seq)
-        const profileSeqSet = new Set(orderedProfiles.map((profile) => profile.seq))
         const chunkSeqSet = new Set(playableChunkOffsets.map((chunk) => chunk.seq))
+        const orderedProfiles = profiles
+          .filter((profile) => chunkSeqSet.has(profile.seq))
+          .sort((a, b) => a.seq - b.seq)
+        const profileSeqSet = new Set(orderedProfiles.map((profile) => profile.seq))
         const missingProfiles = [...chunkSeqSet].filter((seq) => !profileSeqSet.has(seq))
 
         const zeroDuration = orderedProfiles.filter(

@@ -148,12 +148,16 @@ class PcmMp3CaptureController implements CaptureController {
     // Ensure MP3 encoder is available before we start producing chunks.
     await ensureMp3EncoderLoaded()
 
+    // Update the session start time to the actual moment PCM capture begins (after mic + audio graph setup),
+    // so session.durationMs and subsequent range-based logic do not include setup latency.
     await manifestService.updateSession(options.sessionId, {
+      startedAt: this.#startedAt,
+      updatedAt: this.#startedAt,
       mimeType: MP3_MIME,
       status: 'recording',
-      updatedAt: this.#startedAt,
     })
 
+    // Keep state update here to reflect the updated startedAt.
     this.#setState({
       state: 'recording',
       sessionId: options.sessionId,

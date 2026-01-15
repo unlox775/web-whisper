@@ -24,6 +24,8 @@ Fix the recording detail “debug” (bug icon) panel so:
   - chunk audio blobs (with init-segment prefixing for mp4-like formats when available)
   - snip audio ranges as WAV (decode full session, slice by ms, encode PCM16 WAV)
 - Wired snip list rendering to the existing analysis segments and enabled per-snip **Play**/**Download**.
+- 20260115-175214: PCM capture now updates the session `startedAt` to the actual capture-start time (after mic/audio graph setup), so `session.durationMs` and Doctor range-based checks don’t include setup latency.
+- 20260115-175214: Doctor “volume profile” sanity check now includes `seq=0` for MP3 sessions (it previously filtered `seq > 0`, creating a false “missing 1 profile” warning).
 
 ## 🚧 In progress
 
