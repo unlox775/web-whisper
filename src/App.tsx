@@ -7,7 +7,7 @@ import {
 } from 'react'
 import { captureController } from './modules/capture/controller'
 import { RecordingAnalysisGraph } from './components/RecordingAnalysisGraph'
-import { type SessionAnalysis } from './modules/analysis/session-analysis'
+import { type SessionAnalysis, type SegmentSummary } from './modules/analysis/session-analysis'
 import './App.css'
 import {
   manifestService,
@@ -18,6 +18,7 @@ import {
   type SessionRecord,
 } from './modules/storage/manifest'
 import { SessionAnalysisProvider } from './modules/analysis/session-analysis-provider'
+import { recordingSlicesApi, type RecordingAudioSlice } from './modules/playback/recording-slices'
 import { settingsStore, type RecorderSettings } from './modules/settings/store'
 import {
   getActiveLogSession,
@@ -56,6 +57,57 @@ type ChunkPlaybackEntry = {
   cleanup: () => void
   startTime: number
   endTime: number
+}
+
+type DoctorSegmentStatus = 'ok' | 'warn' | 'error'
+
+type DoctorSegmentResult = {
+  index: number
+  startMs: number
+  endMs: number
+  status: DoctorSegmentStatus
+  reason?: string
+  meta?: Record<string, unknown>
+}
+
+type DoctorReportMetrics = {
+  expectedDurationMs: number | null
+  observedDurationMs: number | null
+  expectedItemCount: number | null
+  observedItemCount: number | null
+}
+
+type DoctorReport = {
+  stepMs: number
+  totalDurationMs: number
+  segments: DoctorSegmentResult[]
+  summary: {
+    ok: number
+    warn: number
+    error: number
+    total: number
+  }
+  metrics: DoctorReportMetrics
+}
+
+type DoctorSanityFinding = {
+  level: 'info' | 'warn' | 'error'
+  message: string
+  meta?: Record<string, unknown>
+}
+
+type DoctorSanityReport = {
+  findings: DoctorSanityFinding[]
+  metrics: {
+    sessionDurationMs: number | null
+    chunkMaxEndMs: number | null
+    chunkSumDurationMs: number | null
+    snipCount: number | null
+    snipMaxEndMs: number | null
+    snipSumDurationMs: number | null
+    chunkTimebase: 'absolute' | 'offset' | 'unknown'
+    chunkMaxOffsetMs: number | null
+  }
 }
 
 const SIMULATED_STREAM = [
@@ -217,6 +269,7 @@ function App() {
   const [isTranscriptionVisible, setTranscriptionVisible] = useState(false)
   const [recordingElapsedMs, setRecordingElapsedMs] = useState(0)
   const [chunkPlayingId, setChunkPlayingId] = useState<string | null>(null)
+  const [snipPlayingId, setSnipPlayingId] = useState<string | null>(null)
   const [playbackVolume, setPlaybackVolume] = useState(1)
   const [isVolumeSliderOpen, setVolumeSliderOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
@@ -229,6 +282,27 @@ function App() {
   const [selectedLogSession, setSelectedLogSession] = useState<LogSessionRecord | null>(null)
   const [logEntries, setLogEntries] = useState<LogEntryRecord[]>([])
   const [debugDetailsOpen, setDebugDetailsOpen] = useState(false)
+  const [detailSliceMode, setDetailSliceMode] = useState<'chunks' | 'snips'>('chunks')
+  const [doctorOpen, setDoctorOpen] = useState(false)
+  const [doctorSelections, setDoctorSelections] = useState({
+    chunkCoverageScan: true,
+    rangeAccessScan: true,
+    chunkDecodeScan: true,
+    sanityChecks: true,
+    snipScan: true,
+  })
+  const [doctorRunning, setDoctorRunning] = useState(false)
+  const [doctorProgress, setDoctorProgress] = useState<{ label: string; completed: number; total: number } | null>(null)
+  const [doctorError, setDoctorError] = useState<string | null>(null)
+  const [doctorCopyStatus, setDoctorCopyStatus] = useState<string | null>(null)
+  const [doctorExportText, setDoctorExportText] = useState<string | null>(null)
+  const [doctorReports, setDoctorReports] = useState<{
+    chunkCoverage?: DoctorReport
+    rangeAccess?: DoctorReport
+    chunkDecode?: DoctorReport
+    sanity?: DoctorSanityReport
+    snipScan?: DoctorReport
+  } | null>(null)
   const [isLoadingPlayback, setIsLoadingPlayback] = useState(false)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
   const [audioState, setAudioState] = useState<AudioState>({ playing: false, duration: 0, position: 0 })
@@ -243,6 +317,10 @@ function App() {
   const audioUrlRef = useRef<string | null>(null)
   const chunkUrlMapRef = useRef<Map<string, string>>(new Map())
   const chunkAudioRef = useRef<Map<string, ChunkPlaybackEntry>>(new Map())
+  const snipUrlMapRef = useRef<Map<string, string>>(new Map())
+  const snipAudioRef = useRef<Map<string, ChunkPlaybackEntry>>(new Map())
+  const snipSliceCacheRef = useRef<Map<string, RecordingAudioSlice>>(new Map())
+  const doctorRunIdRef = useRef(0)
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
   const sessionAnalysisProviderRef = useRef<SessionAnalysisProvider | null>(null)
@@ -254,6 +332,8 @@ function App() {
   const loadSessions = useCallback(async () => {
     // Ensure the manifest is usable before any list or summary calls.
     await manifestService.init()
+    // Data-loss OK migration: purge legacy MP4 sessions/chunks/volumes.
+    await manifestService.purgeLegacyMp4Sessions()
     // Reuse or create a single provider instance so verification caching survives reloads.
     const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
     sessionAnalysisProviderRef.current = provider
@@ -519,8 +599,33 @@ function App() {
       })
       chunkAudioRef.current.clear()
       setChunkPlayingId(null)
+      snipAudioRef.current.forEach((entry) => {
+        entry.cleanup()
+        entry.audio.pause()
+        entry.audio.currentTime = entry.startTime
+      })
+      snipAudioRef.current.clear()
+      setSnipPlayingId(null)
     }
   }, [debugDetailsOpen])
+
+  useEffect(() => {
+    // Switching modes should not keep stale per-slice playback alive.
+    chunkAudioRef.current.forEach((entry) => {
+      entry.cleanup()
+      entry.audio.pause()
+      entry.audio.currentTime = entry.startTime
+    })
+    chunkAudioRef.current.clear()
+    setChunkPlayingId(null)
+    snipAudioRef.current.forEach((entry) => {
+      entry.cleanup()
+      entry.audio.pause()
+      entry.audio.currentTime = entry.startTime
+    })
+    snipAudioRef.current.clear()
+    setSnipPlayingId(null)
+  }, [detailSliceMode])
 
   useEffect(() => {
     const mainAudio = audioRef.current
@@ -528,6 +633,9 @@ function App() {
       mainAudio.volume = playbackVolume
     }
     chunkAudioRef.current.forEach((entry) => {
+      entry.audio.volume = playbackVolume
+    })
+    snipAudioRef.current.forEach((entry) => {
       entry.audio.volume = playbackVolume
     })
   }, [playbackVolume])
@@ -572,7 +680,9 @@ function App() {
   }, [selectedRecording])
 
   useEffect(() => {
-    if (!developerMode || !selectedRecording || !isAnalysisGraphOpen) {
+    const wantsSessionAnalysis =
+      developerMode && selectedRecording && (isAnalysisGraphOpen || (debugDetailsOpen && detailSliceMode === 'snips'))
+    if (!wantsSessionAnalysis) {
       setAnalysisState('idle')
       setSessionAnalysis(null)
       setAnalysisError(null)
@@ -638,6 +748,8 @@ function App() {
     }
   }, [
     developerMode,
+    debugDetailsOpen,
+    detailSliceMode,
     isAnalysisGraphOpen,
     selectedRecording?.id,
     selectedRecording?.updatedAt,
@@ -646,9 +758,14 @@ function App() {
   ])
 
   const isHeaderSegment = useCallback((chunk: StoredChunk) => {
+    const mimeType = chunk.blob.type || selectedRecording?.mimeType || ''
+    const isMp4Like = /mp4|m4a/i.test(mimeType)
+    if (!isMp4Like) {
+      return false
+    }
     const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
     return chunk.seq === 0 && (durationMs <= 10 || chunk.byteLength < 4096)
-  }, [])
+  }, [selectedRecording?.mimeType])
 
   const headerChunk = useMemo(() => chunkData.find(isHeaderSegment) ?? null, [chunkData, isHeaderSegment])
 
@@ -696,16 +813,82 @@ function App() {
         const baseDate = selectedRecording?.startedAt ?? chunk.startMs ?? Date.now()
         const iso = new Date(baseDate).toISOString().replace(/[:.]/g, '-')
         const seqLabel = String(chunk.seq + 1).padStart(2, '0')
+        const mimeType = chunk.blob.type || selectedRecording?.mimeType || 'application/octet-stream'
+        const extension = /mpeg/i.test(mimeType)
+          ? 'mp3'
+          : /webm/i.test(mimeType)
+            ? 'webm'
+            : /mp4|m4a/i.test(mimeType)
+              ? 'mp4'
+              : 'bin'
         const link = document.createElement('a')
         link.href = url
-        link.download = `${iso}_chunk-${seqLabel}.mp4`
+        link.download = `${iso}_chunk-${seqLabel}.${extension}`
         link.rel = 'noopener'
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
       },
-      [ensureChunkPlaybackUrl, selectedRecording?.startedAt],
+      [ensureChunkPlaybackUrl, selectedRecording?.mimeType, selectedRecording?.startedAt],
     )
+
+  const ensureSnipSlice = useCallback(
+    async (segment: SegmentSummary): Promise<RecordingAudioSlice | null> => {
+      if (!selectedRecording) {
+        return null
+      }
+      const cacheKey = `snip-${segment.index}`
+      const existing = snipSliceCacheRef.current.get(cacheKey)
+      if (existing) {
+        return existing
+      }
+      const slice = await recordingSlicesApi.getRangeAudio(
+        selectedRecording,
+        segment.startMs,
+        segment.endMs,
+        selectedRecording.mimeType ?? null,
+      )
+      snipSliceCacheRef.current.set(cacheKey, slice)
+      return slice
+    },
+    [selectedRecording],
+  )
+
+  const ensureSnipPlaybackUrl = useCallback(
+    async (segment: SegmentSummary): Promise<{ url: string; slice: RecordingAudioSlice } | null> => {
+      const cacheKey = `snip-${segment.index}`
+      const existingUrl = snipUrlMapRef.current.get(cacheKey)
+      const slice = await ensureSnipSlice(segment)
+      if (!slice) {
+        return null
+      }
+      if (existingUrl) {
+        return { url: existingUrl, slice }
+      }
+      const url = URL.createObjectURL(slice.blob)
+      snipUrlMapRef.current.set(cacheKey, url)
+      return { url, slice }
+    },
+    [ensureSnipSlice],
+  )
+
+  const handleSnipDownload = useCallback(
+    async (segment: SegmentSummary, snipNumber: number) => {
+      const resolved = await ensureSnipPlaybackUrl(segment)
+      if (!resolved) {
+        return
+      }
+      const { url, slice } = resolved
+      const link = document.createElement('a')
+      link.href = url
+      link.download = slice.suggestedFilename || `snip-${String(snipNumber).padStart(2, '0')}.wav`
+      link.rel = 'noopener'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+    },
+    [ensureSnipPlaybackUrl],
+  )
 
   const refreshAndClearErrors = useCallback(async () => {
     setErrorMessage(null)
@@ -882,6 +1065,22 @@ function App() {
     chunkUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url))
     chunkUrlMapRef.current.clear()
     setChunkPlayingId(null)
+    snipAudioRef.current.forEach((entry) => {
+      entry.cleanup()
+      entry.audio.pause()
+      entry.audio.currentTime = entry.startTime
+    })
+    snipAudioRef.current.clear()
+    snipUrlMapRef.current.forEach((url) => URL.revokeObjectURL(url))
+    snipUrlMapRef.current.clear()
+    snipSliceCacheRef.current.clear()
+    setSnipPlayingId(null)
+    setDetailSliceMode('chunks')
+    setDoctorOpen(false)
+    setDoctorRunning(false)
+    setDoctorProgress(null)
+    setDoctorError(null)
+    setDoctorReports(null)
     setVolumeSliderOpen(false)
     setSelectedRecordingId(null)
     setChunkData([])
@@ -896,6 +1095,9 @@ function App() {
     if (selectedRecordingId) {
       await logInfo('Detail view closed', { sessionId: selectedRecordingId })
     }
+    if (selectedRecordingId) {
+      recordingSlicesApi.clearSession(selectedRecordingId)
+    }
     if (audioUrlRef.current) {
       URL.revokeObjectURL(audioUrlRef.current)
       audioUrlRef.current = null
@@ -906,6 +1108,740 @@ function App() {
     }
     await refreshAndClearErrors()
   }
+
+  const formatPercent = (count: number, total: number) =>
+    total > 0 ? `${Math.round((count / total) * 100)}%` : '0%'
+
+  const formatTimecodeTenths = (ms: number) => {
+    const totalSeconds = Math.max(0, ms / 1000)
+    const minutes = Math.floor(totalSeconds / 60)
+    const seconds = totalSeconds - minutes * 60
+    const secondsFixed = seconds < 10 ? `0${seconds.toFixed(1)}` : seconds.toFixed(1)
+    return `${minutes}:${secondsFixed}`
+  }
+
+  const summarizeReport = (segments: DoctorSegmentResult[]): DoctorReport['summary'] => {
+    const summary = { ok: 0, warn: 0, error: 0, total: segments.length }
+    segments.forEach((segment) => {
+      if (segment.status === 'ok') summary.ok += 1
+      else if (segment.status === 'warn') summary.warn += 1
+      else summary.error += 1
+    })
+    return summary
+  }
+
+  const groupSegmentsByReason = (segments: DoctorSegmentResult[]) => {
+    const groups = new Map<string, { reason: string; status: DoctorSegmentStatus; count: number; examples: DoctorSegmentResult[] }>()
+    segments.forEach((segment) => {
+      const reason = segment.reason ?? '(no reason)'
+      const key = `${segment.status}:${reason}`
+      const existing = groups.get(key)
+      if (existing) {
+        existing.count += 1
+        if (existing.examples.length < 6) existing.examples.push(segment)
+      } else {
+        groups.set(key, { reason, status: segment.status, count: 1, examples: [segment] })
+      }
+    })
+    return Array.from(groups.values()).sort((a, b) => {
+      const statusOrder: Record<DoctorSegmentStatus, number> = { error: 0, warn: 1, ok: 2 }
+      if (statusOrder[a.status] !== statusOrder[b.status]) return statusOrder[a.status] - statusOrder[b.status]
+      return b.count - a.count
+    })
+  }
+
+  const buildCompactDoctorReport = (payload: {
+    session: SessionRecord
+    doctorReports: typeof doctorReports
+    logs: Array<{ level?: string; message?: string; timestamp?: number }>
+  }) => {
+    const { session, doctorReports, logs } = payload
+    const lines: string[] = []
+    lines.push('Web Whisper — Doctor Report (compact)')
+    lines.push(`Session: ${session.id}`)
+    lines.push(`StartedAt: ${new Date(session.startedAt).toISOString()}`)
+    lines.push(`DurationMs: ${session.durationMs}  (=${(session.durationMs / 1000).toFixed(1)}s)`)
+    lines.push(`Mime: ${session.mimeType ?? 'unknown'}  Chunks: ${session.chunkCount}  Timing: ${session.timingStatus ?? 'unverified'}`)
+    lines.push('')
+
+    if (doctorReports?.sanity) {
+      const m = doctorReports.sanity.metrics
+      lines.push('Sanity:')
+      lines.push(
+        `- chunkTimebase=${m.chunkTimebase} session=${((m.sessionDurationMs ?? 0) / 1000).toFixed(1)}s chunkMax=${(
+          (m.chunkMaxOffsetMs ?? 0) / 1000
+        ).toFixed(1)}s chunkSum=${((m.chunkSumDurationMs ?? 0) / 1000).toFixed(1)}s snips=${m.snipCount ?? 0} snipMax=${(
+          (m.snipMaxEndMs ?? 0) / 1000
+        ).toFixed(1)}s`,
+      )
+      doctorReports.sanity.findings.forEach((f) => lines.push(`- ${f.level.toUpperCase()}: ${f.message}`))
+      lines.push('')
+    }
+
+    const addScan = (label: string, report?: DoctorReport) => {
+      if (!report) return
+      lines.push(`${label}: OK=${report.summary.ok} WARN=${report.summary.warn} ERR=${report.summary.error} TOTAL=${report.summary.total}`)
+      lines.push(
+        `- expected=${((report.metrics.expectedDurationMs ?? 0) / 1000).toFixed(1)}s observed=${(
+          (report.metrics.observedDurationMs ?? 0) / 1000
+        ).toFixed(1)}s items=${report.metrics.observedItemCount ?? 0}/${report.metrics.expectedItemCount ?? 0}`,
+      )
+      const groups = groupSegmentsByReason(report.segments).filter((g) => g.status !== 'ok').slice(0, 5)
+      groups.forEach((g) => {
+        const examples = g.examples
+          .slice(0, 3)
+          .map((seg) => `${formatTimecodeTenths(seg.startMs)}–${formatTimecodeTenths(seg.endMs)}`)
+          .join(', ')
+        lines.push(`- ${g.status.toUpperCase()}: ${g.reason} (${g.count}) e.g. ${examples}`)
+      })
+      lines.push('')
+    }
+
+    addScan('Chunk coverage', doctorReports?.chunkCoverage)
+    addScan('Range access', doctorReports?.rangeAccess)
+    addScan('Per-chunk decode', doctorReports?.chunkDecode)
+    addScan('Snip scan', doctorReports?.snipScan)
+
+    if (logs.length > 0) {
+      lines.push('Recent logs (last 30):')
+      logs.slice(-30).forEach((entry) => {
+        const ts = typeof entry.timestamp === 'number' ? new Date(entry.timestamp).toISOString() : ''
+        const level = entry.level ?? ''
+        const msg = (entry.message ?? '').replace(/\s+/g, ' ').slice(0, 200)
+        lines.push(`- ${ts} ${level} ${msg}`.trim())
+      })
+      lines.push('')
+    }
+
+    let text = lines.join('\n')
+    const MAX = 45_000
+    if (text.length > MAX) {
+      text = `${text.slice(0, MAX)}\n\n[TRUNCATED: report exceeded ${MAX} chars]\n`
+    }
+    return text
+  }
+
+  const downloadDoctorJson = (label: string, payload: unknown) => {
+    const json = JSON.stringify(payload, null, 2)
+    const blob = new Blob([json], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${label.replace(/\s+/g, '-').toLowerCase()}-doctor-report.json`
+    link.rel = 'noopener'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
+  }
+
+  const copyToClipboard = async (text: string) => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return
+    }
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    textarea.style.top = '0'
+    document.body.appendChild(textarea)
+    textarea.focus()
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+  }
+
+  const inferChunkTimebase = (chunks: StoredChunk[], baseStartMs: number): 'absolute' | 'offset' | 'unknown' => {
+    const sample = chunks.find((chunk) => chunk.seq > 0) ?? null
+    if (!sample) return 'unknown'
+    if (sample.startMs > 1_000_000_000_000 && baseStartMs > 1_000_000_000_000) return 'absolute'
+    if (sample.startMs >= 0 && sample.startMs < 86_400_000) return 'offset'
+    return 'unknown'
+  }
+
+  const toOffsetSpan = (chunk: Pick<StoredChunk, 'startMs' | 'endMs'>, baseStartMs: number, timebase: string) => {
+    if (timebase === 'absolute') {
+      return { startMs: chunk.startMs - baseStartMs, endMs: chunk.endMs - baseStartMs }
+    }
+    return { startMs: chunk.startMs, endMs: chunk.endMs }
+  }
+
+  const runDoctorDiagnostics = useCallback(async () => {
+    if (!selectedRecording) return
+
+    const runId = doctorRunIdRef.current + 1
+    doctorRunIdRef.current = runId
+    const isCancelled = () => doctorRunIdRef.current !== runId
+
+    setDoctorRunning(true)
+    setDoctorError(null)
+    setDoctorReports(null)
+
+    await manifestService.init()
+    // Pull fresh chunk data for diagnostics so we don't race the detail-open effect.
+    const chunksForDoctor = await manifestService.getChunkData(selectedRecording.id)
+    const playableChunksForDoctor = chunksForDoctor.filter((chunk) => chunk.seq > 0)
+    const baseStartMsCandidate =
+      chunksForDoctor.find((chunk) => chunk.seq === 0)?.startMs ??
+      playableChunksForDoctor[0]?.startMs ??
+      selectedRecording.startedAt
+    const baseStartMs = Number.isFinite(baseStartMsCandidate) ? Math.round(baseStartMsCandidate) : selectedRecording.startedAt
+    const chunkTimebase = inferChunkTimebase(playableChunksForDoctor, baseStartMs)
+    const playableChunkOffsets = playableChunksForDoctor.map((chunk) => ({
+      ...chunk,
+      ...toOffsetSpan(chunk, baseStartMs, chunkTimebase),
+    }))
+
+    const durationMsGuess =
+      selectedRecordingDurationMs ??
+      (playableChunkOffsets.length > 0 ? Math.max(...playableChunkOffsets.map((chunk) => chunk.endMs)) : selectedRecording.durationMs ?? 0)
+    const totalDurationMs = Math.max(0, durationMsGuess)
+    const stepMs = 100
+    const segmentCount = totalDurationMs > 0 ? Math.ceil(totalDurationMs / stepMs) : 0
+
+    const reports: NonNullable<typeof doctorReports> = {}
+
+    const yieldToUI = async () => {
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
+    }
+
+    const runChunkCoverageScan = async () => {
+      const segments: DoctorSegmentResult[] = []
+      setDoctorProgress({ label: 'Chunk coverage scan', completed: 0, total: segmentCount })
+
+      let coveredMs = 0
+      for (let i = 0; i < segmentCount; i += 1) {
+        if (isCancelled()) return
+        const startMs = i * stepMs
+        const endMs = Math.min(totalDurationMs, startMs + stepMs)
+        const chunk = playableChunkOffsets.find((row) => row.startMs <= startMs && row.endMs > startMs) ?? null
+        if (!chunk) {
+          segments.push({ index: i, startMs, endMs, status: 'error', reason: 'No chunk covers this time range' })
+        } else if (!Number.isFinite(chunk.byteLength) || chunk.byteLength <= 0) {
+          segments.push({
+            index: i,
+            startMs,
+            endMs,
+            status: 'error',
+            reason: 'Chunk blob is empty',
+            meta: { chunkId: chunk.id, seq: chunk.seq, byteLength: chunk.byteLength },
+          })
+        } else if (chunk.endMs <= chunk.startMs) {
+          segments.push({
+            index: i,
+            startMs,
+            endMs,
+            status: 'warn',
+            reason: 'Chunk timing metadata looks invalid',
+            meta: { chunkId: chunk.id, seq: chunk.seq, chunkStartMs: chunk.startMs, chunkEndMs: chunk.endMs },
+          })
+        } else {
+          coveredMs += endMs - startMs
+          segments.push({
+            index: i,
+            startMs,
+            endMs,
+            status: 'ok',
+            meta: { chunkId: chunk.id, seq: chunk.seq },
+          })
+        }
+
+        if (i % 50 === 0) {
+          setDoctorProgress({ label: 'Chunk coverage scan', completed: i + 1, total: segmentCount })
+          await yieldToUI()
+        }
+      }
+      setDoctorProgress({ label: 'Chunk coverage scan', completed: segmentCount, total: segmentCount })
+      reports.chunkCoverage = {
+        stepMs,
+        totalDurationMs,
+        segments,
+        summary: summarizeReport(segments),
+        metrics: {
+          expectedDurationMs: totalDurationMs,
+          observedDurationMs: coveredMs,
+          expectedItemCount: segmentCount,
+          observedItemCount: segmentCount - summarizeReport(segments).error,
+        },
+      }
+    }
+
+    const runRangeAccessScan = async () => {
+      const segments: DoctorSegmentResult[] = []
+      setDoctorProgress({ label: 'Range access scan (0.1s)', completed: 0, total: segmentCount })
+
+      let observedMs = 0
+      let observedCount = 0
+      for (let i = 0; i < segmentCount; i += 1) {
+        if (isCancelled()) return
+        const startMs = i * stepMs
+        const endMs = Math.min(totalDurationMs, startMs + stepMs)
+        try {
+          const inspection = await recordingSlicesApi.inspectRange(
+            selectedRecording,
+            startMs,
+            endMs,
+            selectedRecording.mimeType ?? null,
+          )
+          observedMs += inspection.durationMs
+          observedCount += 1
+          const expectedMs = endMs - startMs
+          const hasTooShort = inspection.durationMs < Math.min(expectedMs * 0.5, expectedMs - 10)
+          const silent = inspection.sampleCount > 0 && inspection.rms <= 0.00001 && inspection.peak <= 0.00005
+          const status: DoctorSegmentStatus = hasTooShort ? 'warn' : silent ? 'warn' : 'ok'
+          const reason = hasTooShort ? 'Decoded slice shorter than expected' : silent ? 'Slice appears silent' : undefined
+          segments.push({
+            index: i,
+            startMs,
+            endMs,
+            status,
+            reason,
+            meta: {
+              durationMs: inspection.durationMs,
+              sampleCount: inspection.sampleCount,
+              rms: inspection.rms,
+              peak: inspection.peak,
+            },
+          })
+        } catch (error) {
+          segments.push({
+            index: i,
+            startMs,
+            endMs,
+            status: 'error',
+            reason: error instanceof Error ? error.message : String(error),
+          })
+        }
+
+        if (i % 20 === 0) {
+          setDoctorProgress({ label: 'Range access scan (0.1s)', completed: i + 1, total: segmentCount })
+          await yieldToUI()
+        }
+      }
+      setDoctorProgress({ label: 'Range access scan (0.1s)', completed: segmentCount, total: segmentCount })
+      reports.rangeAccess = {
+        stepMs,
+        totalDurationMs,
+        segments,
+        summary: summarizeReport(segments),
+        metrics: {
+          expectedDurationMs: totalDurationMs,
+          observedDurationMs: observedMs,
+          expectedItemCount: segmentCount,
+          observedItemCount: observedCount,
+        },
+      }
+    }
+
+    const runChunkDecodeScan = async () => {
+      setDoctorProgress({ label: 'Per-chunk decode scan', completed: 0, total: playableChunksForDoctor.length })
+      const segments: DoctorSegmentResult[] = []
+      if (typeof window === 'undefined' || typeof window.AudioContext === 'undefined') {
+        reports.chunkDecode = {
+          stepMs: 1,
+          totalDurationMs,
+          segments: [
+            {
+              index: 0,
+              startMs: 0,
+              endMs: 0,
+              status: 'error',
+              reason: 'AudioContext is not supported in this environment.',
+            },
+          ],
+          summary: { ok: 0, warn: 0, error: 1, total: 1 },
+          metrics: { expectedDurationMs: null, observedDurationMs: null, expectedItemCount: null, observedItemCount: null },
+        }
+        return
+      }
+
+      const audioContext = new AudioContext()
+      let expectedMs = 0
+      let decodedMs = 0
+      let decodedCount = 0
+      try {
+        for (let i = 0; i < playableChunkOffsets.length; i += 1) {
+          if (isCancelled()) return
+          const chunk = playableChunkOffsets[i]
+          const seq = chunk.seq
+          expectedMs += Math.max(0, chunk.endMs - chunk.startMs)
+          try {
+            const slice = await recordingSlicesApi.getChunkAudio(selectedRecording, seq)
+            if (!slice) {
+              segments.push({
+                index: i,
+                startMs: chunk.startMs,
+                endMs: chunk.endMs,
+                status: 'error',
+                reason: 'Chunk not found',
+                meta: { seq },
+              })
+            } else {
+              const arrayBuffer = await slice.blob.arrayBuffer()
+              const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0))
+              const chunkDecodedMs = Math.max(0, decoded.duration * 1000)
+              decodedMs += chunkDecodedMs
+              decodedCount += 1
+              const expectedChunkMs = Math.max(0, chunk.endMs - chunk.startMs)
+              const driftMs = Math.abs(chunkDecodedMs - expectedChunkMs)
+              const status: DoctorSegmentStatus = driftMs > 250 ? 'warn' : 'ok'
+              const reason = driftMs > 250 ? 'Decoded duration differs from expected chunk timing' : undefined
+              segments.push({
+                index: i,
+                startMs: chunk.startMs,
+                endMs: chunk.endMs,
+                status,
+                reason,
+                meta: {
+                  seq,
+                  blobType: slice.mimeType,
+                  blobBytes: slice.blob.size,
+                  decodedMs: chunkDecodedMs,
+                  expectedMs: expectedChunkMs,
+                  driftMs,
+                  note: 'Standalone chunk decoding can include timestamp offsets; compare against range scans.',
+                },
+              })
+            }
+          } catch (error) {
+            segments.push({
+              index: i,
+              startMs: chunk.startMs,
+              endMs: chunk.endMs,
+              status: 'error',
+              reason: error instanceof Error ? error.message : String(error),
+              meta: { seq },
+            })
+          }
+
+          if (i % 5 === 0) {
+            setDoctorProgress({ label: 'Per-chunk decode scan', completed: i + 1, total: playableChunksForDoctor.length })
+            await yieldToUI()
+          }
+        }
+      } finally {
+        await audioContext.close().catch(() => {
+          /* noop */
+        })
+      }
+
+      setDoctorProgress({
+        label: 'Per-chunk decode scan',
+        completed: playableChunksForDoctor.length,
+        total: playableChunksForDoctor.length,
+      })
+      reports.chunkDecode = {
+        stepMs: 1,
+        totalDurationMs,
+        segments,
+        summary: summarizeReport(segments),
+        metrics: {
+          expectedDurationMs: expectedMs,
+          observedDurationMs: decodedMs,
+          expectedItemCount: playableChunksForDoctor.length,
+          observedItemCount: decodedCount,
+        },
+      }
+    }
+
+    const runSanityChecks = async () => {
+      const findings: DoctorSanityFinding[] = []
+
+      const sessionDurationMs = Number.isFinite(selectedRecording.durationMs) ? Math.max(0, selectedRecording.durationMs) : null
+      const chunkMaxEndMs = playableChunksForDoctor.length > 0 ? Math.max(...playableChunksForDoctor.map((chunk) => chunk.endMs)) : null
+      const chunkMaxOffsetMs = playableChunkOffsets.length > 0 ? Math.max(...playableChunkOffsets.map((chunk) => chunk.endMs)) : null
+      const chunkSumDurationMs = playableChunkOffsets.reduce((sum, chunk) => sum + Math.max(0, chunk.endMs - chunk.startMs), 0)
+
+      // Chunk ordering / overlaps / gaps.
+      const ordered = [...playableChunkOffsets].sort((a, b) => a.seq - b.seq)
+      let overlaps = 0
+      let gaps = 0
+      for (let i = 1; i < ordered.length; i += 1) {
+        const prev = ordered[i - 1]
+        const current = ordered[i]
+        if (current.startMs < prev.endMs - 5) overlaps += 1
+        if (current.startMs > prev.endMs + 50) gaps += 1
+      }
+      if (overlaps > 0) {
+        findings.push({ level: 'warn', message: `Chunk timings overlap in ${overlaps} places.`, meta: { overlaps } })
+      }
+      if (gaps > 0) {
+        findings.push({ level: 'warn', message: `Chunk timings have gaps in ${gaps} places.`, meta: { gaps } })
+      }
+
+      if (sessionDurationMs !== null && chunkMaxOffsetMs !== null) {
+        const drift = chunkMaxOffsetMs - sessionDurationMs
+        if (Math.abs(drift) > 1000) {
+          findings.push({
+            level: drift > 0 ? 'warn' : 'warn',
+            message: 'Session duration and chunk max end differ by >1s.',
+            meta: { sessionDurationMs, chunkMaxOffsetMs, driftMs: drift, chunkTimebase },
+          })
+        } else {
+          findings.push({
+            level: 'info',
+            message: 'Session duration and chunk max end are close.',
+            meta: { sessionDurationMs, chunkMaxOffsetMs, driftMs: drift, chunkTimebase },
+          })
+        }
+      }
+
+      // Snip sanity: make sure snips do not extend way past session/chunks.
+      let snipCount: number | null = null
+      let snipMaxEndMs: number | null = null
+      let snipSumDurationMs: number | null = null
+      try {
+        const snips = await recordingSlicesApi.listSnips(selectedRecording, selectedRecording.mimeType ?? null)
+        snipCount = snips.length
+        snipMaxEndMs = snips.length > 0 ? Math.max(...snips.map((snip) => snip.endMs)) : 0
+        snipSumDurationMs = snips.reduce((sum, snip) => sum + Math.max(0, snip.durationMs), 0)
+
+        const baselineDurationMs = chunkMaxOffsetMs ?? sessionDurationMs ?? totalDurationMs
+        if (baselineDurationMs > 0 && snipMaxEndMs > baselineDurationMs + 2000) {
+          findings.push({
+            level: 'error',
+            message: 'Snips extend beyond the expected session duration by >2s.',
+            meta: { baselineDurationMs, snipMaxEndMs, driftMs: snipMaxEndMs - baselineDurationMs },
+          })
+        } else if (baselineDurationMs > 0 && snips.length > 0 && snipMaxEndMs < baselineDurationMs - 2000) {
+          findings.push({
+            level: 'error',
+            message: 'Snips do not cover the full expected session duration (end too early).',
+            meta: { baselineDurationMs, snipMaxEndMs, driftMs: snipMaxEndMs - baselineDurationMs },
+          })
+        } else {
+          findings.push({
+            level: 'info',
+            message: 'Snip end times are within expected duration.',
+            meta: { baselineDurationMs, snipMaxEndMs },
+          })
+        }
+      } catch (error) {
+        findings.push({
+          level: 'error',
+          message: 'Failed to compute snips for sanity checks.',
+          meta: { error: error instanceof Error ? error.message : String(error) },
+        })
+      }
+
+      // Volume profile sanity (durations, presence, and non-zero content).
+      try {
+        const profiles = await manifestService.listChunkVolumeProfiles(selectedRecording.id)
+        const orderedProfiles = profiles.filter((profile) => profile.seq > 0).sort((a, b) => a.seq - b.seq)
+        const profileSeqSet = new Set(orderedProfiles.map((profile) => profile.seq))
+        const chunkSeqSet = new Set(playableChunkOffsets.map((chunk) => chunk.seq))
+        const missingProfiles = [...chunkSeqSet].filter((seq) => !profileSeqSet.has(seq))
+
+        const zeroDuration = orderedProfiles.filter(
+          (profile) => !(typeof profile.durationMs === 'number' && profile.durationMs > 0),
+        )
+        const zeroFrames = orderedProfiles.filter((profile) => !Array.isArray(profile.frames) || profile.frames.length === 0)
+        const allZeroFrames = orderedProfiles.filter((profile) => {
+          const frames = Array.isArray(profile.frames) ? profile.frames : []
+          if (frames.length === 0) return false
+          return frames.every((v) => !Number.isFinite(v) || v <= 0)
+        })
+        const invalidRates = orderedProfiles.filter(
+          (profile) => !(typeof profile.sampleRate === 'number' && profile.sampleRate > 0),
+        )
+        const invalidFrameDur = orderedProfiles.filter(
+          (profile) => !(typeof profile.frameDurationMs === 'number' && profile.frameDurationMs > 0),
+        )
+
+        const mismatch: Array<{ seq: number; expectedMs: number; profileMs: number; driftMs: number }> = []
+        orderedProfiles.forEach((profile) => {
+          const chunk = playableChunkOffsets.find((c) => c.seq === profile.seq) ?? null
+          if (!chunk) return
+          const expectedMs = Math.max(0, chunk.endMs - chunk.startMs)
+          const profileMs = Math.max(0, profile.durationMs ?? 0)
+          const driftMs = profileMs - expectedMs
+          if (Math.abs(driftMs) > 250) {
+            mismatch.push({ seq: profile.seq, expectedMs, profileMs, driftMs })
+          }
+        })
+
+        if (missingProfiles.length > 0) {
+          findings.push({
+            level: 'warn',
+            message: `Missing chunk volume profiles for ${missingProfiles.length} chunk(s).`,
+            meta: { examples: missingProfiles.slice(0, 10) },
+          })
+        } else {
+          findings.push({ level: 'info', message: 'Chunk volume profiles exist for all chunks.' })
+        }
+
+        if (zeroDuration.length > 0 || zeroFrames.length > 0 || invalidRates.length > 0 || invalidFrameDur.length > 0) {
+          findings.push({
+            level: 'warn',
+            message: 'Some chunk volume profiles have invalid metadata (duration/frames/sampleRate/frameDuration).',
+            meta: {
+              zeroDuration: zeroDuration.length,
+              zeroFrames: zeroFrames.length,
+              invalidSampleRate: invalidRates.length,
+              invalidFrameDuration: invalidFrameDur.length,
+            },
+          })
+        } else {
+          findings.push({ level: 'info', message: 'Chunk volume profile metadata looks well-formed.' })
+        }
+
+        if (allZeroFrames.length > 0) {
+          findings.push({
+            level: 'warn',
+            message: `Some chunk volume profiles are all zeros (silent/failed decode) (${allZeroFrames.length}).`,
+            meta: { examples: allZeroFrames.slice(0, 6).map((p) => p.seq) },
+          })
+        }
+
+        if (mismatch.length > 0) {
+          findings.push({
+            level: 'warn',
+            message: `Chunk volume profile durations differ from chunk timings for ${mismatch.length} chunk(s).`,
+            meta: { examples: mismatch.slice(0, 6) },
+          })
+        } else {
+          findings.push({ level: 'info', message: 'Chunk volume profile durations match chunk timings (within 250ms).' })
+        }
+      } catch (error) {
+        findings.push({
+          level: 'warn',
+          message: 'Unable to validate chunk volume profiles.',
+          meta: { error: error instanceof Error ? error.message : String(error) },
+        })
+      }
+
+      reports.sanity = {
+        findings,
+        metrics: {
+          sessionDurationMs,
+          chunkMaxEndMs,
+          chunkSumDurationMs,
+          snipCount,
+          snipMaxEndMs,
+          snipSumDurationMs,
+          chunkTimebase,
+          chunkMaxOffsetMs,
+        },
+      }
+    }
+
+    const runSnipScan = async () => {
+      setDoctorProgress({ label: 'Snip scan (each snip)', completed: 0, total: 1 })
+      const snips = await recordingSlicesApi.listSnips(selectedRecording, selectedRecording.mimeType ?? null)
+      const segments: DoctorSegmentResult[] = []
+      const expectedDurationMs = snips.reduce((sum, snip) => sum + Math.max(0, snip.durationMs), 0)
+      let observedDurationMs = 0
+      let okCount = 0
+
+      setDoctorProgress({ label: 'Snip scan (each snip)', completed: 0, total: snips.length })
+      for (let i = 0; i < snips.length; i += 1) {
+        if (isCancelled()) return
+        const snip = snips[i]
+        const snipNumber = i + 1
+        try {
+          const inspection = await recordingSlicesApi.inspectRange(
+            selectedRecording,
+            snip.startMs,
+            snip.endMs,
+            selectedRecording.mimeType ?? null,
+          )
+          observedDurationMs += inspection.durationMs
+          okCount += 1
+          const driftMs = Math.abs(inspection.durationMs - Math.max(0, snip.durationMs))
+          const silent = inspection.sampleCount > 0 && inspection.rms <= 0.00001 && inspection.peak <= 0.00005
+          const status: DoctorSegmentStatus = driftMs > 500 ? 'warn' : silent ? 'warn' : 'ok'
+          const reason = driftMs > 500 ? 'Decoded snip duration differs from expected' : silent ? 'Snip appears silent' : undefined
+          segments.push({
+            index: i,
+            startMs: snip.startMs,
+            endMs: snip.endMs,
+            status,
+            reason,
+            meta: {
+              snipNumber,
+              expectedMs: snip.durationMs,
+              decodedMs: inspection.durationMs,
+              driftMs,
+              rms: inspection.rms,
+              peak: inspection.peak,
+              sampleCount: inspection.sampleCount,
+            },
+          })
+        } catch (error) {
+          segments.push({
+            index: i,
+            startMs: snip.startMs,
+            endMs: snip.endMs,
+            status: 'error',
+            reason: error instanceof Error ? error.message : String(error),
+            meta: { snipNumber },
+          })
+        }
+
+        if (i % 5 === 0) {
+          setDoctorProgress({ label: 'Snip scan (each snip)', completed: i + 1, total: snips.length })
+          await yieldToUI()
+        }
+      }
+
+      setDoctorProgress({ label: 'Snip scan (each snip)', completed: snips.length, total: snips.length })
+      reports.snipScan = {
+        stepMs: 0,
+        totalDurationMs: snips.length > 0 ? snips[snips.length - 1].endMs : 0,
+        segments,
+        summary: summarizeReport(segments),
+        metrics: {
+          expectedDurationMs,
+          observedDurationMs,
+          expectedItemCount: snips.length,
+          observedItemCount: okCount,
+        },
+      }
+    }
+
+    try {
+      if (doctorSelections.sanityChecks) {
+        await runSanityChecks()
+      }
+      if (doctorSelections.chunkCoverageScan) {
+        await runChunkCoverageScan()
+      }
+      if (doctorSelections.rangeAccessScan) {
+        await runRangeAccessScan()
+      }
+      if (doctorSelections.chunkDecodeScan) {
+        await runChunkDecodeScan()
+      }
+      if (doctorSelections.snipScan) {
+        await runSnipScan()
+      }
+
+      if (isCancelled()) {
+        return
+      }
+
+      setDoctorReports(reports)
+    } catch (error) {
+      if (isCancelled()) {
+        return
+      }
+      setDoctorError(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (!isCancelled()) {
+        setDoctorRunning(false)
+        setDoctorProgress(null)
+      }
+    }
+  }, [
+    doctorSelections.chunkCoverageScan,
+    doctorSelections.chunkDecodeScan,
+    doctorSelections.rangeAccessScan,
+    doctorSelections.sanityChecks,
+    doctorSelections.snipScan,
+    selectedRecording,
+    selectedRecordingDurationMs,
+  ])
 
   const handleCloseDeveloperOverlay = () => {
     setDeveloperOverlayOpen(false)
@@ -961,25 +1897,21 @@ function App() {
         return
       }
 
+      const audio = new Audio()
       const url = ensureChunkPlaybackUrl(chunk)
       if (!url) {
         console.error('[UI] Missing chunk URL for playback', id)
         return
       }
-
-      const audio = new Audio()
       audio.src = url
       audio.volume = playbackVolume
 
-      const sessionStartMs = selectedRecording?.startedAt ?? chunk.startMs
-      const chunkDurationSeconds = Math.max(0, (chunk.endMs - chunk.startMs) / 1000)
-      const startTime = Math.max(0, (chunk.startMs - sessionStartMs) / 1000)
-      const endTime = startTime + chunkDurationSeconds
+      const startTime = 0
+      const endTime = 0
 
       audioRef.current?.pause()
 
       function cleanupListeners() {
-        audio.removeEventListener('timeupdate', handleTimeUpdate)
         audio.removeEventListener('ended', handlePlaybackComplete)
         audio.removeEventListener('error', handlePlaybackComplete)
       }
@@ -996,13 +1928,6 @@ function App() {
         finishPlayback()
       }
 
-      function handleTimeUpdate() {
-        if (chunkDurationSeconds > 0 && audio.currentTime >= endTime - 0.05) {
-          finishPlayback()
-        }
-      }
-
-      audio.addEventListener('timeupdate', handleTimeUpdate)
       audio.addEventListener('ended', handlePlaybackComplete)
       audio.addEventListener('error', handlePlaybackComplete)
 
@@ -1016,22 +1941,6 @@ function App() {
       })
 
       try {
-        if (audio.readyState < HTMLMediaElement.HAVE_METADATA) {
-          await new Promise<void>((resolve, reject) => {
-            const handleLoadedMetadata = () => {
-              audio.removeEventListener('loadedmetadata', handleLoadedMetadata)
-              audio.removeEventListener('error', handleMetadataError)
-              resolve()
-            }
-            const handleMetadataError = () => {
-              audio.removeEventListener('loadedmetadata', handleLoadedMetadata)
-              audio.removeEventListener('error', handleMetadataError)
-              reject(new Error('Failed to load chunk metadata'))
-            }
-            audio.addEventListener('loadedmetadata', handleLoadedMetadata)
-            audio.addEventListener('error', handleMetadataError)
-          })
-        }
         audio.currentTime = startTime
         await audio.play()
         setChunkPlayingId(id)
@@ -1040,7 +1949,108 @@ function App() {
         finishPlayback()
       }
     },
-    [chunkPlayingId, ensureChunkPlaybackUrl, isHeaderSegment, playbackVolume, selectedRecording?.startedAt],
+    [chunkPlayingId, ensureChunkPlaybackUrl, isHeaderSegment, playbackVolume],
+  )
+
+  const handleSnipPlayToggle = useCallback(
+    async (segment: SegmentSummary) => {
+      if (!selectedRecording) {
+        return
+      }
+      const snipKey = `snip-${segment.index}`
+      const audioEntries = snipAudioRef.current
+      const activeEntry = audioEntries.get(snipKey)
+
+      const stopEntry = (entryId: string, entry: ChunkPlaybackEntry) => {
+        entry.cleanup()
+        entry.audio.pause()
+        entry.audio.currentTime = entry.startTime
+        audioEntries.delete(entryId)
+      }
+
+      if (snipPlayingId === snipKey) {
+        if (activeEntry) {
+          stopEntry(snipKey, activeEntry)
+        }
+        setSnipPlayingId(null)
+        return
+      }
+
+      // Ensure any existing chunk playback is stopped before we start a snip.
+      chunkAudioRef.current.forEach((entry, entryId) => {
+        entry.cleanup()
+        entry.audio.pause()
+        entry.audio.currentTime = entry.startTime
+        chunkAudioRef.current.delete(entryId)
+      })
+      setChunkPlayingId(null)
+
+      for (const [entryId, entry] of audioEntries.entries()) {
+        stopEntry(entryId, entry)
+      }
+      setSnipPlayingId(null)
+
+      const resolved = await ensureSnipPlaybackUrl(segment)
+      if (!resolved) {
+        return
+      }
+
+      const audio = new Audio()
+      audio.src = resolved.url
+      audio.volume = playbackVolume
+
+      const durationSeconds = Math.max(0, (segment.endMs - segment.startMs) / 1000)
+      const startTime = 0
+      const endTime = durationSeconds
+
+      audioRef.current?.pause()
+
+      function cleanupListeners() {
+        audio.removeEventListener('timeupdate', handleTimeUpdate)
+        audio.removeEventListener('ended', handlePlaybackComplete)
+        audio.removeEventListener('error', handlePlaybackComplete)
+      }
+
+      function finishPlayback() {
+        cleanupListeners()
+        audio.pause()
+        audio.currentTime = startTime
+        audioEntries.delete(snipKey)
+        setSnipPlayingId((prev) => (prev === snipKey ? null : prev))
+      }
+
+      function handlePlaybackComplete() {
+        finishPlayback()
+      }
+
+      function handleTimeUpdate() {
+        if (durationSeconds > 0 && audio.currentTime >= endTime - 0.05) {
+          finishPlayback()
+        }
+      }
+
+      audio.addEventListener('timeupdate', handleTimeUpdate)
+      audio.addEventListener('ended', handlePlaybackComplete)
+      audio.addEventListener('error', handlePlaybackComplete)
+
+      const cleanup = () => cleanupListeners()
+
+      audioEntries.set(snipKey, {
+        audio,
+        cleanup,
+        startTime,
+        endTime,
+      })
+
+      try {
+        await audio.play()
+        setSnipPlayingId(snipKey)
+      } catch (error) {
+        console.error('[UI] Failed to play snip', error)
+        finishPlayback()
+      }
+    },
+    [ensureSnipPlaybackUrl, playbackVolume, selectedRecording, snipPlayingId],
   )
 
     const loadDeveloperTables = useCallback(async () => {
@@ -1333,6 +2343,17 @@ function App() {
                     </button>
                   ) : null}
                   {developerMode ? (
+                    <button
+                      className={`detail-doctor-toggle ${doctorOpen ? 'is-active' : ''}`}
+                      type="button"
+                      onClick={() => setDoctorOpen((prev) => !prev)}
+                      aria-pressed={doctorOpen}
+                      aria-label={doctorOpen ? 'Hide recording doctor diagnostics' : 'Show recording doctor diagnostics'}
+                    >
+                      🩺
+                    </button>
+                  ) : null}
+                  {developerMode ? (
                   <button
                     className={`detail-debug-toggle ${debugDetailsOpen ? 'is-active' : ''}`}
                     type="button"
@@ -1429,14 +2450,521 @@ function App() {
                   <h3>Transcription</h3>
                   <p className="detail-transcription-placeholder">Not yet implemented — will stream from Groq once wired.</p>
                 </div>
+                {developerMode && doctorOpen ? (
+                  <div className="detail-doctor">
+                    <div className="detail-doctor-header">
+                      <h3>Doctor diagnostics</h3>
+                      <div className="detail-doctor-actions">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            if (!selectedRecording) return
+                            setDoctorCopyStatus(null)
+                            setDoctorExportText(null)
+                            try {
+                              await manifestService.init()
+                              const activeLogSession = getActiveLogSession()
+                              const logSessionId = activeLogSession?.id ?? null
+                              const logEntriesRaw = logSessionId ? await manifestService.getLogEntries(logSessionId, 400) : []
+                              const compactText = buildCompactDoctorReport({
+                                session: selectedRecording,
+                                doctorReports,
+                                logs: logEntriesRaw.map((entry) => ({
+                                  level: entry.level,
+                                  message: entry.message,
+                                  timestamp: entry.timestamp,
+                                })),
+                              })
+                              // Keep a small export text visible so users can manual-copy on iOS.
+                              setDoctorExportText(compactText)
+                              try {
+                                await copyToClipboard(compactText)
+                                setDoctorCopyStatus('Copied compact report to clipboard.')
+                                window.setTimeout(() => setDoctorCopyStatus(null), 2500)
+                              } catch (error) {
+                                setDoctorCopyStatus('Clipboard copy blocked; compact report shown below (tap Select all).')
+                              }
+                            } catch (error) {
+                              setDoctorCopyStatus(`Copy failed: ${error instanceof Error ? error.message : String(error)}`)
+                            }
+                          }}
+                          disabled={doctorRunning}
+                        >
+                          Copy compact report
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            doctorRunIdRef.current += 1
+                            setDoctorRunning(false)
+                            setDoctorProgress(null)
+                          }}
+                          disabled={!doctorRunning}
+                        >
+                          Cancel
+                        </button>
+                        <button type="button" onClick={() => void runDoctorDiagnostics()} disabled={doctorRunning}>
+                          {doctorRunning ? 'Running…' : 'Run selected tests'}
+                        </button>
+                      </div>
+                    </div>
+                    {doctorCopyStatus ? <p className="detail-transcription-placeholder">{doctorCopyStatus}</p> : null}
+                    {doctorExportText ? (
+                      <div className="doctor-export">
+                        <div className="doctor-export-actions">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const textarea = document.getElementById('doctor-export-textarea') as HTMLTextAreaElement | null
+                              if (textarea) {
+                                textarea.focus()
+                                textarea.select()
+                              }
+                            }}
+                          >
+                            Select all
+                          </button>
+                          <button type="button" onClick={() => setDoctorExportText(null)}>
+                            Hide
+                          </button>
+                        </div>
+                        <textarea
+                          id="doctor-export-textarea"
+                          className="doctor-export-textarea"
+                          readOnly
+                          value={doctorExportText}
+                          rows={10}
+                        />
+                      </div>
+                    ) : null}
+
+                    <p className="detail-transcription-placeholder">
+                      Runs quick integrity checks to help identify whether corruption is in stored chunks or in range access/decoding.
+                    </p>
+
+                    <div className="doctor-test-list">
+                      <label className="doctor-test">
+                        <input
+                          type="checkbox"
+                          checked={doctorSelections.sanityChecks}
+                          disabled={doctorRunning}
+                          onChange={(event) =>
+                            setDoctorSelections((prev) => ({ ...prev, sanityChecks: event.target.checked }))
+                          }
+                        />
+                        <span>Sanity checks (durations, snip bounds, chunk timing)</span>
+                      </label>
+                      <label className="doctor-test">
+                        <input
+                          type="checkbox"
+                          checked={doctorSelections.chunkCoverageScan}
+                          disabled={doctorRunning}
+                          onChange={(event) =>
+                            setDoctorSelections((prev) => ({ ...prev, chunkCoverageScan: event.target.checked }))
+                          }
+                        />
+                        <span>Chunk coverage scan (IndexedDB timings/coverage, 0.1s)</span>
+                      </label>
+                      <label className="doctor-test">
+                        <input
+                          type="checkbox"
+                          checked={doctorSelections.rangeAccessScan}
+                          disabled={doctorRunning}
+                          onChange={(event) =>
+                            setDoctorSelections((prev) => ({ ...prev, rangeAccessScan: event.target.checked }))
+                          }
+                        />
+                        <span>Range access scan via slice API (decode+inspect, 0.1s)</span>
+                      </label>
+                      <label className="doctor-test">
+                        <input
+                          type="checkbox"
+                          checked={doctorSelections.chunkDecodeScan}
+                          disabled={doctorRunning}
+                          onChange={(event) =>
+                            setDoctorSelections((prev) => ({ ...prev, chunkDecodeScan: event.target.checked }))
+                          }
+                        />
+                        <span>Per-chunk decode scan (decode each chunk blob)</span>
+                      </label>
+                      <label className="doctor-test">
+                        <input
+                          type="checkbox"
+                          checked={doctorSelections.snipScan}
+                          disabled={doctorRunning}
+                          onChange={(event) =>
+                            setDoctorSelections((prev) => ({ ...prev, snipScan: event.target.checked }))
+                          }
+                        />
+                        <span>Snip scan (inspect each snip range)</span>
+                      </label>
+                    </div>
+
+                    {doctorProgress ? (
+                      <p className="detail-transcription-placeholder">
+                        {doctorProgress.label}: {doctorProgress.completed}/{doctorProgress.total}
+                      </p>
+                    ) : null}
+                    {doctorError ? (
+                      <p className="detail-transcription-placeholder" role="alert">
+                        {doctorError}
+                      </p>
+                    ) : null}
+
+                    {doctorReports?.sanity ? (
+                      <div className="doctor-report">
+                        <h4>Sanity checks</h4>
+                        <p className="doctor-summary">
+                          Session duration: {((doctorReports.sanity.metrics.sessionDurationMs ?? 0) / 1000).toFixed(1)}s · Chunk
+                          timebase: {doctorReports.sanity.metrics.chunkTimebase} · Chunk max end:{' '}
+                          {((doctorReports.sanity.metrics.chunkMaxOffsetMs ?? 0) / 1000).toFixed(1)}s · Chunk sum:{' '}
+                          {((doctorReports.sanity.metrics.chunkSumDurationMs ?? 0) / 1000).toFixed(1)}s · Snips:{' '}
+                          {doctorReports.sanity.metrics.snipCount ?? 0} · Snip max end:{' '}
+                          {((doctorReports.sanity.metrics.snipMaxEndMs ?? 0) / 1000).toFixed(1)}s · Snip sum:{' '}
+                          {((doctorReports.sanity.metrics.snipSumDurationMs ?? 0) / 1000).toFixed(1)}s
+                        </p>
+                        <div className="doctor-report-actions">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              downloadDoctorJson(`sanity-${selectedRecording.id}`, {
+                                sessionId: selectedRecording.id,
+                                mimeType: selectedRecording.mimeType,
+                                report: doctorReports.sanity,
+                              })
+                            }
+                          >
+                            Download JSON
+                          </button>
+                        </div>
+                        <div className="doctor-details">
+                          {doctorReports.sanity.findings.length === 0 ? (
+                            <p className="detail-transcription-placeholder">No findings.</p>
+                          ) : (
+                            doctorReports.sanity.findings.map((finding, idx) => (
+                              <div key={idx} className={`doctor-detail-row is-${finding.level === 'info' ? 'ok' : finding.level}`}>
+                                <div className="doctor-detail-main">
+                                  <span className="doctor-detail-badge">{finding.level.toUpperCase()}</span>
+                                  <span className="doctor-detail-reason">{finding.message}</span>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {(() => {
+                      const report = doctorReports?.chunkCoverage
+                      if (!report) return null
+                      return (
+                        <div className="doctor-report">
+                          <h4>Chunk coverage scan</h4>
+                          <div className="doctor-bar" role="img" aria-label="Chunk coverage results timeline">
+                            {report.segments.map((segment) => (
+                              <span
+                                key={segment.index}
+                                className={`doctor-segment is-${segment.status}`}
+                                title={`${formatTimecodeTenths(segment.startMs)}–${formatTimecodeTenths(segment.endMs)}${
+                                  segment.reason ? ` · ${segment.reason}` : ''
+                                }`}
+                              />
+                            ))}
+                          </div>
+                          <p className="doctor-summary">
+                            OK {report.summary.ok} ({formatPercent(report.summary.ok, report.summary.total)}) · Warn{' '}
+                            {report.summary.warn} ({formatPercent(report.summary.warn, report.summary.total)}) · Error{' '}
+                            {report.summary.error} ({formatPercent(report.summary.error, report.summary.total)})
+                          </p>
+                          <p className="doctor-summary">
+                            Expected audio: {((report.metrics.expectedDurationMs ?? 0) / 1000).toFixed(1)}s · Observed audio:{' '}
+                            {((report.metrics.observedDurationMs ?? 0) / 1000).toFixed(1)}s · Expected segments:{' '}
+                            {report.metrics.expectedItemCount ?? 0} · Observed segments: {report.metrics.observedItemCount ?? 0}
+                          </p>
+                          <div className="doctor-report-actions">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                downloadDoctorJson(`chunk-coverage-${selectedRecording.id}`, {
+                                  sessionId: selectedRecording.id,
+                                  mimeType: selectedRecording.mimeType,
+                                  report,
+                                })
+                              }
+                            >
+                              Download JSON
+                            </button>
+                          </div>
+                          <div className="doctor-details">
+                            {groupSegmentsByReason(report.segments)
+                              .filter((group) => group.status !== 'ok')
+                              .map((group) => (
+                                <div
+                                  key={`${group.status}:${group.reason}`}
+                                  className={`doctor-detail-row is-${group.status}`}
+                                >
+                                  <div className="doctor-detail-main">
+                                    <span className="doctor-detail-badge">{group.status.toUpperCase()}</span>
+                                    <span className="doctor-detail-reason">{group.reason}</span>
+                                    <span className="doctor-detail-count">
+                                      {group.count} ({formatPercent(group.count, report.summary.total)})
+                                    </span>
+                                  </div>
+                                  <div className="doctor-detail-examples">
+                                    {group.examples.map((segment) => (
+                                      <span key={segment.index} className="doctor-detail-example">
+                                        {formatTimecodeTenths(segment.startMs)}–{formatTimecodeTenths(segment.endMs)}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
+
+                    {(() => {
+                      const report = doctorReports?.rangeAccess
+                      if (!report) return null
+                      return (
+                        <div className="doctor-report">
+                          <h4>Range access scan (0.1s)</h4>
+                          <div className="doctor-bar" role="img" aria-label="Range access results timeline">
+                            {report.segments.map((segment) => (
+                              <span
+                                key={segment.index}
+                                className={`doctor-segment is-${segment.status}`}
+                                title={`${formatTimecodeTenths(segment.startMs)}–${formatTimecodeTenths(segment.endMs)}${
+                                  segment.reason ? ` · ${segment.reason}` : ''
+                                }`}
+                              />
+                            ))}
+                          </div>
+                          <p className="doctor-summary">
+                            OK {report.summary.ok} ({formatPercent(report.summary.ok, report.summary.total)}) · Warn{' '}
+                            {report.summary.warn} ({formatPercent(report.summary.warn, report.summary.total)}) · Error{' '}
+                            {report.summary.error} ({formatPercent(report.summary.error, report.summary.total)})
+                          </p>
+                          <p className="doctor-summary">
+                            Expected audio: {((report.metrics.expectedDurationMs ?? 0) / 1000).toFixed(1)}s · Observed audio:{' '}
+                            {((report.metrics.observedDurationMs ?? 0) / 1000).toFixed(1)}s · Expected windows:{' '}
+                            {report.metrics.expectedItemCount ?? 0} · Decoded windows: {report.metrics.observedItemCount ?? 0}
+                          </p>
+                          <div className="doctor-report-actions">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                downloadDoctorJson(`range-access-${selectedRecording.id}`, {
+                                  sessionId: selectedRecording.id,
+                                  mimeType: selectedRecording.mimeType,
+                                  report,
+                                })
+                              }
+                            >
+                              Download JSON
+                            </button>
+                          </div>
+                          <div className="doctor-details">
+                            {groupSegmentsByReason(report.segments)
+                              .filter((group) => group.status !== 'ok')
+                              .map((group) => (
+                                <div
+                                  key={`${group.status}:${group.reason}`}
+                                  className={`doctor-detail-row is-${group.status}`}
+                                >
+                                  <div className="doctor-detail-main">
+                                    <span className="doctor-detail-badge">{group.status.toUpperCase()}</span>
+                                    <span className="doctor-detail-reason">{group.reason}</span>
+                                    <span className="doctor-detail-count">
+                                      {group.count} ({formatPercent(group.count, report.summary.total)})
+                                    </span>
+                                  </div>
+                                  <div className="doctor-detail-examples">
+                                    {group.examples.map((segment) => (
+                                      <span key={segment.index} className="doctor-detail-example">
+                                        {formatTimecodeTenths(segment.startMs)}–{formatTimecodeTenths(segment.endMs)}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
+
+                    {(() => {
+                      const report = doctorReports?.chunkDecode
+                      if (!report) return null
+                      return (
+                        <div className="doctor-report">
+                          <h4>Per-chunk decode scan</h4>
+                          <div className="doctor-bar" role="img" aria-label="Per-chunk decode results timeline">
+                            {report.segments.map((segment) => (
+                              <span
+                                key={segment.index}
+                                className={`doctor-segment is-${segment.status}`}
+                                title={`Chunk #${segment.index + 1}${segment.reason ? ` · ${segment.reason}` : ''}`}
+                              />
+                            ))}
+                          </div>
+                          <p className="doctor-summary">
+                            OK {report.summary.ok} ({formatPercent(report.summary.ok, report.summary.total)}) · Warn{' '}
+                            {report.summary.warn} ({formatPercent(report.summary.warn, report.summary.total)}) · Error{' '}
+                            {report.summary.error} ({formatPercent(report.summary.error, report.summary.total)})
+                          </p>
+                          <p className="doctor-summary">
+                            Expected audio: {((report.metrics.expectedDurationMs ?? 0) / 1000).toFixed(1)}s · Decoded audio:{' '}
+                            {((report.metrics.observedDurationMs ?? 0) / 1000).toFixed(1)}s · Expected chunks:{' '}
+                            {report.metrics.expectedItemCount ?? 0} · Decoded chunks: {report.metrics.observedItemCount ?? 0}
+                          </p>
+                          <div className="doctor-report-actions">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                downloadDoctorJson(`chunk-decode-${selectedRecording.id}`, {
+                                  sessionId: selectedRecording.id,
+                                  mimeType: selectedRecording.mimeType,
+                                  report,
+                                })
+                              }
+                            >
+                              Download JSON
+                            </button>
+                          </div>
+                          <div className="doctor-details">
+                            {groupSegmentsByReason(report.segments)
+                              .filter((group) => group.status !== 'ok')
+                              .map((group) => (
+                                <div
+                                  key={`${group.status}:${group.reason}`}
+                                  className={`doctor-detail-row is-${group.status}`}
+                                >
+                                  <div className="doctor-detail-main">
+                                    <span className="doctor-detail-badge">{group.status.toUpperCase()}</span>
+                                    <span className="doctor-detail-reason">{group.reason}</span>
+                                    <span className="doctor-detail-count">
+                                      {group.count} ({formatPercent(group.count, report.summary.total)})
+                                    </span>
+                                  </div>
+                                  <div className="doctor-detail-examples">
+                                    {group.examples.map((segment) => (
+                                      <span key={segment.index} className="doctor-detail-example">
+                                        #{segment.index + 1}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
+
+                    {(() => {
+                      const report = doctorReports?.snipScan
+                      if (!report) return null
+                      return (
+                        <div className="doctor-report">
+                          <h4>Snip scan (each snip)</h4>
+                          <div className="doctor-bar" role="img" aria-label="Snip scan results timeline">
+                            {report.segments.map((segment) => (
+                              <span
+                                key={segment.index}
+                                className={`doctor-segment is-${segment.status}`}
+                                title={`Snip #${segment.index + 1} · ${formatTimecodeTenths(segment.startMs)}–${formatTimecodeTenths(
+                                  segment.endMs,
+                                )}${segment.reason ? ` · ${segment.reason}` : ''}`}
+                              />
+                            ))}
+                          </div>
+                          <p className="doctor-summary">
+                            OK {report.summary.ok} ({formatPercent(report.summary.ok, report.summary.total)}) · Warn{' '}
+                            {report.summary.warn} ({formatPercent(report.summary.warn, report.summary.total)}) · Error{' '}
+                            {report.summary.error} ({formatPercent(report.summary.error, report.summary.total)})
+                          </p>
+                          <p className="doctor-summary">
+                            Expected audio: {((report.metrics.expectedDurationMs ?? 0) / 1000).toFixed(1)}s · Observed audio:{' '}
+                            {((report.metrics.observedDurationMs ?? 0) / 1000).toFixed(1)}s · Expected snips:{' '}
+                            {report.metrics.expectedItemCount ?? 0} · Decoded snips: {report.metrics.observedItemCount ?? 0}
+                          </p>
+                          <div className="doctor-report-actions">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                downloadDoctorJson(`snip-scan-${selectedRecording.id}`, {
+                                  sessionId: selectedRecording.id,
+                                  mimeType: selectedRecording.mimeType,
+                                  report,
+                                })
+                              }
+                            >
+                              Download JSON
+                            </button>
+                          </div>
+                          <div className="doctor-details">
+                            {groupSegmentsByReason(report.segments)
+                              .filter((group) => group.status !== 'ok')
+                              .map((group) => (
+                                <div key={`${group.status}:${group.reason}`} className={`doctor-detail-row is-${group.status}`}>
+                                  <div className="doctor-detail-main">
+                                    <span className="doctor-detail-badge">{group.status.toUpperCase()}</span>
+                                    <span className="doctor-detail-reason">{group.reason}</span>
+                                    <span className="doctor-detail-count">
+                                      {group.count} ({formatPercent(group.count, report.summary.total)})
+                                    </span>
+                                  </div>
+                                  <div className="doctor-detail-examples">
+                                    {group.examples.map((segment) => (
+                                      <span key={segment.index} className="doctor-detail-example">
+                                        #{segment.index + 1}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
+                  </div>
+                ) : null}
                 {developerMode && debugDetailsOpen ? (
                   <div className="detail-chunks">
-                    <h3>
-                      Chunks ({playableChunkCount}{headerChunk ? ' + init' : ''}) · {selectedRecording.mimeType ?? 'pending'}
-                    </h3>
-                    {chunkData.length === 0 ? (
-                      <p className="detail-transcription-placeholder">No chunks persisted yet.</p>
-                    ) : (
+                    <div className="detail-slices-header">
+                      <h3>
+                        {detailSliceMode === 'chunks'
+                          ? `Chunks (${playableChunkCount}${headerChunk ? ' + init' : ''})`
+                          : `Snips (${sessionAnalysis?.segments?.length ?? 0})`}{' '}
+                        · {selectedRecording.mimeType ?? 'pending'}
+                      </h3>
+                      <div className="detail-slice-toggle" role="tablist" aria-label="Slice mode">
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={detailSliceMode === 'chunks'}
+                          className={detailSliceMode === 'chunks' ? 'is-selected' : ''}
+                          onClick={() => setDetailSliceMode('chunks')}
+                        >
+                          Chunks
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          aria-selected={detailSliceMode === 'snips'}
+                          className={detailSliceMode === 'snips' ? 'is-selected' : ''}
+                          onClick={() => setDetailSliceMode('snips')}
+                        >
+                          Snips
+                        </button>
+                      </div>
+                    </div>
+
+                    {detailSliceMode === 'chunks' ? (
+                      chunkData.length === 0 ? (
+                        <p className="detail-transcription-placeholder">No chunks persisted yet.</p>
+                      ) : (
                         <ul className="chunk-list">
                           {chunkData.map((chunk) => {
                             const durationSeconds = Math.max(0, (chunk.endMs - chunk.startMs) / 1000)
@@ -1481,6 +3009,53 @@ function App() {
                             )
                           })}
                         </ul>
+                      )
+                    ) : analysisState === 'loading' ? (
+                      <p className="detail-transcription-placeholder">Analyzing audio for snips…</p>
+                    ) : analysisState === 'error' ? (
+                      <p className="detail-transcription-placeholder" role="alert">
+                        {analysisError ?? 'Unable to analyze audio.'}
+                      </p>
+                    ) : sessionAnalysis?.segments?.length ? (
+                      <ul className="chunk-list">
+                        {sessionAnalysis.segments.map((segment) => {
+                          const snipNumber = segment.index + 1
+                          const durationSeconds = Math.max(0, segment.durationMs / 1000)
+                          const decimalPlaces = durationSeconds < 10 ? 2 : 1
+                          const durationLabel = `${durationSeconds.toFixed(decimalPlaces)} s`
+                          const snipKey = `snip-${segment.index}`
+                          const isSnipPlaying = snipPlayingId === snipKey
+                          const playLabel = isSnipPlaying ? `Pause snip ${snipNumber}` : `Play snip ${snipNumber}`
+                          return (
+                            <li key={snipKey} className="chunk-item">
+                              <button
+                                type="button"
+                                className={`chunk-play ${isSnipPlaying ? 'is-playing' : ''}`}
+                                onClick={() => void handleSnipPlayToggle(segment)}
+                                aria-pressed={isSnipPlaying}
+                                aria-label={playLabel}
+                              >
+                                {isSnipPlaying ? '⏸' : '▶'}
+                              </button>
+                              <span>#{snipNumber}</span>
+                              <span>{durationLabel}</span>
+                              <span>
+                                {formatTimecode(Math.round(segment.startMs / 1000))} → {formatTimecode(Math.round(segment.endMs / 1000))}
+                              </span>
+                              <button
+                                type="button"
+                                className="chunk-download"
+                                onClick={() => void handleSnipDownload(segment, snipNumber)}
+                                aria-label={`Download snip ${snipNumber}`}
+                              >
+                                ⬇
+                              </button>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    ) : (
+                      <p className="detail-transcription-placeholder">No snips available yet.</p>
                     )}
                   </div>
                 ) : null}

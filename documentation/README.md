@@ -19,7 +19,7 @@ This document tracks the real-world readiness of core capabilities. Status is in
 | Continuous capture tee | 🟨 In progress | Continuous MediaRecorder capture + fixed snips working; AudioWorklet analysis still pending. |
 | Chunk persistence & durability | 🟨 In progress | IndexedDB manifest persists chunks with deterministic timing verification; upload/backoff plumbing still outstanding. |
 | Recording playback | 🟨 In progress | Combined chunk playback available; needs waveform scrubber & buffering polish. |
-| Adaptive snip logic | 🟥 Not implemented | DSP/VAD analysis module not wired; snip timing currently conceptual. |
+| Adaptive snip logic | 🟨 In progress | Snip segments derived from chunk volume profiles and surfaced in the detail debug panel; AudioWorklet/live metrics still pending. |
 | Live transcription | 🟥 Not implemented | UI simulates streaming text; no Groq/Whisper integration yet. |
 | Settings & Groq key intake | 🟨 In progress | Settings modal persists Groq key + developer storage limits; integration pending. |
 | Telemetry & safeguards | 🟥 Not implemented | Offline, low-storage, and device-change handling TBD. |
