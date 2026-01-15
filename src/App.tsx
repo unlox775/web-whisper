@@ -345,6 +345,7 @@ function App() {
   const [sessionAnalysis, setSessionAnalysis] = useState<SessionAnalysis | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [snipTranscriptionState, setSnipTranscriptionState] = useState<Record<string, boolean>>({})
+  const [isBulkTranscribing, setIsBulkTranscribing] = useState(false)
 
   const streamCursor = useRef(1)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -1192,6 +1193,30 @@ function App() {
     },
     [selectedRecording, transcribeSnip],
   )
+
+  const handleRetryAllTranscriptions = useCallback(async () => {
+    if (!selectedRecording || isBulkTranscribing) {
+      return
+    }
+    setIsBulkTranscribing(true)
+    try {
+      const snips =
+        snipRecords.length > 0
+          ? snipRecords
+          : await recordingSlicesApi.listSnips(selectedRecording, selectedRecording.mimeType ?? null)
+      if (snips.length === 0) {
+        return
+      }
+      if (snipRecords.length === 0) {
+        setSnipRecords(snips)
+      }
+      for (const snip of snips) {
+        await transcribeSnip({ session: selectedRecording, snip, updateUi: true, force: true })
+      }
+    } finally {
+      setIsBulkTranscribing(false)
+    }
+  }, [isBulkTranscribing, selectedRecording, snipRecords, transcribeSnip])
 
   const autoTranscribeSnipsForSession = useCallback(
     async (sessionId: string) => {
@@ -2877,6 +2902,16 @@ function App() {
                   ) : null}
                 <div className="detail-transcription">
                   <h3>Transcription</h3>
+                  <div className="detail-transcription-actions">
+                    <button
+                      type="button"
+                      className="detail-transcription-retry"
+                      onClick={() => void handleRetryAllTranscriptions()}
+                      disabled={isBulkTranscribing || snipRecords.length === 0}
+                    >
+                      {isBulkTranscribing ? 'Retrying…' : 'Retry TX'}
+                    </button>
+                  </div>
                   {snipRecords.length === 0 ? (
                     <p className="detail-transcription-placeholder">No snips recorded yet.</p>
                   ) : snipTranscriptionSummary.transcribedCount === 0 ? (

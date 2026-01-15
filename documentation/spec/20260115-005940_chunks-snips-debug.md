@@ -34,6 +34,8 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-221500: Snip list now displays transcription text with tap-to-select for easy copying.
 - 20260115-221500: Auto-transcribe snips when recording stops (serial Groq calls) and show previews in the session list.
 - 20260115-221500: Added per-recording delete action plus a 15s no-audio timeout that beeps and stops recording.
+- 20260115-225500: Removed range/decoder caching in `recordingSlicesApi` to avoid stale decode state.
+- 20260115-225500: Added non-developer “Retry TX” action to retrigger all snip transcriptions.
 
 ## 🚧 In progress
 

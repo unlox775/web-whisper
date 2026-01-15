@@ -126,17 +126,6 @@ const sliceAudioBufferToMono = (
 export class RecordingSlicesApi {
   #manifest: ManifestService
   #analysisProvider: SessionAnalysisProvider
-  #decodedCache = new Map<string, { cacheKey: string; buffer: AudioBuffer }>()
-  #chunkIndexCache = new Map<
-    string,
-    {
-      cacheKey: string
-      baseStartMs: number
-      headerChunk: StoredChunk | null
-      playable: Array<StoredChunk & { startOffsetMs: number; endOffsetMs: number }>
-    }
-  >()
-  #chunkDecodeCache = new Map<string, { cacheKey: string; buffer: AudioBuffer }>()
   #audioContext: AudioContext | null = null
 
   constructor(manifest: ManifestService = manifestService, analysisProvider?: SessionAnalysisProvider) {
@@ -230,12 +219,6 @@ export class RecordingSlicesApi {
     playable: Array<StoredChunk & { startOffsetMs: number; endOffsetMs: number }>
   }> {
     await this.#ensureInit()
-    const cacheKey = [session.id, session.updatedAt ?? 0, session.chunkCount ?? 0].join(':')
-    const cached = this.#chunkIndexCache.get(session.id)
-    if (cached?.cacheKey === cacheKey) {
-      return { baseStartMs: cached.baseStartMs, headerChunk: cached.headerChunk, playable: cached.playable }
-    }
-
     const chunks = await this.#manifest.getChunkData(session.id)
     const sessionMime = session.mimeType ?? ''
     const isMp4Like = /mp4|m4a/i.test(sessionMime)
@@ -258,17 +241,10 @@ export class RecordingSlicesApi {
       return { ...chunk, startOffsetMs: Math.max(0, startOffsetMs), endOffsetMs: Math.max(0, endOffsetMs) }
     })
 
-    this.#chunkIndexCache.set(session.id, { cacheKey, baseStartMs, headerChunk, playable })
     return { baseStartMs, headerChunk, playable }
   }
 
   async #decodeChunkToBuffer(session: SessionRecord, chunk: StoredChunk, headerChunk: StoredChunk | null): Promise<AudioBuffer> {
-    const cacheKey = [session.id, session.updatedAt ?? 0, session.chunkCount ?? 0].join(':')
-    const cached = this.#chunkDecodeCache.get(chunk.id)
-    if (cached?.cacheKey === cacheKey) {
-      return cached.buffer
-    }
-
     const mimeType = chunk.blob.type || session.mimeType || 'audio/mp4'
     const needsInit = headerChunk && headerChunk.id !== chunk.id && MP4_MIME_PATTERN.test(mimeType)
     const blob = needsInit ? new Blob([headerChunk.blob, chunk.blob], { type: mimeType }) : chunk.blob
@@ -276,7 +252,6 @@ export class RecordingSlicesApi {
     const audioContext = await this.#getAudioContext()
     const arrayBuffer = await blob.arrayBuffer()
     const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0))
-    this.#chunkDecodeCache.set(chunk.id, { cacheKey, buffer: decoded })
     return decoded
   }
 
@@ -433,10 +408,7 @@ export class RecordingSlicesApi {
   }
 
   clearSession(sessionId: string): void {
-    this.#decodedCache.delete(sessionId)
-    this.#chunkIndexCache.delete(sessionId)
-    // Chunk ids don't encode sessionId; clear the decode cache to avoid unbounded growth.
-    this.#chunkDecodeCache.clear()
+    void sessionId
   }
 }
 
