@@ -1410,6 +1410,8 @@ function App() {
           return
         }
 
+        let anySuccess = false
+        const failedSnips: SnipRecord[] = []
         for (const snip of snips) {
           if (getSnipTranscriptionText(snip)) {
             continue
@@ -1422,9 +1424,11 @@ function App() {
             reportError: false,
           })
           if (firstAttempt.ok) {
+            anySuccess = true
             continue
           }
           if (firstAttempt.error && /Groq API key missing/i.test(firstAttempt.error)) {
+            failedSnips.push(snip)
             continue
           }
           const shouldRetry = firstAttempt.error
@@ -1433,7 +1437,7 @@ function App() {
           if (shouldRetry) {
             await sleep(1500)
           }
-          await transcribeSnip({
+          const retryResult = await transcribeSnip({
             session,
             snip,
             updateUi: selectedRecording?.id === sessionId,
@@ -1441,6 +1445,24 @@ function App() {
             ignoreBusy: true,
             reportError: true,
           })
+          if (retryResult.ok) {
+            anySuccess = true
+          } else {
+            failedSnips.push(snip)
+          }
+        }
+        if (anySuccess && failedSnips.length > 0) {
+          await sleep(2000)
+          for (const snip of failedSnips) {
+            await transcribeSnip({
+              session,
+              snip,
+              updateUi: selectedRecording?.id === sessionId,
+              force: true,
+              ignoreBusy: true,
+              reportError: true,
+            })
+          }
         }
       } finally {
         autoTranscribeSessionsRef.current.delete(sessionId)
@@ -2784,10 +2806,18 @@ function App() {
   const bufferLabel = `${formatDataSize(bufferTotals.totalBytes)} / ${formatDataSize(bufferTotals.limitBytes)}`
   const hasAudioFlow = captureState.state === 'recording' && captureState.chunksRecorded > 0
   const capturedAudioMs =
-    hasAudioFlow && captureState.startedAt && captureState.lastChunkAt
-      ? Math.max(0, captureState.lastChunkAt - captureState.startedAt)
-      : 0
+    captureState.state === 'recording'
+      ? Math.max(0, recordingElapsedMs)
+      : captureState.startedAt && captureState.lastChunkAt
+        ? Math.max(0, captureState.lastChunkAt - captureState.startedAt)
+        : 0
   const capturedAudioLabel = `${(capturedAudioMs / 1000).toFixed(1)}s`
+  const estimatedBytes =
+    captureState.state === 'recording' && settings?.targetBitrate
+      ? Math.round((Math.max(0, recordingElapsedMs) / 1000) * (settings.targetBitrate / 8))
+      : 0
+  const displayedBytes =
+    captureState.state === 'recording' ? Math.max(captureState.bytesBuffered, estimatedBytes) : captureState.bytesBuffered
   const displayDurationMs = selectedRecording && selectedRecording.id === captureState.sessionId && captureState.state === 'recording'
     ? recordingElapsedMs
     : selectedRecordingDurationMs ?? selectedRecording?.durationMs ?? 0
@@ -2809,7 +2839,7 @@ function App() {
           </div>
           <div className="header-controls">
           <div className="buffer-card" role="status" aria-live="polite">
-            <p className="buffer-label">Buffered locally</p>
+            <p className="buffer-label">Data stored</p>
             <p className="buffer-value">{bufferLabel}</p>
           </div>
           {developerMode ? (
@@ -2838,7 +2868,7 @@ function App() {
               Audio captured: {capturedAudioLabel} · Segments: {effectiveChunkCount}
               {hasInitSegment ? ' + init' : ''}
             </span>
-            <span>Data size: {formatDataSize(captureState.bytesBuffered)}</span>
+            <span>Data size: {formatDataSize(displayedBytes)}</span>
           </div>
         ) : null}
 
@@ -2934,7 +2964,13 @@ function App() {
           <div className="controls-card">
             <h2>Capture</h2>
             <button
-              className={`record-toggle ${captureState.state === 'recording' ? 'record-toggle-stop' : 'record-toggle-start'}`}
+              className={`record-toggle ${
+                captureState.state === 'recording'
+                  ? hasAudioFlow
+                    ? 'record-toggle-stop'
+                    : 'record-toggle-starting'
+                  : 'record-toggle-start'
+              }`}
               type="button"
               onClick={handleRecordToggle}
               aria-pressed={captureState.state === 'recording'}
