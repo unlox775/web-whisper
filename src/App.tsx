@@ -1174,12 +1174,14 @@ function App() {
       updateUi,
       force,
       ignoreBusy = false,
+      reportError = true,
     }: {
       session: SessionRecord
       snip: SnipRecord
       updateUi: boolean
       force: boolean
       ignoreBusy?: boolean
+      reportError?: boolean
     }): Promise<{ ok: boolean; error?: string }> => {
       if (!force && getSnipTranscriptionText(snip)) {
         return { ok: true }
@@ -1254,17 +1256,19 @@ function App() {
         return { ok: true }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        await logError('Snip transcription failed', {
-          sessionId: session.id,
-          snipId: snip.id,
-          error: message,
-          startMs: snip.startMs,
-          endMs: snip.endMs,
-          durationMs: snip.durationMs,
-        })
-        const updated = await manifestService.updateSnipTranscription(snip.id, { transcriptionError: message })
-        if (updateUi && updated) {
-          setSnipRecords((prev) => prev.map((record) => (record.id === updated.id ? updated : record)))
+        if (reportError) {
+          await logError('Snip transcription failed', {
+            sessionId: session.id,
+            snipId: snip.id,
+            error: message,
+            startMs: snip.startMs,
+            endMs: snip.endMs,
+            durationMs: snip.durationMs,
+          })
+          const updated = await manifestService.updateSnipTranscription(snip.id, { transcriptionError: message })
+          if (updateUi && updated) {
+            setSnipRecords((prev) => prev.map((record) => (record.id === updated.id ? updated : record)))
+          }
         }
         return { ok: false, error: message }
       } finally {
@@ -1403,20 +1407,33 @@ function App() {
           if (getSnipTranscriptionText(snip)) {
             continue
           }
-          const result = await transcribeSnip({ session, snip, updateUi: selectedRecording?.id === sessionId, force: false })
-          if (!result.ok && result.error) {
-            const shouldRetry = /decode|object can not be found here|Snip audio slice is empty/i.test(result.error)
-            if (shouldRetry) {
-              await sleep(1500)
-              await transcribeSnip({
-                session,
-                snip,
-                updateUi: selectedRecording?.id === sessionId,
-                force: true,
-                ignoreBusy: true,
-              })
-            }
+          const firstAttempt = await transcribeSnip({
+            session,
+            snip,
+            updateUi: selectedRecording?.id === sessionId,
+            force: false,
+            reportError: false,
+          })
+          if (firstAttempt.ok) {
+            continue
           }
+          if (firstAttempt.error && /Groq API key missing/i.test(firstAttempt.error)) {
+            continue
+          }
+          const shouldRetry = firstAttempt.error
+            ? /decode|object can not be found here|Snip audio slice is empty/i.test(firstAttempt.error)
+            : true
+          if (shouldRetry) {
+            await sleep(1500)
+          }
+          await transcribeSnip({
+            session,
+            snip,
+            updateUi: selectedRecording?.id === sessionId,
+            force: true,
+            ignoreBusy: true,
+            reportError: true,
+          })
         }
       } finally {
         autoTranscribeSessionsRef.current.delete(sessionId)
