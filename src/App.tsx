@@ -1166,17 +1166,17 @@ function App() {
     document.body.removeChild(textarea)
   }
 
-  const inferChunkTimebase = (chunks: StoredChunk[], sessionStartMs: number): 'absolute' | 'offset' | 'unknown' => {
+  const inferChunkTimebase = (chunks: StoredChunk[], baseStartMs: number): 'absolute' | 'offset' | 'unknown' => {
     const sample = chunks.find((chunk) => chunk.seq > 0) ?? null
     if (!sample) return 'unknown'
-    if (sample.startMs > 1_000_000_000_000 && sessionStartMs > 1_000_000_000_000) return 'absolute'
+    if (sample.startMs > 1_000_000_000_000 && baseStartMs > 1_000_000_000_000) return 'absolute'
     if (sample.startMs >= 0 && sample.startMs < 86_400_000) return 'offset'
     return 'unknown'
   }
 
-  const toOffsetSpan = (chunk: Pick<StoredChunk, 'startMs' | 'endMs'>, sessionStartMs: number, timebase: string) => {
+  const toOffsetSpan = (chunk: Pick<StoredChunk, 'startMs' | 'endMs'>, baseStartMs: number, timebase: string) => {
     if (timebase === 'absolute') {
-      return { startMs: chunk.startMs - sessionStartMs, endMs: chunk.endMs - sessionStartMs }
+      return { startMs: chunk.startMs - baseStartMs, endMs: chunk.endMs - baseStartMs }
     }
     return { startMs: chunk.startMs, endMs: chunk.endMs }
   }
@@ -1196,10 +1196,15 @@ function App() {
     // Pull fresh chunk data for diagnostics so we don't race the detail-open effect.
     const chunksForDoctor = await manifestService.getChunkData(selectedRecording.id)
     const playableChunksForDoctor = chunksForDoctor.filter((chunk) => chunk.seq > 0)
-    const chunkTimebase = inferChunkTimebase(playableChunksForDoctor, selectedRecording.startedAt)
+    const baseStartMsCandidate =
+      chunksForDoctor.find((chunk) => chunk.seq === 0)?.startMs ??
+      playableChunksForDoctor[0]?.startMs ??
+      selectedRecording.startedAt
+    const baseStartMs = Number.isFinite(baseStartMsCandidate) ? Math.round(baseStartMsCandidate) : selectedRecording.startedAt
+    const chunkTimebase = inferChunkTimebase(playableChunksForDoctor, baseStartMs)
     const playableChunkOffsets = playableChunksForDoctor.map((chunk) => ({
       ...chunk,
-      ...toOffsetSpan(chunk, selectedRecording.startedAt, chunkTimebase),
+      ...toOffsetSpan(chunk, baseStartMs, chunkTimebase),
     }))
 
     const durationMsGuess =

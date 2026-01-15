@@ -121,6 +121,17 @@ export class RecordingSlicesApi {
   #manifest: ManifestService
   #analysisProvider: SessionAnalysisProvider
   #decodedCache = new Map<string, { cacheKey: string; buffer: AudioBuffer }>()
+  #chunkIndexCache = new Map<
+    string,
+    {
+      cacheKey: string
+      baseStartMs: number
+      headerChunk: StoredChunk | null
+      playable: Array<StoredChunk & { startOffsetMs: number; endOffsetMs: number }>
+    }
+  >()
+  #chunkDecodeCache = new Map<string, { cacheKey: string; buffer: AudioBuffer }>()
+  #audioContext: AudioContext | null = null
 
   constructor(manifest: ManifestService = manifestService, analysisProvider?: SessionAnalysisProvider) {
     this.#manifest = manifest
@@ -174,42 +185,122 @@ export class RecordingSlicesApi {
     }
   }
 
-  async #getDecodedBuffer(session: SessionRecord, mimeTypeHint?: string | null): Promise<AudioBuffer> {
+  async #getAudioContext(): Promise<AudioContext> {
     if (typeof window === 'undefined' || typeof window.AudioContext === 'undefined') {
       throw new Error('AudioContext is not supported in this environment.')
     }
+    if (this.#audioContext) {
+      return this.#audioContext
+    }
+    this.#audioContext = new AudioContext()
+    return this.#audioContext
+  }
 
+  async #getChunkIndex(session: SessionRecord): Promise<{
+    baseStartMs: number
+    headerChunk: StoredChunk | null
+    playable: Array<StoredChunk & { startOffsetMs: number; endOffsetMs: number }>
+  }> {
     await this.#ensureInit()
-    const cacheKey = [session.id, session.updatedAt ?? 0, session.chunkCount ?? 0, session.mimeType ?? mimeTypeHint ?? ''].join(':')
-    const cached = this.#decodedCache.get(session.id)
+    const cacheKey = [session.id, session.updatedAt ?? 0, session.chunkCount ?? 0].join(':')
+    const cached = this.#chunkIndexCache.get(session.id)
+    if (cached?.cacheKey === cacheKey) {
+      return { baseStartMs: cached.baseStartMs, headerChunk: cached.headerChunk, playable: cached.playable }
+    }
+
+    const chunks = await this.#manifest.getChunkData(session.id)
+    const headerChunk = chunks.find((chunk) => chunk.seq === 0) ?? null
+    const playableChunks = chunks.filter((chunk) => chunk.seq > 0).sort((a, b) => a.seq - b.seq)
+    const baseStartMsCandidate =
+      headerChunk?.startMs ??
+      (playableChunks.length > 0 ? playableChunks[0].startMs : session.startedAt ?? Date.now())
+    const baseStartMs = Number.isFinite(baseStartMsCandidate) ? Math.round(baseStartMsCandidate) : Date.now()
+    const looksAbsolute = baseStartMs > 1_000_000_000_000
+
+    const playable = playableChunks.map((chunk) => {
+      const startOffsetMs = looksAbsolute ? chunk.startMs - baseStartMs : chunk.startMs
+      const endOffsetMs = looksAbsolute ? chunk.endMs - baseStartMs : chunk.endMs
+      return { ...chunk, startOffsetMs: Math.max(0, startOffsetMs), endOffsetMs: Math.max(0, endOffsetMs) }
+    })
+
+    this.#chunkIndexCache.set(session.id, { cacheKey, baseStartMs, headerChunk, playable })
+    return { baseStartMs, headerChunk, playable }
+  }
+
+  async #decodeChunkToBuffer(session: SessionRecord, chunk: StoredChunk, headerChunk: StoredChunk | null): Promise<AudioBuffer> {
+    const cacheKey = [session.id, session.updatedAt ?? 0, session.chunkCount ?? 0].join(':')
+    const cached = this.#chunkDecodeCache.get(chunk.id)
     if (cached?.cacheKey === cacheKey) {
       return cached.buffer
     }
 
-    const mimeType = session.mimeType ?? mimeTypeHint ?? 'audio/mp4'
-    const blob = await this.#manifest.buildSessionBlob(session.id, mimeType)
-    if (!blob) {
-      throw new Error('No audio available yet.')
-    }
+    const mimeType = chunk.blob.type || session.mimeType || 'audio/mp4'
+    const needsInit = headerChunk && headerChunk.id !== chunk.id && MP4_MIME_PATTERN.test(mimeType)
+    const blob = needsInit ? new Blob([headerChunk.blob, chunk.blob], { type: mimeType }) : chunk.blob
 
+    const audioContext = await this.#getAudioContext()
     const arrayBuffer = await blob.arrayBuffer()
-    const audioContext = new AudioContext()
-    try {
-      const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0))
-      this.#decodedCache.set(session.id, { cacheKey, buffer: decoded })
-      return decoded
-    } finally {
-      await audioContext.close().catch(() => {
-        /* noop */
-      })
-    }
+    const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0))
+    this.#chunkDecodeCache.set(chunk.id, { cacheKey, buffer: decoded })
+    return decoded
   }
 
-  async getRangeAudio(session: SessionRecord, startMs: number, endMs: number, mimeTypeHint?: string | null): Promise<RecordingAudioSlice> {
-    const buffer = await this.#getDecodedBuffer(session, mimeTypeHint)
+  async #decodeRangeToMonoSamples(
+    session: SessionRecord,
+    startMs: number,
+    endMs: number,
+  ): Promise<{ samples: Float32Array; sampleRate: number; durationMs: number; startMs: number; endMs: number }> {
     const safeStartMs = Math.max(0, startMs)
     const safeEndMs = Math.max(safeStartMs, endMs)
-    const sliced = sliceAudioBufferToMono(buffer, safeStartMs, safeEndMs)
+    const { headerChunk, playable } = await this.#getChunkIndex(session)
+    if (playable.length === 0) {
+      return { samples: new Float32Array(0), sampleRate: 0, durationMs: 0, startMs: safeStartMs, endMs: safeStartMs }
+    }
+
+    const overlaps = playable.filter((chunk) => chunk.startOffsetMs < safeEndMs && chunk.endOffsetMs > safeStartMs)
+    if (overlaps.length === 0) {
+      return { samples: new Float32Array(0), sampleRate: 0, durationMs: 0, startMs: safeStartMs, endMs: safeStartMs }
+    }
+
+    const monoSlices: Float32Array[] = []
+    let totalSamples = 0
+    let sampleRate = 0
+
+    for (const chunk of overlaps) {
+      const buffer = await this.#decodeChunkToBuffer(session, chunk, headerChunk)
+      if (sampleRate === 0) sampleRate = buffer.sampleRate
+
+      const chunkDurationMs = buffer.duration * 1000
+      const overlapStartInChunkMs = Math.max(0, safeStartMs - chunk.startOffsetMs)
+      const overlapEndInChunkMs = Math.min(chunkDurationMs, safeEndMs - chunk.startOffsetMs)
+      if (overlapEndInChunkMs <= overlapStartInChunkMs) {
+        continue
+      }
+
+      const sliced = sliceAudioBufferToMono(buffer, overlapStartInChunkMs, overlapEndInChunkMs)
+      monoSlices.push(sliced.samples)
+      totalSamples += sliced.samples.length
+    }
+
+    if (sampleRate === 0 || totalSamples === 0) {
+      return { samples: new Float32Array(0), sampleRate, durationMs: 0, startMs: safeStartMs, endMs: safeStartMs }
+    }
+
+    const out = new Float32Array(totalSamples)
+    let offset = 0
+    monoSlices.forEach((slice) => {
+      out.set(slice, offset)
+      offset += slice.length
+    })
+    const durationMs = (out.length / sampleRate) * 1000
+    return { samples: out, sampleRate, durationMs, startMs: safeStartMs, endMs: safeStartMs + durationMs }
+  }
+
+  // NOTE: we intentionally avoid decoding the concatenated session blob for range access because
+  // browser decoders can truncate/lie on long fMP4 fragment concatenations. See chunk-based decode above.
+
+  async getRangeAudio(session: SessionRecord, startMs: number, endMs: number, _mimeTypeHint?: string | null): Promise<RecordingAudioSlice> {
+    const sliced = await this.#decodeRangeToMonoSamples(session, startMs, endMs)
     const blob = encodeWavPcm16Mono(sliced.samples, sliced.sampleRate)
     const iso = new Date(session.startedAt ?? Date.now()).toISOString().replace(/[:.]/g, '-')
 
@@ -229,12 +320,9 @@ export class RecordingSlicesApi {
     session: SessionRecord,
     startMs: number,
     endMs: number,
-    mimeTypeHint?: string | null,
+    _mimeTypeHint?: string | null,
   ): Promise<RecordingRangeInspection> {
-    const buffer = await this.#getDecodedBuffer(session, mimeTypeHint)
-    const safeStartMs = Math.max(0, startMs)
-    const safeEndMs = Math.max(safeStartMs, endMs)
-    const sliced = sliceAudioBufferToMono(buffer, safeStartMs, safeEndMs)
+    const sliced = await this.#decodeRangeToMonoSamples(session, startMs, endMs)
     const { samples, sampleRate } = sliced
     const sampleCount = samples.length
     let sumSquares = 0
@@ -268,6 +356,9 @@ export class RecordingSlicesApi {
 
   clearSession(sessionId: string): void {
     this.#decodedCache.delete(sessionId)
+    this.#chunkIndexCache.delete(sessionId)
+    // Chunk ids don't encode sessionId; clear the decode cache to avoid unbounded growth.
+    this.#chunkDecodeCache.clear()
   }
 }
 
