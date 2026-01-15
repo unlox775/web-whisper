@@ -106,3 +106,203 @@ A couple cleanup items, the download file name has mp4.mp3 which seems unnecessa
 also, it still shows “init +” in the in-progress indicator, and in the chunks ladybug list. 
 
 But everything else looks great!!
+
+Web Whisper — Doctor Report (compact)
+Session: 029e8aee-317c-485e-8a70-447fd841cd39
+StartedAt: 2026-01-15T17:43:19.163Z
+DurationMs: 20606  (=20.6s)
+Mime: audio/mpeg  Chunks: 5  Timing: verified
+
+Sanity:
+- chunkTimebase=absolute session=20.6s chunkMax=20.6s chunkSum=18.2s snips=1 snipMax=18.3s
+- WARN: Chunk timings have gaps in 1 places.
+- INFO: Session duration and chunk max end are close.
+- ERROR: Snips do not cover the full expected session duration (end too early).
+- WARN: Missing chunk volume profiles for 1 chunk(s).
+- INFO: Chunk volume profile metadata looks well-formed.
+- INFO: Chunk volume profile durations match chunk timings (within 250ms).
+
+Chunk coverage: OK=183 WARN=0 ERR=24 TOTAL=207
+- expected=20.6s observed=18.2s items=183/207
+- ERROR: No chunk covers this time range (24) e.g. 0:04.1–0:04.2, 0:04.2–0:04.3, 0:04.3–0:04.4
+
+Range access: OK=41 WARN=22 ERR=144 TOTAL=207
+- expected=20.6s observed=4.0s items=63/207
+- ERROR: The object can not be found here. (144) e.g. 0:04.0–0:04.1, 0:04.1–0:04.2, 0:04.2–0:04.3
+- WARN: Decoded slice shorter than expected (22) e.g. 0:18.4–0:18.5, 0:18.5–0:18.6, 0:18.6–0:18.7
+
+Per-chunk decode: OK=1 WARN=0 ERR=4 TOTAL=5
+- expected=18.2s observed=4.0s items=1/5
+- ERROR: The object can not be found here. (4) e.g. 0:06.4–0:10.4, 0:10.4–0:14.4, 0:14.4–0:18.4
+
+Snip scan: OK=0 WARN=0 ERR=1 TOTAL=1
+- expected=18.3s observed=0.0s items=0/1
+- ERROR: The object can not be found here. (1) e.g. 0:00.0–0:18.3
+
+Recent logs (last 30):
+- 2026-01-15T17:43:06.899Z info Logger initialised
+- 2026-01-15T17:43:08.640Z info Playback source prepared
+- 2026-01-15T17:43:15.826Z info Detail view closed
+- 2026-01-15T17:43:19.162Z info Recorder start requested
+- 2026-01-15T17:43:19.169Z info Requesting microphone stream
+- 2026-01-15T17:43:21.535Z info Microphone stream acquired
+- 2026-01-15T17:43:21.593Z info PCM capture started
+- 2026-01-15T17:43:21.612Z info Recorder started
+- 2026-01-15T17:43:26.246Z debug PCM chunk encoded
+- 2026-01-15T17:43:26.253Z info Chunk persisted
+- 2026-01-15T17:43:26.273Z debug Chunk volume profile stored
+- 2026-01-15T17:43:30.295Z debug PCM chunk encoded
+- 2026-01-15T17:43:30.303Z info Chunk persisted
+- 2026-01-15T17:43:30.311Z debug Chunk volume profile stored
+- 2026-01-15T17:43:34.333Z debug PCM chunk encoded
+- 2026-01-15T17:43:34.340Z info Chunk persisted
+- 2026-01-15T17:43:34.348Z debug Chunk volume profile stored
+- 2026-01-15T17:43:38.360Z debug PCM chunk encoded
+- 2026-01-15T17:43:38.365Z info Chunk persisted
+- 2026-01-15T17:43:38.373Z debug Chunk volume profile stored
+- 2026-01-15T17:43:40.462Z info Recorder stop requested
+- 2026-01-15T17:43:40.551Z debug PCM chunk encoded
+- 2026-01-15T17:43:40.559Z info Chunk persisted
+- 2026-01-15T17:43:40.567Z debug Chunk volume profile stored
+- 2026-01-15T17:43:40.568Z info Recorder stopped
+- 2026-01-15T17:43:40.568Z info Session timing reconciled
+- 2026-01-15T17:43:50.070Z info Playback source prepared
+
+
+Then I refreshed and ran the same report on the same recording…
+—————
+Web Whisper — Doctor Report (compact)
+Session: 029e8aee-317c-485e-8a70-447fd841cd39
+StartedAt: 2026-01-15T17:43:19.163Z
+DurationMs: 20606  (=20.6s)
+Mime: audio/mpeg  Chunks: 5  Timing: verified
+
+Sanity:
+- chunkTimebase=absolute session=20.6s chunkMax=18.3s chunkSum=18.3s snips=1 snipMax=18.3s
+- WARN: Session duration and chunk max end differ by >1s.
+- INFO: Snip end times are within expected duration.
+- WARN: Missing chunk volume profiles for 1 chunk(s).
+- INFO: Chunk volume profile metadata looks well-formed.
+- INFO: Chunk volume profile durations match chunk timings (within 250ms).
+
+Chunk coverage: OK=184 WARN=0 ERR=23 TOTAL=207
+- expected=20.6s observed=18.4s items=184/207
+- ERROR: No chunk covers this time range (23) e.g. 0:18.4–0:18.5, 0:18.5–0:18.6, 0:18.6–0:18.7
+
+Range access: OK=184 WARN=23 ERR=0 TOTAL=207
+- expected=20.6s observed=18.3s items=207/207
+- WARN: Decoded slice shorter than expected (23) e.g. 0:18.3–0:18.4, 0:18.4–0:18.5, 0:18.5–0:18.6
+
+Per-chunk decode: OK=5 WARN=0 ERR=0 TOTAL=5
+- expected=18.3s observed=18.3s items=5/5
+
+Snip scan: OK=1 WARN=0 ERR=0 TOTAL=1
+- expected=18.3s observed=18.3s items=1/1
+
+Recent logs (last 30):
+- 2026-01-15T17:44:27.459Z info Logger initialised
+- 2026-01-15T17:44:28.412Z info Playback source prepared
+
+
+=======
+
+Any idea why they were different?  No code changed between. And why still the errors on the second (or first if that one was more accurate)
+
+Gg
+
+
+Web Whisper — Doctor Report (compact)
+Session: d7ce9116-43a7-4986-86cc-3cc3d013ff69
+StartedAt: 2026-01-15T17:56:45.153Z
+DurationMs: 19627  (=19.6s)
+Mime: audio/mpeg  Chunks: 5  Timing: verified
+
+Sanity:
+- chunkTimebase=absolute session=19.6s chunkMax=19.6s chunkSum=19.7s snips=2 snipMax=19.8s
+- WARN: Chunk timings overlap in 1 places.
+- INFO: Session duration and chunk max end are close.
+- INFO: Snip end times are within expected duration.
+- INFO: Chunk volume profiles exist for all chunks.
+- INFO: Chunk volume profile metadata looks well-formed.
+- INFO: Chunk volume profile durations match chunk timings (within 250ms).
+
+Chunk coverage: OK=197 WARN=0 ERR=0 TOTAL=197
+- expected=19.6s observed=19.6s items=197/197
+
+Range access: OK=40 WARN=0 ERR=157 TOTAL=197
+- expected=19.6s observed=4.0s items=40/197
+- ERROR: The object can not be found here. (157) e.g. 0:04.0–0:04.1, 0:04.1–0:04.2, 0:04.2–0:04.3
+
+Per-chunk decode: OK=1 WARN=0 ERR=4 TOTAL=5
+- expected=19.7s observed=4.0s items=1/5
+- ERROR: The object can not be found here. (4) e.g. 0:04.0–0:08.0, 0:08.0–0:12.0, 0:12.0–0:16.0
+
+Snip scan: OK=0 WARN=0 ERR=2 TOTAL=2
+- expected=19.8s observed=0.0s items=0/2
+- ERROR: The object can not be found here. (2) e.g. 0:00.0–0:13.1, 0:13.1–0:19.8
+
+Recent logs (last 30):
+- 2026-01-15T17:56:39.895Z info Logger initialised
+- 2026-01-15T17:56:43.006Z info Recorder start requested
+- 2026-01-15T17:56:43.012Z info Requesting microphone stream
+- 2026-01-15T17:56:45.109Z info Microphone stream acquired
+- 2026-01-15T17:56:45.153Z info PCM capture started
+- 2026-01-15T17:56:45.185Z info Recorder started
+- 2026-01-15T17:56:49.338Z debug PCM chunk encoded
+- 2026-01-15T17:56:49.345Z info Chunk persisted
+- 2026-01-15T17:56:49.363Z debug Chunk volume profile stored
+- 2026-01-15T17:56:53.419Z debug PCM chunk encoded
+- 2026-01-15T17:56:53.427Z info Chunk persisted
+- 2026-01-15T17:56:53.435Z debug Chunk volume profile stored
+- 2026-01-15T17:56:57.482Z debug PCM chunk encoded
+- 2026-01-15T17:56:57.492Z info Chunk persisted
+- 2026-01-15T17:56:57.501Z debug Chunk volume profile stored
+- 2026-01-15T17:57:01.535Z debug PCM chunk encoded
+- 2026-01-15T17:57:01.542Z info Chunk persisted
+- 2026-01-15T17:57:01.549Z debug Chunk volume profile stored
+- 2026-01-15T17:57:05.057Z info Recorder stop requested
+- 2026-01-15T17:57:05.153Z debug PCM chunk encoded
+- 2026-01-15T17:57:05.161Z info Chunk persisted
+- 2026-01-15T17:57:05.170Z debug Chunk volume profile stored
+- 2026-01-15T17:57:05.171Z info Recorder stopped
+- 2026-01-15T17:57:05.171Z info Session timing reconciled
+- 2026-01-15T17:57:17.283Z info Playback source prepared
+
+
+Then after refresh…
+————
+
+Web Whisper — Doctor Report (compact)
+Session: d7ce9116-43a7-4986-86cc-3cc3d013ff69
+StartedAt: 2026-01-15T17:56:45.153Z
+DurationMs: 19800  (=19.8s)
+Mime: audio/mpeg  Chunks: 5  Timing: verified
+
+Sanity:
+- chunkTimebase=absolute session=19.8s chunkMax=19.8s chunkSum=19.8s snips=2 snipMax=19.8s
+- INFO: Session duration and chunk max end are close.
+- INFO: Snip end times are within expected duration.
+- INFO: Chunk volume profiles exist for all chunks.
+- INFO: Chunk volume profile metadata looks well-formed.
+- INFO: Chunk volume profile durations match chunk timings (within 250ms).
+
+Chunk coverage: OK=198 WARN=0 ERR=0 TOTAL=198
+- expected=19.8s observed=19.8s items=198/198
+
+Range access: OK=198 WARN=0 ERR=0 TOTAL=198
+- expected=19.8s observed=19.8s items=198/198
+
+Per-chunk decode: OK=5 WARN=0 ERR=0 TOTAL=5
+- expected=19.8s observed=19.8s items=5/5
+
+Snip scan: OK=2 WARN=0 ERR=0 TOTAL=2
+- expected=19.8s observed=19.8s items=2/2
+
+Recent logs (last 30):
+- 2026-01-15T17:58:01.978Z info Logger initialised
+- 2026-01-15T17:58:03.095Z info Playback source prepared
+
+
+========
+
+It is NOT OK for the tests to have different results before/after a refresh. If so, you had better Sell me on WHY!!!

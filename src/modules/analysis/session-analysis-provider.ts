@@ -81,7 +81,7 @@ export class SessionAnalysisProvider {
 
     const volumeProfilesRaw = await this.#manifest.listChunkVolumeProfiles(session.id)
     const orderedProfiles = volumeProfilesRaw
-      .filter((profile) => profile.sessionId === session.id && profile.seq > 0)
+      .filter((profile) => profile.sessionId === session.id && profile.seq >= 0)
       .sort((a, b) => a.seq - b.seq)
 
     const latestProfileUpdate = orderedProfiles.reduce(
@@ -113,7 +113,16 @@ export class SessionAnalysisProvider {
     }
 
     const chunkRows = await this.#manifest.getChunkMetadata(session.id)
-    const orderedChunks = [...chunkRows].filter((chunk) => chunk.seq > 0).sort((a, b) => a.seq - b.seq)
+    const isMp4LikeSession = /mp4|m4a/i.test(session.mimeType ?? options.mimeTypeHint ?? '')
+    const orderedChunks = [...chunkRows]
+      .filter((chunk) => chunk.seq >= 0)
+      .sort((a, b) => a.seq - b.seq)
+      .filter((chunk) => {
+        if (!isMp4LikeSession) return true
+        if (chunk.seq !== 0) return true
+        const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
+        return !(durationMs <= 10 || chunk.byteLength < 4096)
+      })
 
     const durationsBySeq = new Map<number, number>()
     orderedChunks.forEach((chunk) => {
