@@ -1,4 +1,4 @@
-import lamejs from 'lamejs'
+import { ensureMp3EncoderLoaded, getMp3EncoderCtor } from './mp3-encoder'
 import { computeChunkVolumeProfile } from '../storage/chunk-volume'
 import { manifestService, type SessionRecord, type SessionStatus } from '../storage/manifest'
 import { logDebug, logError, logInfo, logWarn } from '../logging/logger'
@@ -145,6 +145,9 @@ class PcmMp3CaptureController implements CaptureController {
       mp3Kbps: this.#targetKbps,
     })
 
+    // Ensure MP3 encoder is available before we start producing chunks.
+    await ensureMp3EncoderLoaded()
+
     await manifestService.updateSession(options.sessionId, {
       mimeType: MP3_MIME,
       status: 'recording',
@@ -222,7 +225,8 @@ class PcmMp3CaptureController implements CaptureController {
     const sessionId = this.#sessionId
     const seq = this.#chunkSeq++
 
-    const encoder = new lamejs.Mp3Encoder(1, this.#sampleRate, this.#targetKbps)
+    const Mp3Encoder = getMp3EncoderCtor()
+    const encoder = new Mp3Encoder(1, this.#sampleRate, this.#targetKbps)
     const mp3Parts: BlobPart[] = []
     let samplesEncoded = 0
     for (const block of int16Blocks) {
