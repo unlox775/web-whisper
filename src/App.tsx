@@ -274,6 +274,8 @@ const buildTranscriptionPreview = (snips: SnipRecord[]): string => {
   return `${text.slice(0, MAX_TRANSCRIPTION_PREVIEW_CHARS).trimEnd()}...`
 }
 
+const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
+
 const toSnipSeed = (segment: SegmentSummary): SnipSeed => ({
   index: segment.index,
   startMs: segment.startMs,
@@ -346,6 +348,7 @@ function App() {
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [snipTranscriptionState, setSnipTranscriptionState] = useState<Record<string, boolean>>({})
   const [isBulkTranscribing, setIsBulkTranscribing] = useState(false)
+  const [noAudioAlertActive, setNoAudioAlertActive] = useState(false)
 
   const streamCursor = useRef(1)
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -1025,6 +1028,11 @@ function App() {
     }
   }, [])
 
+  const triggerNoAudioAlert = useCallback(() => {
+    setNoAudioAlertActive(true)
+    window.setTimeout(() => setNoAudioAlertActive(false), 1200)
+  }, [])
+
   useEffect(() => {
     const handleVisibilityChange = () => {
       if (document.visibilityState !== 'visible') {
@@ -1129,12 +1137,12 @@ function App() {
       updateUi: boolean
       force: boolean
       ignoreBusy?: boolean
-    }) => {
+    }): Promise<{ ok: boolean; error?: string }> => {
       if (!force && getSnipTranscriptionText(snip)) {
-        return
+        return { ok: true }
       }
       if (updateUi && snipTranscriptionState[snip.id] && !ignoreBusy) {
-        return
+        return { ok: false }
       }
       const apiKey = settings?.groqApiKey?.trim() ?? ''
       if (!apiKey) {
@@ -1147,7 +1155,7 @@ function App() {
         if (updateUi && updated) {
           setSnipRecords((prev) => prev.map((record) => (record.id === updated.id ? updated : record)))
         }
-        return
+        return { ok: false, error: message }
       }
 
       if (updateUi) {
@@ -1200,6 +1208,7 @@ function App() {
           textLength: result.text.length,
           segmentCount: result.segments.length,
         })
+        return { ok: true }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         await logError('Snip transcription failed', {
@@ -1214,6 +1223,7 @@ function App() {
         if (updateUi && updated) {
           setSnipRecords((prev) => prev.map((record) => (record.id === updated.id ? updated : record)))
         }
+        return { ok: false, error: message }
       } finally {
         if (updateUi) {
           setSnipTranscriptionState((prev) => {
@@ -1273,6 +1283,7 @@ function App() {
       }
       autoTranscribeSessionsRef.current.add(sessionId)
       try {
+        await sleep(1200)
         const session = await manifestService.getSession(sessionId)
         if (!session || session.status !== 'ready') {
           return
@@ -1308,7 +1319,20 @@ function App() {
           if (getSnipTranscriptionText(snip)) {
             continue
           }
-          await transcribeSnip({ session, snip, updateUi: selectedRecording?.id === sessionId, force: false })
+          const result = await transcribeSnip({ session, snip, updateUi: selectedRecording?.id === sessionId, force: false })
+          if (!result.ok && result.error) {
+            const shouldRetry = /decode|object can not be found here|Snip audio slice is empty/i.test(result.error)
+            if (shouldRetry) {
+              await sleep(1500)
+              await transcribeSnip({
+                session,
+                snip,
+                updateUi: selectedRecording?.id === sessionId,
+                force: true,
+                ignoreBusy: true,
+              })
+            }
+          }
         }
       } finally {
         autoTranscribeSessionsRef.current.delete(sessionId)
@@ -1425,11 +1449,12 @@ function App() {
         timeoutMs: 15000,
         error: current.error ?? null,
       })
+      triggerNoAudioAlert()
       void playAlertBeep()
       void stopRecording()
     }, 15000)
     return () => window.clearTimeout(timeout)
-  }, [captureState.startedAt, captureState.state, playAlertBeep, stopRecording])
+  }, [captureState.startedAt, captureState.state, playAlertBeep, stopRecording, triggerNoAudioAlert])
 
   const preparePlaybackSource = useCallback(
     async (forceReload = false) => {
@@ -2663,6 +2688,7 @@ function App() {
 
   return (
       <div className="app-shell">
+        {noAudioAlertActive ? <div className="no-audio-flash" aria-hidden="true" /> : null}
         <header className="app-header">
           <div className="brand">
             <h1>Web Whisper</h1>
