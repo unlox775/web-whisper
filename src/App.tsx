@@ -758,9 +758,14 @@ function App() {
   ])
 
   const isHeaderSegment = useCallback((chunk: StoredChunk) => {
+    const mimeType = chunk.blob.type || selectedRecording?.mimeType || ''
+    const isMp4Like = /mp4|m4a/i.test(mimeType)
+    if (!isMp4Like) {
+      return false
+    }
     const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
     return chunk.seq === 0 && (durationMs <= 10 || chunk.byteLength < 4096)
-  }, [])
+  }, [selectedRecording?.mimeType])
 
   const headerChunk = useMemo(() => chunkData.find(isHeaderSegment) ?? null, [chunkData, isHeaderSegment])
 
@@ -808,15 +813,23 @@ function App() {
         const baseDate = selectedRecording?.startedAt ?? chunk.startMs ?? Date.now()
         const iso = new Date(baseDate).toISOString().replace(/[:.]/g, '-')
         const seqLabel = String(chunk.seq + 1).padStart(2, '0')
+        const mimeType = chunk.blob.type || selectedRecording?.mimeType || 'application/octet-stream'
+        const extension = /mpeg/i.test(mimeType)
+          ? 'mp3'
+          : /webm/i.test(mimeType)
+            ? 'webm'
+            : /mp4|m4a/i.test(mimeType)
+              ? 'mp4'
+              : 'bin'
         const link = document.createElement('a')
         link.href = url
-        link.download = `${iso}_chunk-${seqLabel}.mp4`
+        link.download = `${iso}_chunk-${seqLabel}.${extension}`
         link.rel = 'noopener'
         document.body.appendChild(link)
         link.click()
         document.body.removeChild(link)
       },
-      [ensureChunkPlaybackUrl, selectedRecording?.startedAt],
+      [ensureChunkPlaybackUrl, selectedRecording?.mimeType, selectedRecording?.startedAt],
     )
 
   const ensureSnipSlice = useCallback(

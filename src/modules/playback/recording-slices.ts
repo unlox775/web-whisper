@@ -163,7 +163,7 @@ export class RecordingSlicesApi {
     if (!target) return null
 
     const headerChunk = chunks.find((chunk) => chunk.seq === 0) ?? null
-    const baseMimeType = target.blob.type || session.mimeType || 'audio/mp4'
+    const baseMimeType = target.blob.type || session.mimeType || 'audio/mpeg'
     const needsInit = headerChunk && headerChunk.id !== target.id && MP4_MIME_PATTERN.test(baseMimeType)
     const blob = needsInit ? new Blob([headerChunk.blob, target.blob], { type: baseMimeType }) : target.blob
 
@@ -172,6 +172,7 @@ export class RecordingSlicesApi {
     const durationMs = Math.max(0, endMs - startMs)
     const iso = new Date(session.startedAt ?? Date.now()).toISOString().replace(/[:.]/g, '-')
     const seqLabel = String(seq + 1).padStart(2, '0')
+    const extension = /mpeg/i.test(baseMimeType) ? 'mp3' : /webm/i.test(baseMimeType) ? 'webm' : /mp4|m4a/i.test(baseMimeType) ? 'mp4' : 'bin'
 
     return {
       kind: 'chunk',
@@ -181,7 +182,7 @@ export class RecordingSlicesApi {
       durationMs,
       mimeType: blob.type || baseMimeType,
       blob,
-      suggestedFilename: `${iso}_chunk-${seqLabel}.mp4`,
+      suggestedFilename: `${iso}_chunk-${seqLabel}.${extension}`,
     }
   }
 

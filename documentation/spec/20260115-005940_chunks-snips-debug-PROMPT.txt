@@ -98,3 +98,11 @@ Okay, that was definitely something I was missing, you should have explained a l
 Ok, I’ll bite. If I do PCM (1) does it still deliver in the same way (events fire with chunks of audio data I can record as chunks)? (2) is this going to make my data storage grow X times faster?  By how much?  Just answer here, directly
 
 yeah, move forward, do PCM ring buffer, with re-encode each chunk to compress the audio (cross-browser-safe as you can). And get rid of the old MP4 stuff and add a migration to clean up and delete old recordin sessions/chunks/etc that were MP4, I am OK with the data loss  Make. it.  So!
+
+2026-01-15T16-59-41-186Z_chunk-02.mp4.mp3
+
+A couple cleanup items, the download file name has mp4.mp3 which seems unnecessary 
+
+also, it still shows “init +” in the in-progress indicator, and in the chunks ladybug list. 
+
+But everything else looks great!!
