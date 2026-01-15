@@ -294,6 +294,7 @@ function App() {
   const [transcriptionPreviews, setTranscriptionPreviews] = useState<Record<string, string>>({})
   const [transcriptionErrorCounts, setTranscriptionErrorCounts] = useState<Record<string, number>>({})
   const [retryingSessionIds, setRetryingSessionIds] = useState<Record<string, boolean>>({})
+  const [transcriptionInProgress, setTranscriptionInProgress] = useState<Record<string, boolean>>({})
   const [captureState, setCaptureState] = useState(captureController.state)
   const [errorMessage, setErrorMessage] = useState<string | null>(null)
   const [bufferTotals, setBufferTotals] = useState<{ totalBytes: number; limitBytes: number }>({
@@ -1309,9 +1310,11 @@ function App() {
     if (!selectedRecording || isBulkTranscribing) {
       return
     }
+    const sessionId = selectedRecording.id
     setIsBulkTranscribing(true)
+    setTranscriptionInProgress((prev) => ({ ...prev, [sessionId]: true }))
     try {
-      const storedSnips = await manifestService.listSnips(selectedRecording.id)
+      const storedSnips = await manifestService.listSnips(sessionId)
       const snips =
         storedSnips.length > 0
           ? storedSnips
@@ -1326,6 +1329,12 @@ function App() {
       }
     } finally {
       setIsBulkTranscribing(false)
+      setTranscriptionInProgress((prev) => {
+        if (!prev[sessionId]) return prev
+        const next = { ...prev }
+        delete next[sessionId]
+        return next
+      })
     }
   }, [isBulkTranscribing, selectSnipsForRetry, selectedRecording, transcribeSnip])
 
@@ -1335,6 +1344,7 @@ function App() {
         return
       }
       setRetryingSessionIds((prev) => ({ ...prev, [sessionId]: true }))
+      setTranscriptionInProgress((prev) => ({ ...prev, [sessionId]: true }))
       try {
         const session = await manifestService.getSession(sessionId)
         if (!session) {
@@ -1366,6 +1376,12 @@ function App() {
           delete next[sessionId]
           return next
         })
+        setTranscriptionInProgress((prev) => {
+          if (!prev[sessionId]) return prev
+          const next = { ...prev }
+          delete next[sessionId]
+          return next
+        })
       }
     },
     [retryingSessionIds, selectSnipsForRetry, selectedRecording?.id, transcribeSnip],
@@ -1377,6 +1393,7 @@ function App() {
         return
       }
       autoTranscribeSessionsRef.current.add(sessionId)
+      setTranscriptionInProgress((prev) => ({ ...prev, [sessionId]: true }))
       try {
         await sleep(1200)
         const session = await manifestService.getSession(sessionId)
@@ -1467,6 +1484,12 @@ function App() {
       } finally {
         autoTranscribeSessionsRef.current.delete(sessionId)
         await refreshTranscriptionPreviewForSession(sessionId)
+        setTranscriptionInProgress((prev) => {
+          if (!prev[sessionId]) return prev
+          const next = { ...prev }
+          delete next[sessionId]
+          return next
+        })
       }
     },
     [refreshTranscriptionPreviewForSession, selectedRecording?.id, settings?.groqApiKey, transcribeSnip],
@@ -1721,6 +1744,7 @@ function App() {
 
   const handleDeleteRecording = async () => {
     if (!selectedRecording) return
+    await logInfo('Delete recording requested', { sessionId: selectedRecording.id })
     if (selectedRecording.id === captureState.sessionId && captureState.state === 'recording') {
       setErrorMessage('Stop the active recording before deleting it.')
       await logWarn('Delete blocked for active recording', { sessionId: selectedRecording.id })
@@ -1743,6 +1767,37 @@ function App() {
       })
     }
   }
+
+  const handleDeleteSession = useCallback(
+    async (session: SessionRecord) => {
+      await logInfo('Delete recording requested', { sessionId: session.id, source: 'list' })
+      if (session.id === captureState.sessionId && captureState.state === 'recording') {
+        setErrorMessage('Stop the active recording before deleting it.')
+        await logWarn('Delete blocked for active recording', { sessionId: session.id, source: 'list' })
+        return
+      }
+      await manifestService.init()
+      const confirmed = window.confirm('Delete this recording? This cannot be undone.')
+      if (!confirmed) return
+      try {
+        await manifestService.deleteSession(session.id)
+        await logInfo('Recording deleted', { sessionId: session.id, source: 'list' })
+        if (selectedRecording?.id === session.id) {
+          await handleCloseDetail()
+        }
+        await loadSessions()
+      } catch (error) {
+        console.error('[UI] Failed to delete recording', error)
+        setErrorMessage(error instanceof Error ? error.message : String(error))
+        await logError('Recording delete failed', {
+          sessionId: session.id,
+          source: 'list',
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    },
+    [captureState.sessionId, captureState.state, handleCloseDetail, loadSessions, selectedRecording?.id],
+  )
 
   const formatPercent = (count: number, total: number) =>
     total > 0 ? `${Math.round((count / total) * 100)}%` : '0%'
@@ -2827,19 +2882,19 @@ function App() {
   const playbackProgress = resolvedPlaybackDurationSeconds > 0
     ? (audioState.position / resolvedPlaybackDurationSeconds) * 100
     : 0
-    const hasInitSegment = /mp4|m4a/i.test(captureState.mimeType ?? '') && captureState.chunksRecorded > 0
-    const effectiveChunkCount = Math.max(0, captureState.chunksRecorded - (hasInitSegment ? 1 : 0))
+  const hasInitSegment = /mp4|m4a/i.test(captureState.mimeType ?? '') && captureState.chunksRecorded > 0
+  const effectiveChunkCount = Math.max(0, captureState.chunksRecorded - (hasInitSegment ? 1 : 0))
 
   return (
-      <div className="app-shell">
-        {noAudioAlertActive ? <div className="no-audio-flash" aria-hidden="true" /> : null}
-        <header className="app-header">
-          <div className="brand">
-            <h1>Web Whisper</h1>
-          </div>
-          <div className="header-controls">
+    <div className="app-shell">
+      {noAudioAlertActive ? <div className="no-audio-flash" aria-hidden="true" /> : null}
+      <header className="app-header">
+        <div className="brand">
+          <h1>Web Whisper</h1>
+        </div>
+        <div className="header-controls">
           <div className="buffer-card" role="status" aria-live="polite">
-            <p className="buffer-label">Data stored</p>
+            <p className="buffer-label">Data</p>
             <p className="buffer-value">{bufferLabel}</p>
           </div>
           {developerMode ? (
@@ -2859,18 +2914,8 @@ function App() {
           >
             Settings
           </button>
-          </div>
-        </header>
-
-        {developerMode && captureState.state === 'recording' ? (
-          <div className="dev-strip" role="status" aria-live="polite">
-            <span>
-              Audio captured: {capturedAudioLabel} · Segments: {effectiveChunkCount}
-              {hasInitSegment ? ' + init' : ''}
-            </span>
-            <span>Data size: {formatDataSize(displayedBytes)}</span>
-          </div>
-        ) : null}
+        </div>
+      </header>
 
       {errorMessage ? (
         <div className="alert-banner" role="alert">
@@ -2881,85 +2926,7 @@ function App() {
         </div>
       ) : null}
 
-        <main className="content-grid">
-        <section className="session-section" aria-label="Recording sessions">
-            <ul className="session-list">
-                {recordings.map((session) => {
-                const statusMeta = STATUS_META[session.status]
-                const isActiveRecording = session.id === captureState.sessionId && captureState.state === 'recording'
-                const durationLabel = isActiveRecording
-                  ? formatTimecode(Math.floor(Math.max(recordingElapsedMs, 0) / 1000))
-                  : formatSessionDuration(session.durationMs)
-                const transcriptionPreview = transcriptionPreviews[session.id] ?? ''
-                const transcriptionErrorCount = transcriptionErrorCounts[session.id] ?? 0
-                const hasTranscriptionError = transcriptionErrorCount > 0
-                const errorNotes = session.status === 'error' ? session.notes ?? 'Recording error.' : ''
-                const isRetrying = Boolean(retryingSessionIds[session.id])
-                const metadataLabel = `${formatSessionDateTime(session.startedAt)} · ${formatCompactDataSize(session.totalBytes)}`
-                const isHighlighted = session.id === highlightedSessionId
-                const cardClasses = ['session-card']
-                if (isHighlighted) {
-                  cardClasses.push('is-new')
-                }
-                if (session.status === 'error') {
-                  cardClasses.push('has-error')
-                }
-                const previewText = isActiveRecording
-                  ? 'Recording in progress...'
-                  : errorNotes
-                    ? errorNotes
-                    : transcriptionPreview
-                      ? transcriptionPreview
-                      : hasTranscriptionError
-                        ? `Error transcribing (${transcriptionErrorCount})`
-                        : 'Transcription pending...'
-                return (
-                  <li key={session.id}>
-                    <article
-                      className={cardClasses.join(' ')}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => setSelectedRecordingId(session.id)}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter' || event.key === ' ') {
-                          event.preventDefault()
-                          setSelectedRecordingId(session.id)
-                        }
-                      }}
-                    >
-                        <header className="session-topline">
-                          <div className="session-topline-left">
-                            <span className={`session-pill ${statusMeta.pillClass}`}>{statusMeta.label}</span>
-                            <span className="session-duration-label">{durationLabel}</span>
-                          </div>
-                          <div className="session-topline-right">
-                            <span className="session-meta">{metadataLabel}</span>
-                          </div>
-                        </header>
-                        <div className="session-preview-row">
-                          <p className="session-preview">{previewText}</p>
-                          {hasTranscriptionError && session.status === 'ready' ? (
-                            <button
-                              type="button"
-                              className="session-retry"
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                void handleRetryTranscriptionsForSession(session.id)
-                              }}
-                              disabled={isRetrying}
-                              aria-label={`Retry transcription for ${session.title}`}
-                            >
-                              {isRetrying ? 'Retrying…' : 'Retry TX'}
-                            </button>
-                          ) : null}
-                        </div>
-                    </article>
-                  </li>
-                )
-            })}
-          </ul>
-        </section>
-
+      <main className="content-grid">
         <aside className="controls-panel" aria-label="Capture controls">
           <div className="controls-card">
             <h2>Capture</h2>
@@ -2991,6 +2958,110 @@ function App() {
             </p>
           </div>
         </aside>
+        {developerMode && captureState.state === 'recording' ? (
+          <div className="dev-strip capture-strip" role="status" aria-live="polite">
+            <span>
+              Audio: {capturedAudioLabel} / {effectiveChunkCount} seg{hasInitSegment ? ' + init' : ''}
+            </span>
+            <span>Data: {formatDataSize(displayedBytes)}</span>
+          </div>
+        ) : null}
+        <section className="session-section" aria-label="Recording sessions">
+          <ul className="session-list">
+            {recordings.map((session) => {
+              const statusMeta = STATUS_META[session.status]
+              const isActiveRecording = session.id === captureState.sessionId && captureState.state === 'recording'
+              const durationLabel = isActiveRecording
+                ? formatTimecode(Math.floor(Math.max(recordingElapsedMs, 0) / 1000))
+                : formatSessionDuration(session.durationMs)
+              const transcriptionPreview = transcriptionPreviews[session.id] ?? ''
+              const transcriptionErrorCount = transcriptionErrorCounts[session.id] ?? 0
+              const hasTranscriptionError = transcriptionErrorCount > 0
+              const errorNotes = session.status === 'error' ? session.notes ?? 'Recording error.' : ''
+              const isRetrying = Boolean(retryingSessionIds[session.id])
+              const isTranscribing = Boolean(transcriptionInProgress[session.id] || isRetrying)
+              const metadataLabel = `${formatSessionDateTime(session.startedAt)} · ${formatCompactDataSize(session.totalBytes)}`
+              const isHighlighted = session.id === highlightedSessionId
+              const cardClasses = ['session-card']
+              if (isHighlighted) {
+                cardClasses.push('is-new')
+              }
+              if (session.status === 'error') {
+                cardClasses.push('has-error')
+              }
+              const previewText = isActiveRecording
+                ? 'Recording in progress...'
+                : errorNotes
+                  ? errorNotes
+                  : transcriptionPreview
+                    ? transcriptionPreview
+                    : hasTranscriptionError
+                      ? `Error transcribing (${transcriptionErrorCount})`
+                      : 'Transcription pending...'
+              return (
+                <li key={session.id}>
+                  <article
+                    className={cardClasses.join(' ')}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedRecordingId(session.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        setSelectedRecordingId(session.id)
+                      }
+                    }}
+                  >
+                    <header className="session-topline">
+                      <div className="session-topline-left">
+                        <span className={`session-pill ${statusMeta.pillClass}`}>{statusMeta.label}</span>
+                        <span className="session-duration-label">{durationLabel}</span>
+                      </div>
+                      <div className="session-topline-right">
+                        <span className="session-meta">{metadataLabel}</span>
+                      </div>
+                    </header>
+                    <div className="session-preview-row">
+                      <p className="session-preview">{previewText}</p>
+                      {isTranscribing ? <span className="session-spinner" aria-label="Transcribing…" /> : null}
+                      {!isTranscribing && (hasTranscriptionError || (!transcriptionPreview && !errorNotes)) && session.status === 'ready' ? (
+                        <button
+                          type="button"
+                          className="session-retry"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            void handleRetryTranscriptionsForSession(session.id)
+                          }}
+                          disabled={isRetrying}
+                          aria-label={`Retry transcription for ${session.title}`}
+                        >
+                          {isRetrying ? 'Retrying…' : 'Retry TX'}
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="session-delete"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          void handleDeleteSession(session)
+                        }}
+                        disabled={session.id === captureState.sessionId && captureState.state === 'recording'}
+                        aria-label={`Delete ${session.title}`}
+                        title={
+                          session.id === captureState.sessionId && captureState.state === 'recording'
+                            ? 'Stop the active recording before deleting it.'
+                            : 'Delete recording'
+                        }
+                      >
+                        🗑
+                      </button>
+                    </div>
+                  </article>
+                </li>
+              )
+            })}
+          </ul>
+        </section>
       </main>
 
         {isTranscriptionMounted ? (

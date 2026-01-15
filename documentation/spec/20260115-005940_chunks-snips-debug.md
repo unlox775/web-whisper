@@ -43,6 +43,8 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-245500: Session list shows transcription errors with per-session Retry TX and auto-selects transcript on open.
 - 20260115-252500: Retry TX now targets failed snips first; stop button waits for audio flow and dev strip labels updated.
 - 20260115-260000: Auto-transcribe retries failed snips after successes; start button pulses while warming up and dev strip uses live elapsed data size.
+- 20260115-223934: Capture dev strip labels shortened and moved under the capture controls to avoid blocking the stop button.
+- 20260115-223934: Session list now shows a delete button, logs delete attempts, and adds retry/spinner states for pending or in-flight transcriptions.
 
 ## 🚧 In progress
 
