@@ -9,3 +9,76 @@ OK 0 (0%) · Warn 0 (0%) · Error 580 (100%)
  But you are giving NO Extra details. Where is the verbose, detailed report?!!
 
 Another diagnostic test should just be like general sanity checks. These are not all going to follow the same format. Like one that appears to be a test that would fail right now, I did a test recording that was a little less than a minute long. But if you look at the snips, the snips had little snips that went all the way up to like two something minutes long, two minutes and something. I'm not sure what the heck is going on there, but I think these first three tests that you made also should output the total length of the audio expected and the actual length of the audio seen, um, giving me okay, 15, I don't know, it doesn't seem very useful. Theoretically, I should see the exact same, if these are checking the actual data files, I should be able to see the exact lengths. Maybe another fourth test you could add is checking all the snips individually and seeing that all the snips, if you're requesting each one of the snips involved and getting all the snips, checking the content of each one of those. A good other verbose report output would be total number of audio files expected, how many audio files, how much audio was actually detected in number of seconds decimal.
+
+Doctor diagnostics
+Cancel
+Run selected tests
+Runs quick integrity checks to help identify whether corruption is in stored chunks or in range access/decoding.
+
+Sanity checks (durations, snip bounds, chunk timing)
+
+Chunk coverage scan (IndexedDB timings/coverage, 0.1s)
+
+Range access scan via slice API (decode+inspect, 0.1s)
+
+Per-chunk decode scan (decode each chunk blob)
+
+Snip scan (inspect each snip range)
+Sanity checks
+Session duration: 57908 ms · Chunk max end: 1768452680740 ms · Chunk sum: 57908 ms · Snips: 6 · Snip max end: 109485.33333333334 ms · Snip sum: 109485.33333333334 ms
+Download JSON
+WARN
+Session duration and chunk max end differ by >1s.
+INFO
+Snip end times are within expected duration.
+Chunk coverage scan
+
+OK 0 (0%) · Warn 0 (0%) · Error 580 (100%)
+Expected audio: 57.9s · Observed audio: 0.0s · Expected segments: 580 · Observed segments: 0
+Download JSON
+ERROR
+No chunk covers this time range
+580 (100%)
+0:00.0–0:00.1
+0:00.1–0:00.2
+0:00.2–0:00.3
+0:00.3–0:00.4
+0:00.4–0:00.5
+0:00.5–0:00.6
+Range access scan (0.1s)
+
+OK 580 (100%) · Warn 0 (0%) · Error 0 (0%)
+Expected audio: 57.9s · Observed audio: 57.9s · Expected windows: 580 · Decoded windows: 580
+Download JSON
+Per-chunk decode scan
+
+OK 1 (7%) · Warn 14 (93%) · Error 0 (0%)
+Expected audio: 57.9s · Decoded audio: 113.5s · Expected chunks: 15 · Decoded chunks: 15
+Download JSON
+WARN
+Decoded duration differs from expected chunk timing
+14 (93%)
+#2
+#3
+#4
+#5
+#6
+#7
+Snip scan (each snip)
+
+OK 2 (33%) · Warn 4 (67%) · Error 0 (0%)
+Expected audio: 109.5s · Observed audio: 57.9s · Expected snips: 6 · Decoded snips: 6
+Download JSON
+WARN
+Decoded snip duration differs from expected
+4 (67%)
+#3
+#4
+#5
+#6
+
+————————-
+
+Ok there is your doctor diagnosis, determine (1) what of your tests are broken, (2) what more test do you need to determine what is wrong with the recording/accessing libraries (3) or based on this, if you know what fixes you can make to the code or logging you can add, so when I do the next recording you will get the data you need to diagnose?
+
+Also, add a copy-logs (also copy all-diagnosis-tests) function that copies all logs this session, to the clipboard, so I can paste them here more easily

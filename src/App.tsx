@@ -105,6 +105,8 @@ type DoctorSanityReport = {
     snipCount: number | null
     snipMaxEndMs: number | null
     snipSumDurationMs: number | null
+    chunkTimebase: 'absolute' | 'offset' | 'unknown'
+    chunkMaxOffsetMs: number | null
   }
 }
 
@@ -292,6 +294,7 @@ function App() {
   const [doctorRunning, setDoctorRunning] = useState(false)
   const [doctorProgress, setDoctorProgress] = useState<{ label: string; completed: number; total: number } | null>(null)
   const [doctorError, setDoctorError] = useState<string | null>(null)
+  const [doctorCopyStatus, setDoctorCopyStatus] = useState<string | null>(null)
   const [doctorReports, setDoctorReports] = useState<{
     chunkCoverage?: DoctorReport
     rangeAccess?: DoctorReport
@@ -1145,6 +1148,38 @@ function App() {
     URL.revokeObjectURL(url)
   }
 
+  const copyToClipboard = async (text: string) => {
+    if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text)
+      return
+    }
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.left = '-9999px'
+    textarea.style.top = '0'
+    document.body.appendChild(textarea)
+    textarea.focus()
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+  }
+
+  const inferChunkTimebase = (chunks: StoredChunk[], sessionStartMs: number): 'absolute' | 'offset' | 'unknown' => {
+    const sample = chunks.find((chunk) => chunk.seq > 0) ?? null
+    if (!sample) return 'unknown'
+    if (sample.startMs > 1_000_000_000_000 && sessionStartMs > 1_000_000_000_000) return 'absolute'
+    if (sample.startMs >= 0 && sample.startMs < 86_400_000) return 'offset'
+    return 'unknown'
+  }
+
+  const toOffsetSpan = (chunk: Pick<StoredChunk, 'startMs' | 'endMs'>, sessionStartMs: number, timebase: string) => {
+    if (timebase === 'absolute') {
+      return { startMs: chunk.startMs - sessionStartMs, endMs: chunk.endMs - sessionStartMs }
+    }
+    return { startMs: chunk.startMs, endMs: chunk.endMs }
+  }
+
   const runDoctorDiagnostics = useCallback(async () => {
     if (!selectedRecording) return
 
@@ -1160,10 +1195,15 @@ function App() {
     // Pull fresh chunk data for diagnostics so we don't race the detail-open effect.
     const chunksForDoctor = await manifestService.getChunkData(selectedRecording.id)
     const playableChunksForDoctor = chunksForDoctor.filter((chunk) => chunk.seq > 0)
+    const chunkTimebase = inferChunkTimebase(playableChunksForDoctor, selectedRecording.startedAt)
+    const playableChunkOffsets = playableChunksForDoctor.map((chunk) => ({
+      ...chunk,
+      ...toOffsetSpan(chunk, selectedRecording.startedAt, chunkTimebase),
+    }))
 
     const durationMsGuess =
       selectedRecordingDurationMs ??
-      (chunksForDoctor.length > 0 ? Math.max(...chunksForDoctor.map((chunk) => chunk.endMs)) : selectedRecording.durationMs ?? 0)
+      (playableChunkOffsets.length > 0 ? Math.max(...playableChunkOffsets.map((chunk) => chunk.endMs)) : selectedRecording.durationMs ?? 0)
     const totalDurationMs = Math.max(0, durationMsGuess)
     const stepMs = 100
     const segmentCount = totalDurationMs > 0 ? Math.ceil(totalDurationMs / stepMs) : 0
@@ -1183,7 +1223,7 @@ function App() {
         if (isCancelled()) return
         const startMs = i * stepMs
         const endMs = Math.min(totalDurationMs, startMs + stepMs)
-        const chunk = chunksForDoctor.find((row) => row.seq > 0 && row.startMs <= startMs && row.endMs > startMs) ?? null
+        const chunk = playableChunkOffsets.find((row) => row.startMs <= startMs && row.endMs > startMs) ?? null
         if (!chunk) {
           segments.push({ index: i, startMs, endMs, status: 'error', reason: 'No chunk covers this time range' })
         } else if (!Number.isFinite(chunk.byteLength) || chunk.byteLength <= 0) {
@@ -1329,9 +1369,9 @@ function App() {
       let decodedMs = 0
       let decodedCount = 0
       try {
-        for (let i = 0; i < playableChunksForDoctor.length; i += 1) {
+        for (let i = 0; i < playableChunkOffsets.length; i += 1) {
           if (isCancelled()) return
-          const chunk = playableChunksForDoctor[i]
+          const chunk = playableChunkOffsets[i]
           const seq = chunk.seq
           expectedMs += Math.max(0, chunk.endMs - chunk.startMs)
           try {
@@ -1368,6 +1408,7 @@ function App() {
                   decodedMs: chunkDecodedMs,
                   expectedMs: expectedChunkMs,
                   driftMs,
+                  note: 'Standalone chunk decoding can include timestamp offsets; compare against range scans.',
                 },
               })
             }
@@ -1416,12 +1457,12 @@ function App() {
       const findings: DoctorSanityFinding[] = []
 
       const sessionDurationMs = Number.isFinite(selectedRecording.durationMs) ? Math.max(0, selectedRecording.durationMs) : null
-      const chunkMaxEndMs =
-        playableChunksForDoctor.length > 0 ? Math.max(...playableChunksForDoctor.map((chunk) => chunk.endMs)) : null
-      const chunkSumDurationMs = playableChunksForDoctor.reduce((sum, chunk) => sum + Math.max(0, chunk.endMs - chunk.startMs), 0)
+      const chunkMaxEndMs = playableChunksForDoctor.length > 0 ? Math.max(...playableChunksForDoctor.map((chunk) => chunk.endMs)) : null
+      const chunkMaxOffsetMs = playableChunkOffsets.length > 0 ? Math.max(...playableChunkOffsets.map((chunk) => chunk.endMs)) : null
+      const chunkSumDurationMs = playableChunkOffsets.reduce((sum, chunk) => sum + Math.max(0, chunk.endMs - chunk.startMs), 0)
 
       // Chunk ordering / overlaps / gaps.
-      const ordered = [...playableChunksForDoctor].sort((a, b) => a.seq - b.seq)
+      const ordered = [...playableChunkOffsets].sort((a, b) => a.seq - b.seq)
       let overlaps = 0
       let gaps = 0
       for (let i = 1; i < ordered.length; i += 1) {
@@ -1437,19 +1478,19 @@ function App() {
         findings.push({ level: 'warn', message: `Chunk timings have gaps in ${gaps} places.`, meta: { gaps } })
       }
 
-      if (sessionDurationMs !== null && chunkMaxEndMs !== null) {
-        const drift = chunkMaxEndMs - sessionDurationMs
+      if (sessionDurationMs !== null && chunkMaxOffsetMs !== null) {
+        const drift = chunkMaxOffsetMs - sessionDurationMs
         if (Math.abs(drift) > 1000) {
           findings.push({
             level: drift > 0 ? 'warn' : 'warn',
             message: 'Session duration and chunk max end differ by >1s.',
-            meta: { sessionDurationMs, chunkMaxEndMs, driftMs: drift },
+            meta: { sessionDurationMs, chunkMaxOffsetMs, driftMs: drift, chunkTimebase },
           })
         } else {
           findings.push({
             level: 'info',
             message: 'Session duration and chunk max end are close.',
-            meta: { sessionDurationMs, chunkMaxEndMs, driftMs: drift },
+            meta: { sessionDurationMs, chunkMaxOffsetMs, driftMs: drift, chunkTimebase },
           })
         }
       }
@@ -1464,7 +1505,7 @@ function App() {
         snipMaxEndMs = snips.length > 0 ? Math.max(...snips.map((snip) => snip.endMs)) : 0
         snipSumDurationMs = snips.reduce((sum, snip) => sum + Math.max(0, snip.durationMs), 0)
 
-        const baselineDurationMs = chunkMaxEndMs ?? sessionDurationMs ?? totalDurationMs
+        const baselineDurationMs = chunkMaxOffsetMs ?? sessionDurationMs ?? totalDurationMs
         if (baselineDurationMs > 0 && snipMaxEndMs > baselineDurationMs + 2000) {
           findings.push({
             level: 'error',
@@ -1486,6 +1527,38 @@ function App() {
         })
       }
 
+      // Volume profile duration sanity (to debug snips extending too far).
+      try {
+        const profiles = await manifestService.listChunkVolumeProfiles(selectedRecording.id)
+        const orderedProfiles = profiles.filter((profile) => profile.seq > 0).sort((a, b) => a.seq - b.seq)
+        const mismatch: Array<{ seq: number; expectedMs: number; profileMs: number; driftMs: number }> = []
+        orderedProfiles.forEach((profile) => {
+          const chunk = playableChunkOffsets.find((c) => c.seq === profile.seq) ?? null
+          if (!chunk) return
+          const expectedMs = Math.max(0, chunk.endMs - chunk.startMs)
+          const profileMs = Math.max(0, profile.durationMs ?? 0)
+          const driftMs = profileMs - expectedMs
+          if (Math.abs(driftMs) > 250) {
+            mismatch.push({ seq: profile.seq, expectedMs, profileMs, driftMs })
+          }
+        })
+        if (mismatch.length > 0) {
+          findings.push({
+            level: 'warn',
+            message: `Chunk volume profile durations differ from chunk timings for ${mismatch.length} chunk(s).`,
+            meta: { examples: mismatch.slice(0, 6) },
+          })
+        } else {
+          findings.push({ level: 'info', message: 'Chunk volume profile durations match chunk timings (within 250ms).' })
+        }
+      } catch (error) {
+        findings.push({
+          level: 'warn',
+          message: 'Unable to compare chunk volume profile durations.',
+          meta: { error: error instanceof Error ? error.message : String(error) },
+        })
+      }
+
       reports.sanity = {
         findings,
         metrics: {
@@ -1495,6 +1568,8 @@ function App() {
           snipCount,
           snipMaxEndMs,
           snipSumDurationMs,
+          chunkTimebase,
+          chunkMaxOffsetMs,
         },
       }
     }
@@ -2259,6 +2334,47 @@ function App() {
                       <div className="detail-doctor-actions">
                         <button
                           type="button"
+                          onClick={async () => {
+                            if (!selectedRecording) return
+                            setDoctorCopyStatus(null)
+                            try {
+                              await manifestService.init()
+                              const activeLogSession = getActiveLogSession()
+                              const logSessionId = activeLogSession?.id ?? null
+                              const logs = logSessionId ? await manifestService.getLogEntries(logSessionId, 2000) : []
+                              const payload = {
+                                kind: 'web-whisper-doctor-bundle',
+                                createdAt: new Date().toISOString(),
+                                session: {
+                                  id: selectedRecording.id,
+                                  startedAt: selectedRecording.startedAt,
+                                  durationMs: selectedRecording.durationMs,
+                                  mimeType: selectedRecording.mimeType,
+                                  chunkCount: selectedRecording.chunkCount,
+                                  timingStatus: selectedRecording.timingStatus,
+                                },
+                                doctorReports,
+                                logs: {
+                                  logSessionId,
+                                  entryCount: logs.length,
+                                  entries: logs,
+                                },
+                              }
+                              await copyToClipboard(JSON.stringify(payload, null, 2))
+                              setDoctorCopyStatus('Copied diagnosis + logs to clipboard.')
+                              window.setTimeout(() => setDoctorCopyStatus(null), 2500)
+                            } catch (error) {
+                              setDoctorCopyStatus(
+                                `Copy failed: ${error instanceof Error ? error.message : String(error)}`,
+                              )
+                            }
+                          }}
+                          disabled={doctorRunning}
+                        >
+                          Copy logs + diagnosis
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => {
                             doctorRunIdRef.current += 1
                             setDoctorRunning(false)
@@ -2273,6 +2389,7 @@ function App() {
                         </button>
                       </div>
                     </div>
+                    {doctorCopyStatus ? <p className="detail-transcription-placeholder">{doctorCopyStatus}</p> : null}
 
                     <p className="detail-transcription-placeholder">
                       Runs quick integrity checks to help identify whether corruption is in stored chunks or in range access/decoding.
@@ -2351,12 +2468,13 @@ function App() {
                       <div className="doctor-report">
                         <h4>Sanity checks</h4>
                         <p className="doctor-summary">
-                          Session duration: {doctorReports.sanity.metrics.sessionDurationMs ?? 0} ms · Chunk max end:{' '}
-                          {doctorReports.sanity.metrics.chunkMaxEndMs ?? 0} ms · Chunk sum:{' '}
-                          {doctorReports.sanity.metrics.chunkSumDurationMs ?? 0} ms · Snips:{' '}
+                          Session duration: {((doctorReports.sanity.metrics.sessionDurationMs ?? 0) / 1000).toFixed(1)}s · Chunk
+                          timebase: {doctorReports.sanity.metrics.chunkTimebase} · Chunk max end:{' '}
+                          {((doctorReports.sanity.metrics.chunkMaxOffsetMs ?? 0) / 1000).toFixed(1)}s · Chunk sum:{' '}
+                          {((doctorReports.sanity.metrics.chunkSumDurationMs ?? 0) / 1000).toFixed(1)}s · Snips:{' '}
                           {doctorReports.sanity.metrics.snipCount ?? 0} · Snip max end:{' '}
-                          {doctorReports.sanity.metrics.snipMaxEndMs ?? 0} ms · Snip sum:{' '}
-                          {doctorReports.sanity.metrics.snipSumDurationMs ?? 0} ms
+                          {((doctorReports.sanity.metrics.snipMaxEndMs ?? 0) / 1000).toFixed(1)}s · Snip sum:{' '}
+                          {((doctorReports.sanity.metrics.snipSumDurationMs ?? 0) / 1000).toFixed(1)}s
                         </p>
                         <div className="doctor-report-actions">
                           <button
