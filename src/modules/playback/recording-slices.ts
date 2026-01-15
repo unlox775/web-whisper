@@ -15,6 +15,16 @@ export interface RecordingAudioSlice {
   suggestedFilename: string
 }
 
+export interface RecordingRangeInspection {
+  startMs: number
+  endMs: number
+  durationMs: number
+  sampleRate: number
+  sampleCount: number
+  rms: number
+  peak: number
+}
+
 const MP4_MIME_PATTERN = /mp4|m4a/i
 
 const writeAscii = (view: DataView, offset: number, value: string) => {
@@ -212,6 +222,39 @@ export class RecordingSlicesApi {
       mimeType: blob.type,
       blob,
       suggestedFilename: `${iso}_snip-${Math.round(sliced.startMs)}-${Math.round(sliced.endMs)}.wav`,
+    }
+  }
+
+  async inspectRange(
+    session: SessionRecord,
+    startMs: number,
+    endMs: number,
+    mimeTypeHint?: string | null,
+  ): Promise<RecordingRangeInspection> {
+    const buffer = await this.#getDecodedBuffer(session, mimeTypeHint)
+    const safeStartMs = Math.max(0, startMs)
+    const safeEndMs = Math.max(safeStartMs, endMs)
+    const sliced = sliceAudioBufferToMono(buffer, safeStartMs, safeEndMs)
+    const { samples, sampleRate } = sliced
+    const sampleCount = samples.length
+    let sumSquares = 0
+    let peak = 0
+    for (let i = 0; i < sampleCount; i += 1) {
+      const value = samples[i]
+      sumSquares += value * value
+      const abs = Math.abs(value)
+      if (abs > peak) peak = abs
+    }
+    const rms = sampleCount > 0 ? Math.sqrt(sumSquares / sampleCount) : 0
+
+    return {
+      startMs: sliced.startMs,
+      endMs: sliced.endMs,
+      durationMs: sliced.durationMs,
+      sampleRate,
+      sampleCount,
+      rms,
+      peak,
     }
   }
 

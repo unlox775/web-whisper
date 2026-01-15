@@ -27,7 +27,10 @@ Fix the recording detail “debug” (bug icon) panel so:
 
 ## 🚧 In progress
 
-- (none)
+- 20260115-045056: Add a “Doctor” diagnostics tool to isolate chunk/snips corruption issues:
+  - UI: 🩺 button in the session detail panel.
+  - Diagnostics: run selectable tests and render a green/yellow/red bar + summary.
+  - Tests: compare “raw IndexedDB/chunk coverage” vs “audio slice API range access” at 0.1s resolution.
 
 ## ⏭️ Next actions
 
