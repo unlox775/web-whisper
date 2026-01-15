@@ -441,3 +441,23 @@ Recent logs (last 30):
 It is still not deleting when I hit the button. Also, don’t show the delete button on the main recording list tiles unless  has no audio or has another non-transcription error on it.  I want them to have to click into the  first if they want to actually delete a real transcription.
 
 Yes real PCM audio count and signaling the starting/stop button
+
+Web Whisper — Doctor Report (compact)
+Session: 3ae1c37f-b193-443c-a7c2-75b5f5ae1fb5
+StartedAt: 2026-01-15T22:39:40.194Z
+DurationMs: 5616  (=5.6s)
+Mime: audio/mpeg  Chunks: 2  Timing: verified
+
+Recent logs (last 30):
+- 2026-01-15T23:12:16.442Z info Logger initialised
+- 2026-01-15T23:12:20.184Z info Playback source prepared
+- 2026-01-15T23:12:21.301Z info Delete recording requested
+- 2026-01-15T23:12:21.304Z info Delete confirmation opened
+- 2026-01-15T23:12:21.306Z info Delete recording cancelled
+- 2026-01-15T23:12:22.613Z info Delete recording requested
+- 2026-01-15T23:12:22.614Z info Delete confirmation opened
+- 2026-01-15T23:12:22.615Z info Delete recording cancelled
+- 2026-01-15T23:12:23.545Z info Detail view closed
+- 2026-01-15T23:12:25.833Z info Playback source prepared
+
+I did not cancel anything. Why did the delete recording get canceled? Add logging or whatever you need to figure it out.
