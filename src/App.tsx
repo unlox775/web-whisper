@@ -520,29 +520,6 @@ function App() {
   }, [captureState.state, captureState.startedAt])
 
   useEffect(() => {
-    if (captureState.state !== 'recording' || !captureState.startedAt) {
-      return
-    }
-    const timeout = window.setTimeout(() => {
-      const current = captureController.state
-      if (current.state !== 'recording') {
-        return
-      }
-      if (current.chunksRecorded > 0) {
-        return
-      }
-      void logWarn('No audio captured after timeout; stopping recording', {
-        sessionId: current.sessionId,
-        timeoutMs: 15000,
-        error: current.error ?? null,
-      })
-      void playAlertBeep()
-      void stopRecording()
-    }, 15000)
-    return () => window.clearTimeout(timeout)
-  }, [captureState.startedAt, captureState.state, playAlertBeep, stopRecording])
-
-  useEffect(() => {
     if (captureState.state === 'recording') {
       setTranscriptionMounted(true)
       setTranscriptionLines(SIMULATED_STREAM.slice(0, 2))
@@ -1357,6 +1334,29 @@ function App() {
       await startRecording()
     }
   }
+
+  useEffect(() => {
+    if (captureState.state !== 'recording' || !captureState.startedAt) {
+      return
+    }
+    const timeout = window.setTimeout(() => {
+      const current = captureController.state
+      if (current.state !== 'recording') {
+        return
+      }
+      if (current.chunksRecorded > 0) {
+        return
+      }
+      void logWarn('No audio captured after timeout; stopping recording', {
+        sessionId: current.sessionId,
+        timeoutMs: 15000,
+        error: current.error ?? null,
+      })
+      void playAlertBeep()
+      void stopRecording()
+    }, 15000)
+    return () => window.clearTimeout(timeout)
+  }, [captureState.startedAt, captureState.state, playAlertBeep, stopRecording])
 
   const preparePlaybackSource = useCallback(
     async (forceReload = false) => {
