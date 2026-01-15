@@ -47,6 +47,7 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-223934: Session list now shows a delete button, logs delete attempts, and adds retry/spinner states for pending or in-flight transcriptions.
 - 20260115-225125: Delete actions now log confirmation outcomes, verify deletes, and list delete buttons only show for no-audio or error sessions.
 - 20260115-230214: Capture progress now reports PCM-sample time and drives stop-button readiness.
+- 20260115-231618: Delete confirmation flow logs user activation context and avoids async before confirm.
 
 ## 🚧 In progress
 
