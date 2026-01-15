@@ -70,6 +70,13 @@ type DoctorSegmentResult = {
   meta?: Record<string, unknown>
 }
 
+type DoctorReportMetrics = {
+  expectedDurationMs: number | null
+  observedDurationMs: number | null
+  expectedItemCount: number | null
+  observedItemCount: number | null
+}
+
 type DoctorReport = {
   stepMs: number
   totalDurationMs: number
@@ -79,6 +86,25 @@ type DoctorReport = {
     warn: number
     error: number
     total: number
+  }
+  metrics: DoctorReportMetrics
+}
+
+type DoctorSanityFinding = {
+  level: 'info' | 'warn' | 'error'
+  message: string
+  meta?: Record<string, unknown>
+}
+
+type DoctorSanityReport = {
+  findings: DoctorSanityFinding[]
+  metrics: {
+    sessionDurationMs: number | null
+    chunkMaxEndMs: number | null
+    chunkSumDurationMs: number | null
+    snipCount: number | null
+    snipMaxEndMs: number | null
+    snipSumDurationMs: number | null
   }
 }
 
@@ -260,6 +286,8 @@ function App() {
     chunkCoverageScan: true,
     rangeAccessScan: true,
     chunkDecodeScan: true,
+    sanityChecks: true,
+    snipScan: true,
   })
   const [doctorRunning, setDoctorRunning] = useState(false)
   const [doctorProgress, setDoctorProgress] = useState<{ label: string; completed: number; total: number } | null>(null)
@@ -268,6 +296,8 @@ function App() {
     chunkCoverage?: DoctorReport
     rangeAccess?: DoctorReport
     chunkDecode?: DoctorReport
+    sanity?: DoctorSanityReport
+    snipScan?: DoctorReport
   } | null>(null)
   const [isLoadingPlayback, setIsLoadingPlayback] = useState(false)
   const [playbackError, setPlaybackError] = useState<string | null>(null)
@@ -1129,6 +1159,7 @@ function App() {
     await manifestService.init()
     // Pull fresh chunk data for diagnostics so we don't race the detail-open effect.
     const chunksForDoctor = await manifestService.getChunkData(selectedRecording.id)
+    const playableChunksForDoctor = chunksForDoctor.filter((chunk) => chunk.seq > 0)
 
     const durationMsGuess =
       selectedRecordingDurationMs ??
@@ -1147,6 +1178,7 @@ function App() {
       const segments: DoctorSegmentResult[] = []
       setDoctorProgress({ label: 'Chunk coverage scan', completed: 0, total: segmentCount })
 
+      let coveredMs = 0
       for (let i = 0; i < segmentCount; i += 1) {
         if (isCancelled()) return
         const startMs = i * stepMs
@@ -1173,6 +1205,7 @@ function App() {
             meta: { chunkId: chunk.id, seq: chunk.seq, chunkStartMs: chunk.startMs, chunkEndMs: chunk.endMs },
           })
         } else {
+          coveredMs += endMs - startMs
           segments.push({
             index: i,
             startMs,
@@ -1193,6 +1226,12 @@ function App() {
         totalDurationMs,
         segments,
         summary: summarizeReport(segments),
+        metrics: {
+          expectedDurationMs: totalDurationMs,
+          observedDurationMs: coveredMs,
+          expectedItemCount: segmentCount,
+          observedItemCount: segmentCount - summarizeReport(segments).error,
+        },
       }
     }
 
@@ -1200,6 +1239,8 @@ function App() {
       const segments: DoctorSegmentResult[] = []
       setDoctorProgress({ label: 'Range access scan (0.1s)', completed: 0, total: segmentCount })
 
+      let observedMs = 0
+      let observedCount = 0
       for (let i = 0; i < segmentCount; i += 1) {
         if (isCancelled()) return
         const startMs = i * stepMs
@@ -1211,6 +1252,8 @@ function App() {
             endMs,
             selectedRecording.mimeType ?? null,
           )
+          observedMs += inspection.durationMs
+          observedCount += 1
           const expectedMs = endMs - startMs
           const hasTooShort = inspection.durationMs < Math.min(expectedMs * 0.5, expectedMs - 10)
           const silent = inspection.sampleCount > 0 && inspection.rms <= 0.00001 && inspection.peak <= 0.00005
@@ -1250,12 +1293,17 @@ function App() {
         totalDurationMs,
         segments,
         summary: summarizeReport(segments),
+        metrics: {
+          expectedDurationMs: totalDurationMs,
+          observedDurationMs: observedMs,
+          expectedItemCount: segmentCount,
+          observedItemCount: observedCount,
+        },
       }
     }
 
     const runChunkDecodeScan = async () => {
-      const playableChunks = chunksForDoctor.filter((chunk) => chunk.seq > 0)
-      setDoctorProgress({ label: 'Per-chunk decode scan', completed: 0, total: playableChunks.length })
+      setDoctorProgress({ label: 'Per-chunk decode scan', completed: 0, total: playableChunksForDoctor.length })
       const segments: DoctorSegmentResult[] = []
       if (typeof window === 'undefined' || typeof window.AudioContext === 'undefined') {
         reports.chunkDecode = {
@@ -1271,16 +1319,21 @@ function App() {
             },
           ],
           summary: { ok: 0, warn: 0, error: 1, total: 1 },
+          metrics: { expectedDurationMs: null, observedDurationMs: null, expectedItemCount: null, observedItemCount: null },
         }
         return
       }
 
       const audioContext = new AudioContext()
+      let expectedMs = 0
+      let decodedMs = 0
+      let decodedCount = 0
       try {
-        for (let i = 0; i < playableChunks.length; i += 1) {
+        for (let i = 0; i < playableChunksForDoctor.length; i += 1) {
           if (isCancelled()) return
-          const chunk = playableChunks[i]
+          const chunk = playableChunksForDoctor[i]
           const seq = chunk.seq
+          expectedMs += Math.max(0, chunk.endMs - chunk.startMs)
           try {
             const slice = await recordingSlicesApi.getChunkAudio(selectedRecording, seq)
             if (!slice) {
@@ -1294,13 +1347,28 @@ function App() {
               })
             } else {
               const arrayBuffer = await slice.blob.arrayBuffer()
-              await audioContext.decodeAudioData(arrayBuffer.slice(0))
+              const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0))
+              const chunkDecodedMs = Math.max(0, decoded.duration * 1000)
+              decodedMs += chunkDecodedMs
+              decodedCount += 1
+              const expectedChunkMs = Math.max(0, chunk.endMs - chunk.startMs)
+              const driftMs = Math.abs(chunkDecodedMs - expectedChunkMs)
+              const status: DoctorSegmentStatus = driftMs > 250 ? 'warn' : 'ok'
+              const reason = driftMs > 250 ? 'Decoded duration differs from expected chunk timing' : undefined
               segments.push({
                 index: i,
                 startMs: chunk.startMs,
                 endMs: chunk.endMs,
-                status: 'ok',
-                meta: { seq, blobType: slice.mimeType, blobBytes: slice.blob.size },
+                status,
+                reason,
+                meta: {
+                  seq,
+                  blobType: slice.mimeType,
+                  blobBytes: slice.blob.size,
+                  decodedMs: chunkDecodedMs,
+                  expectedMs: expectedChunkMs,
+                  driftMs,
+                },
               })
             }
           } catch (error) {
@@ -1315,7 +1383,7 @@ function App() {
           }
 
           if (i % 5 === 0) {
-            setDoctorProgress({ label: 'Per-chunk decode scan', completed: i + 1, total: playableChunks.length })
+            setDoctorProgress({ label: 'Per-chunk decode scan', completed: i + 1, total: playableChunksForDoctor.length })
             await yieldToUI()
           }
         }
@@ -1325,16 +1393,190 @@ function App() {
         })
       }
 
-      setDoctorProgress({ label: 'Per-chunk decode scan', completed: playableChunks.length, total: playableChunks.length })
+      setDoctorProgress({
+        label: 'Per-chunk decode scan',
+        completed: playableChunksForDoctor.length,
+        total: playableChunksForDoctor.length,
+      })
       reports.chunkDecode = {
         stepMs: 1,
         totalDurationMs,
         segments,
         summary: summarizeReport(segments),
+        metrics: {
+          expectedDurationMs: expectedMs,
+          observedDurationMs: decodedMs,
+          expectedItemCount: playableChunksForDoctor.length,
+          observedItemCount: decodedCount,
+        },
+      }
+    }
+
+    const runSanityChecks = async () => {
+      const findings: DoctorSanityFinding[] = []
+
+      const sessionDurationMs = Number.isFinite(selectedRecording.durationMs) ? Math.max(0, selectedRecording.durationMs) : null
+      const chunkMaxEndMs =
+        playableChunksForDoctor.length > 0 ? Math.max(...playableChunksForDoctor.map((chunk) => chunk.endMs)) : null
+      const chunkSumDurationMs = playableChunksForDoctor.reduce((sum, chunk) => sum + Math.max(0, chunk.endMs - chunk.startMs), 0)
+
+      // Chunk ordering / overlaps / gaps.
+      const ordered = [...playableChunksForDoctor].sort((a, b) => a.seq - b.seq)
+      let overlaps = 0
+      let gaps = 0
+      for (let i = 1; i < ordered.length; i += 1) {
+        const prev = ordered[i - 1]
+        const current = ordered[i]
+        if (current.startMs < prev.endMs - 5) overlaps += 1
+        if (current.startMs > prev.endMs + 50) gaps += 1
+      }
+      if (overlaps > 0) {
+        findings.push({ level: 'warn', message: `Chunk timings overlap in ${overlaps} places.`, meta: { overlaps } })
+      }
+      if (gaps > 0) {
+        findings.push({ level: 'warn', message: `Chunk timings have gaps in ${gaps} places.`, meta: { gaps } })
+      }
+
+      if (sessionDurationMs !== null && chunkMaxEndMs !== null) {
+        const drift = chunkMaxEndMs - sessionDurationMs
+        if (Math.abs(drift) > 1000) {
+          findings.push({
+            level: drift > 0 ? 'warn' : 'warn',
+            message: 'Session duration and chunk max end differ by >1s.',
+            meta: { sessionDurationMs, chunkMaxEndMs, driftMs: drift },
+          })
+        } else {
+          findings.push({
+            level: 'info',
+            message: 'Session duration and chunk max end are close.',
+            meta: { sessionDurationMs, chunkMaxEndMs, driftMs: drift },
+          })
+        }
+      }
+
+      // Snip sanity: make sure snips do not extend way past session/chunks.
+      let snipCount: number | null = null
+      let snipMaxEndMs: number | null = null
+      let snipSumDurationMs: number | null = null
+      try {
+        const snips = await recordingSlicesApi.listSnips(selectedRecording, selectedRecording.mimeType ?? null)
+        snipCount = snips.length
+        snipMaxEndMs = snips.length > 0 ? Math.max(...snips.map((snip) => snip.endMs)) : 0
+        snipSumDurationMs = snips.reduce((sum, snip) => sum + Math.max(0, snip.durationMs), 0)
+
+        const baselineDurationMs = chunkMaxEndMs ?? sessionDurationMs ?? totalDurationMs
+        if (baselineDurationMs > 0 && snipMaxEndMs > baselineDurationMs + 2000) {
+          findings.push({
+            level: 'error',
+            message: 'Snips extend beyond the expected session duration by >2s.',
+            meta: { baselineDurationMs, snipMaxEndMs, driftMs: snipMaxEndMs - baselineDurationMs },
+          })
+        } else {
+          findings.push({
+            level: 'info',
+            message: 'Snip end times are within expected duration.',
+            meta: { baselineDurationMs, snipMaxEndMs },
+          })
+        }
+      } catch (error) {
+        findings.push({
+          level: 'error',
+          message: 'Failed to compute snips for sanity checks.',
+          meta: { error: error instanceof Error ? error.message : String(error) },
+        })
+      }
+
+      reports.sanity = {
+        findings,
+        metrics: {
+          sessionDurationMs,
+          chunkMaxEndMs,
+          chunkSumDurationMs,
+          snipCount,
+          snipMaxEndMs,
+          snipSumDurationMs,
+        },
+      }
+    }
+
+    const runSnipScan = async () => {
+      setDoctorProgress({ label: 'Snip scan (each snip)', completed: 0, total: 1 })
+      const snips = await recordingSlicesApi.listSnips(selectedRecording, selectedRecording.mimeType ?? null)
+      const segments: DoctorSegmentResult[] = []
+      const expectedDurationMs = snips.reduce((sum, snip) => sum + Math.max(0, snip.durationMs), 0)
+      let observedDurationMs = 0
+      let okCount = 0
+
+      setDoctorProgress({ label: 'Snip scan (each snip)', completed: 0, total: snips.length })
+      for (let i = 0; i < snips.length; i += 1) {
+        if (isCancelled()) return
+        const snip = snips[i]
+        const snipNumber = i + 1
+        try {
+          const inspection = await recordingSlicesApi.inspectRange(
+            selectedRecording,
+            snip.startMs,
+            snip.endMs,
+            selectedRecording.mimeType ?? null,
+          )
+          observedDurationMs += inspection.durationMs
+          okCount += 1
+          const driftMs = Math.abs(inspection.durationMs - Math.max(0, snip.durationMs))
+          const silent = inspection.sampleCount > 0 && inspection.rms <= 0.00001 && inspection.peak <= 0.00005
+          const status: DoctorSegmentStatus = driftMs > 500 ? 'warn' : silent ? 'warn' : 'ok'
+          const reason = driftMs > 500 ? 'Decoded snip duration differs from expected' : silent ? 'Snip appears silent' : undefined
+          segments.push({
+            index: i,
+            startMs: snip.startMs,
+            endMs: snip.endMs,
+            status,
+            reason,
+            meta: {
+              snipNumber,
+              expectedMs: snip.durationMs,
+              decodedMs: inspection.durationMs,
+              driftMs,
+              rms: inspection.rms,
+              peak: inspection.peak,
+              sampleCount: inspection.sampleCount,
+            },
+          })
+        } catch (error) {
+          segments.push({
+            index: i,
+            startMs: snip.startMs,
+            endMs: snip.endMs,
+            status: 'error',
+            reason: error instanceof Error ? error.message : String(error),
+            meta: { snipNumber },
+          })
+        }
+
+        if (i % 5 === 0) {
+          setDoctorProgress({ label: 'Snip scan (each snip)', completed: i + 1, total: snips.length })
+          await yieldToUI()
+        }
+      }
+
+      setDoctorProgress({ label: 'Snip scan (each snip)', completed: snips.length, total: snips.length })
+      reports.snipScan = {
+        stepMs: 0,
+        totalDurationMs: snips.length > 0 ? snips[snips.length - 1].endMs : 0,
+        segments,
+        summary: summarizeReport(segments),
+        metrics: {
+          expectedDurationMs,
+          observedDurationMs,
+          expectedItemCount: snips.length,
+          observedItemCount: okCount,
+        },
       }
     }
 
     try {
+      if (doctorSelections.sanityChecks) {
+        await runSanityChecks()
+      }
       if (doctorSelections.chunkCoverageScan) {
         await runChunkCoverageScan()
       }
@@ -1343,6 +1585,9 @@ function App() {
       }
       if (doctorSelections.chunkDecodeScan) {
         await runChunkDecodeScan()
+      }
+      if (doctorSelections.snipScan) {
+        await runSnipScan()
       }
 
       if (isCancelled()) {
@@ -1365,6 +1610,8 @@ function App() {
     doctorSelections.chunkCoverageScan,
     doctorSelections.chunkDecodeScan,
     doctorSelections.rangeAccessScan,
+    doctorSelections.sanityChecks,
+    doctorSelections.snipScan,
     selectedRecording,
     selectedRecordingDurationMs,
   ])
@@ -2035,6 +2282,17 @@ function App() {
                       <label className="doctor-test">
                         <input
                           type="checkbox"
+                          checked={doctorSelections.sanityChecks}
+                          disabled={doctorRunning}
+                          onChange={(event) =>
+                            setDoctorSelections((prev) => ({ ...prev, sanityChecks: event.target.checked }))
+                          }
+                        />
+                        <span>Sanity checks (durations, snip bounds, chunk timing)</span>
+                      </label>
+                      <label className="doctor-test">
+                        <input
+                          type="checkbox"
                           checked={doctorSelections.chunkCoverageScan}
                           disabled={doctorRunning}
                           onChange={(event) =>
@@ -2065,6 +2323,17 @@ function App() {
                         />
                         <span>Per-chunk decode scan (decode each chunk blob)</span>
                       </label>
+                      <label className="doctor-test">
+                        <input
+                          type="checkbox"
+                          checked={doctorSelections.snipScan}
+                          disabled={doctorRunning}
+                          onChange={(event) =>
+                            setDoctorSelections((prev) => ({ ...prev, snipScan: event.target.checked }))
+                          }
+                        />
+                        <span>Snip scan (inspect each snip range)</span>
+                      </label>
                     </div>
 
                     {doctorProgress ? (
@@ -2076,6 +2345,48 @@ function App() {
                       <p className="detail-transcription-placeholder" role="alert">
                         {doctorError}
                       </p>
+                    ) : null}
+
+                    {doctorReports?.sanity ? (
+                      <div className="doctor-report">
+                        <h4>Sanity checks</h4>
+                        <p className="doctor-summary">
+                          Session duration: {doctorReports.sanity.metrics.sessionDurationMs ?? 0} ms · Chunk max end:{' '}
+                          {doctorReports.sanity.metrics.chunkMaxEndMs ?? 0} ms · Chunk sum:{' '}
+                          {doctorReports.sanity.metrics.chunkSumDurationMs ?? 0} ms · Snips:{' '}
+                          {doctorReports.sanity.metrics.snipCount ?? 0} · Snip max end:{' '}
+                          {doctorReports.sanity.metrics.snipMaxEndMs ?? 0} ms · Snip sum:{' '}
+                          {doctorReports.sanity.metrics.snipSumDurationMs ?? 0} ms
+                        </p>
+                        <div className="doctor-report-actions">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              downloadDoctorJson(`sanity-${selectedRecording.id}`, {
+                                sessionId: selectedRecording.id,
+                                mimeType: selectedRecording.mimeType,
+                                report: doctorReports.sanity,
+                              })
+                            }
+                          >
+                            Download JSON
+                          </button>
+                        </div>
+                        <div className="doctor-details">
+                          {doctorReports.sanity.findings.length === 0 ? (
+                            <p className="detail-transcription-placeholder">No findings.</p>
+                          ) : (
+                            doctorReports.sanity.findings.map((finding, idx) => (
+                              <div key={idx} className={`doctor-detail-row is-${finding.level === 'info' ? 'ok' : finding.level}`}>
+                                <div className="doctor-detail-main">
+                                  <span className="doctor-detail-badge">{finding.level.toUpperCase()}</span>
+                                  <span className="doctor-detail-reason">{finding.message}</span>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
                     ) : null}
 
                     {(() => {
@@ -2099,6 +2410,11 @@ function App() {
                             OK {report.summary.ok} ({formatPercent(report.summary.ok, report.summary.total)}) · Warn{' '}
                             {report.summary.warn} ({formatPercent(report.summary.warn, report.summary.total)}) · Error{' '}
                             {report.summary.error} ({formatPercent(report.summary.error, report.summary.total)})
+                          </p>
+                          <p className="doctor-summary">
+                            Expected audio: {((report.metrics.expectedDurationMs ?? 0) / 1000).toFixed(1)}s · Observed audio:{' '}
+                            {((report.metrics.observedDurationMs ?? 0) / 1000).toFixed(1)}s · Expected segments:{' '}
+                            {report.metrics.expectedItemCount ?? 0} · Observed segments: {report.metrics.observedItemCount ?? 0}
                           </p>
                           <div className="doctor-report-actions">
                             <button
@@ -2165,6 +2481,11 @@ function App() {
                             {report.summary.warn} ({formatPercent(report.summary.warn, report.summary.total)}) · Error{' '}
                             {report.summary.error} ({formatPercent(report.summary.error, report.summary.total)})
                           </p>
+                          <p className="doctor-summary">
+                            Expected audio: {((report.metrics.expectedDurationMs ?? 0) / 1000).toFixed(1)}s · Observed audio:{' '}
+                            {((report.metrics.observedDurationMs ?? 0) / 1000).toFixed(1)}s · Expected windows:{' '}
+                            {report.metrics.expectedItemCount ?? 0} · Decoded windows: {report.metrics.observedItemCount ?? 0}
+                          </p>
                           <div className="doctor-report-actions">
                             <button
                               type="button"
@@ -2228,6 +2549,11 @@ function App() {
                             {report.summary.warn} ({formatPercent(report.summary.warn, report.summary.total)}) · Error{' '}
                             {report.summary.error} ({formatPercent(report.summary.error, report.summary.total)})
                           </p>
+                          <p className="doctor-summary">
+                            Expected audio: {((report.metrics.expectedDurationMs ?? 0) / 1000).toFixed(1)}s · Decoded audio:{' '}
+                            {((report.metrics.observedDurationMs ?? 0) / 1000).toFixed(1)}s · Expected chunks:{' '}
+                            {report.metrics.expectedItemCount ?? 0} · Decoded chunks: {report.metrics.observedItemCount ?? 0}
+                          </p>
                           <div className="doctor-report-actions">
                             <button
                               type="button"
@@ -2250,6 +2576,73 @@ function App() {
                                   key={`${group.status}:${group.reason}`}
                                   className={`doctor-detail-row is-${group.status}`}
                                 >
+                                  <div className="doctor-detail-main">
+                                    <span className="doctor-detail-badge">{group.status.toUpperCase()}</span>
+                                    <span className="doctor-detail-reason">{group.reason}</span>
+                                    <span className="doctor-detail-count">
+                                      {group.count} ({formatPercent(group.count, report.summary.total)})
+                                    </span>
+                                  </div>
+                                  <div className="doctor-detail-examples">
+                                    {group.examples.map((segment) => (
+                                      <span key={segment.index} className="doctor-detail-example">
+                                        #{segment.index + 1}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      )
+                    })()}
+
+                    {(() => {
+                      const report = doctorReports?.snipScan
+                      if (!report) return null
+                      return (
+                        <div className="doctor-report">
+                          <h4>Snip scan (each snip)</h4>
+                          <div className="doctor-bar" role="img" aria-label="Snip scan results timeline">
+                            {report.segments.map((segment) => (
+                              <span
+                                key={segment.index}
+                                className={`doctor-segment is-${segment.status}`}
+                                title={`Snip #${segment.index + 1} · ${formatTimecodeTenths(segment.startMs)}–${formatTimecodeTenths(
+                                  segment.endMs,
+                                )}${segment.reason ? ` · ${segment.reason}` : ''}`}
+                              />
+                            ))}
+                          </div>
+                          <p className="doctor-summary">
+                            OK {report.summary.ok} ({formatPercent(report.summary.ok, report.summary.total)}) · Warn{' '}
+                            {report.summary.warn} ({formatPercent(report.summary.warn, report.summary.total)}) · Error{' '}
+                            {report.summary.error} ({formatPercent(report.summary.error, report.summary.total)})
+                          </p>
+                          <p className="doctor-summary">
+                            Expected audio: {((report.metrics.expectedDurationMs ?? 0) / 1000).toFixed(1)}s · Observed audio:{' '}
+                            {((report.metrics.observedDurationMs ?? 0) / 1000).toFixed(1)}s · Expected snips:{' '}
+                            {report.metrics.expectedItemCount ?? 0} · Decoded snips: {report.metrics.observedItemCount ?? 0}
+                          </p>
+                          <div className="doctor-report-actions">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                downloadDoctorJson(`snip-scan-${selectedRecording.id}`, {
+                                  sessionId: selectedRecording.id,
+                                  mimeType: selectedRecording.mimeType,
+                                  report,
+                                })
+                              }
+                            >
+                              Download JSON
+                            </button>
+                          </div>
+                          <div className="doctor-details">
+                            {groupSegmentsByReason(report.segments)
+                              .filter((group) => group.status !== 'ok')
+                              .map((group) => (
+                                <div key={`${group.status}:${group.reason}`} className={`doctor-detail-row is-${group.status}`}>
                                   <div className="doctor-detail-main">
                                     <span className="doctor-detail-badge">{group.status.toUpperCase()}</span>
                                     <span className="doctor-detail-reason">{group.reason}</span>
