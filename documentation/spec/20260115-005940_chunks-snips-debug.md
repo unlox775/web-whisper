@@ -38,6 +38,7 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-225500: Added non-developer “Retry TX” action to retrigger all snip transcriptions.
 - 20260115-232500: Stop all active playback on tab hide to prevent stacked audio on return.
 - 20260115-232500: Retry TX now forces fresh snip list + ignores busy flags; delete blocked during active recording.
+- 20260115-235500: Added verbose decode error context and skip Groq when snip audio slice is empty.
 
 ## 🚧 In progress
 

@@ -250,9 +250,22 @@ export class RecordingSlicesApi {
     const blob = needsInit ? new Blob([headerChunk.blob, chunk.blob], { type: mimeType }) : chunk.blob
 
     const audioContext = await this.#getAudioContext()
-    const arrayBuffer = await blob.arrayBuffer()
-    const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0))
-    return decoded
+    try {
+      const arrayBuffer = await blob.arrayBuffer()
+      const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0))
+      return decoded
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const detail = [
+        `session=${session.id}`,
+        `chunk=${chunk.id}`,
+        `seq=${chunk.seq}`,
+        `bytes=${blob.size}`,
+        `mime=${mimeType}`,
+        needsInit ? 'init=1' : 'init=0',
+      ].join(' ')
+      throw new Error(`Failed to decode chunk audio (${detail})${message ? `: ${message}` : ''}`)
+    }
   }
 
   async #decodeRangeToMonoSamples(

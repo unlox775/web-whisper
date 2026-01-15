@@ -1158,12 +1158,19 @@ function App() {
         if (!slice) {
           throw new Error('Unable to resolve snip audio for transcription.')
         }
+        if (slice.durationMs <= 0 || slice.blob.size === 0) {
+          throw new Error(
+            `Snip audio slice is empty (snip=${snip.id} start=${snip.startMs} end=${snip.endMs} duration=${slice.durationMs} bytes=${slice.blob.size})`,
+          )
+        }
         await logInfo('Snip transcription started', {
           sessionId: session.id,
           snipId: snip.id,
           model: DEFAULT_GROQ_MODEL,
           startMs: snip.startMs,
           endMs: snip.endMs,
+          sliceDurationMs: slice.durationMs,
+          sliceBytes: slice.blob.size,
         })
 
         const result = await transcriptionService.transcribeAudio({
@@ -1199,6 +1206,9 @@ function App() {
           sessionId: session.id,
           snipId: snip.id,
           error: message,
+          startMs: snip.startMs,
+          endMs: snip.endMs,
+          durationMs: snip.durationMs,
         })
         const updated = await manifestService.updateSnipTranscription(snip.id, { transcriptionError: message })
         if (updateUi && updated) {
