@@ -2155,11 +2155,8 @@ function App() {
   const playbackProgress = resolvedPlaybackDurationSeconds > 0
     ? (audioState.position / resolvedPlaybackDurationSeconds) * 100
     : 0
-    const effectiveChunkCount = Math.max(
-      0,
-      captureState.chunksRecorded - (captureState.chunksRecorded > 0 ? 1 : 0),
-    )
-    const hasInitSegment = captureState.chunksRecorded > 0
+    const hasInitSegment = /mp4|m4a/i.test(captureState.mimeType ?? '') && captureState.chunksRecorded > 0
+    const effectiveChunkCount = Math.max(0, captureState.chunksRecorded - (hasInitSegment ? 1 : 0))
 
   return (
       <div className="app-shell">
