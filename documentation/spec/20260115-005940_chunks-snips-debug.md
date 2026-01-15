@@ -45,6 +45,7 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-260000: Auto-transcribe retries failed snips after successes; start button pulses while warming up and dev strip uses live elapsed data size.
 - 20260115-223934: Capture dev strip labels shortened and moved under the capture controls to avoid blocking the stop button.
 - 20260115-223934: Session list now shows a delete button, logs delete attempts, and adds retry/spinner states for pending or in-flight transcriptions.
+- 20260115-225125: Delete actions now log confirmation outcomes, verify deletes, and list delete buttons only show for no-audio or error sessions.
 
 ## 🚧 In progress
 

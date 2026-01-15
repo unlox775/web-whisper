@@ -1750,11 +1750,29 @@ function App() {
       await logWarn('Delete blocked for active recording', { sessionId: selectedRecording.id })
       return
     }
-    await manifestService.init()
+    try {
+      await manifestService.init()
+    } catch (error) {
+      console.error('[UI] Failed to init manifest for delete', error)
+      await logError('Delete init failed', {
+        sessionId: selectedRecording.id,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return
+    }
+    await logInfo('Delete confirmation opened', { sessionId: selectedRecording.id })
     const confirmed = window.confirm('Delete this recording? This cannot be undone.')
-    if (!confirmed) return
+    if (!confirmed) {
+      await logInfo('Delete recording cancelled', { sessionId: selectedRecording.id })
+      return
+    }
+    await logInfo('Delete recording confirmed', { sessionId: selectedRecording.id })
     try {
       await manifestService.deleteSession(selectedRecording.id)
+      const remaining = await manifestService.getSession(selectedRecording.id)
+      if (remaining) {
+        await logWarn('Delete verification failed', { sessionId: selectedRecording.id })
+      }
       await logInfo('Recording deleted', { sessionId: selectedRecording.id })
       await handleCloseDetail()
       await loadSessions()
@@ -1776,11 +1794,30 @@ function App() {
         await logWarn('Delete blocked for active recording', { sessionId: session.id, source: 'list' })
         return
       }
-      await manifestService.init()
+      try {
+        await manifestService.init()
+      } catch (error) {
+        console.error('[UI] Failed to init manifest for delete', error)
+        await logError('Delete init failed', {
+          sessionId: session.id,
+          source: 'list',
+          error: error instanceof Error ? error.message : String(error),
+        })
+        return
+      }
+      await logInfo('Delete confirmation opened', { sessionId: session.id, source: 'list' })
       const confirmed = window.confirm('Delete this recording? This cannot be undone.')
-      if (!confirmed) return
+      if (!confirmed) {
+        await logInfo('Delete recording cancelled', { sessionId: session.id, source: 'list' })
+        return
+      }
+      await logInfo('Delete recording confirmed', { sessionId: session.id, source: 'list' })
       try {
         await manifestService.deleteSession(session.id)
+        const remaining = await manifestService.getSession(session.id)
+        if (remaining) {
+          await logWarn('Delete verification failed', { sessionId: session.id, source: 'list' })
+        }
         await logInfo('Recording deleted', { sessionId: session.id, source: 'list' })
         if (selectedRecording?.id === session.id) {
           await handleCloseDetail()
@@ -2980,6 +3017,9 @@ function App() {
               const errorNotes = session.status === 'error' ? session.notes ?? 'Recording error.' : ''
               const isRetrying = Boolean(retryingSessionIds[session.id])
               const isTranscribing = Boolean(transcriptionInProgress[session.id] || isRetrying)
+              const hasAudio =
+                session.chunkCount > 0 && session.totalBytes > 0 && (session.durationMs ?? 0) > 0
+              const shouldShowListDelete = !hasAudio || session.status === 'error'
               const metadataLabel = `${formatSessionDateTime(session.startedAt)} · ${formatCompactDataSize(session.totalBytes)}`
               const isHighlighted = session.id === highlightedSessionId
               const cardClasses = ['session-card']
@@ -3038,23 +3078,25 @@ function App() {
                           {isRetrying ? 'Retrying…' : 'Retry TX'}
                         </button>
                       ) : null}
-                      <button
-                        type="button"
-                        className="session-delete"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          void handleDeleteSession(session)
-                        }}
-                        disabled={session.id === captureState.sessionId && captureState.state === 'recording'}
-                        aria-label={`Delete ${session.title}`}
-                        title={
-                          session.id === captureState.sessionId && captureState.state === 'recording'
-                            ? 'Stop the active recording before deleting it.'
-                            : 'Delete recording'
-                        }
-                      >
-                        🗑
-                      </button>
+                      {shouldShowListDelete ? (
+                        <button
+                          type="button"
+                          className="session-delete"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            void handleDeleteSession(session)
+                          }}
+                          disabled={session.id === captureState.sessionId && captureState.state === 'recording'}
+                          aria-label={`Delete ${session.title}`}
+                          title={
+                            session.id === captureState.sessionId && captureState.state === 'recording'
+                              ? 'Stop the active recording before deleting it.'
+                              : 'Delete recording'
+                          }
+                        >
+                          🗑
+                        </button>
+                      ) : null}
                     </div>
                   </article>
                 </li>

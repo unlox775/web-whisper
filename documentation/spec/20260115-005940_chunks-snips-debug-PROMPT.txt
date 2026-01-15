@@ -418,3 +418,24 @@ Alright, this is actually capturing audio now. That looks great. I want you to c
 Also, the other thing that should be... The delete buttons are still not working. I think it would be great if you could add a log entry to help debug that a little bit. I hit delete. I think the error recording failed to start. You could probably put the delete button right there on the page so I don't even have to open up the thing in order to hit delete. That would be handy. Um... Yeah. There's a handful of old transcription pendings down below. So... If... no transcriptions have been done, and you're just stuck on the transcription pending thing, that should also have a retry TX button on it. These are older ones, but theoretically, that should also, if you ever get stuck into that state, that should have a retry TX.
 
 Last thing, looks like the retries are working. I had one of them fail this time and it waited a second and then it tried again and it worked. I think while the transcriptions are still in process and they're either non-transcribed things that haven't finished, haven't started, or are still pending to complete. or ones that are being retried that haven't finished their retry count yet, you shouldn't actually show that retry TX button. You should also have some kind of a spinner or something showing on the... transcription. I'm thinking on the main view and you're just seeing a list of all the recordings. It's showing the excerpts of pieces of the transcription, but some kind of a spinner. which would be really nice to show that the transcriptions are still in process.
+
+Web Whisper — Doctor Report (compact)
+Session: 3ae1c37f-b193-443c-a7c2-75b5f5ae1fb5
+StartedAt: 2026-01-15T22:39:40.194Z
+DurationMs: 5616  (=5.6s)
+Mime: audio/mpeg  Chunks: 2  Timing: verified
+
+Recent logs (last 30):
+- 2026-01-15T22:43:39.188Z info Logger initialised
+- 2026-01-15T22:43:48.820Z info Delete recording requested
+- 2026-01-15T22:43:49.950Z info Delete recording requested
+- 2026-01-15T22:43:50.665Z info Delete recording requested
+- 2026-01-15T22:43:50.847Z info Delete recording requested
+- 2026-01-15T22:43:51.051Z info Delete recording requested
+- 2026-01-15T22:43:51.199Z info Delete recording requested
+- 2026-01-15T22:43:51.384Z info Delete recording requested
+- 2026-01-15T22:43:51.716Z info Delete recording requested
+- 2026-01-15T22:43:51.919Z info Delete recording requested
+- 2026-01-15T22:44:02.428Z info Playback source prepared
+
+It is still not deleting when I hit the button. Also, don’t show the delete button on the main recording list tiles unless  has no audio or has another non-transcription error on it.  I want them to have to click into the  first if they want to actually delete a real transcription.
