@@ -1,5 +1,4 @@
 import { SessionAnalysisProvider } from '../analysis/session-analysis-provider'
-import type { SegmentSummary } from '../analysis/session-analysis'
 import {
   manifestService,
   type ManifestService,
