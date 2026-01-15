@@ -1253,7 +1253,7 @@ function App() {
   }
 
   const inferChunkTimebase = (chunks: StoredChunk[], baseStartMs: number): 'absolute' | 'offset' | 'unknown' => {
-    const sample = chunks.find((chunk) => chunk.seq > 0) ?? null
+    const sample = chunks.find((chunk) => chunk.seq >= 0) ?? null
     if (!sample) return 'unknown'
     if (sample.startMs > 1_000_000_000_000 && baseStartMs > 1_000_000_000_000) return 'absolute'
     if (sample.startMs >= 0 && sample.startMs < 86_400_000) return 'offset'
@@ -1281,7 +1281,7 @@ function App() {
     await manifestService.init()
     // Pull fresh chunk data for diagnostics so we don't race the detail-open effect.
     const chunksForDoctor = await manifestService.getChunkData(selectedRecording.id)
-    const playableChunksForDoctor = chunksForDoctor.filter((chunk) => chunk.seq > 0)
+    const playableChunksForDoctor = chunksForDoctor.filter((chunk) => !isHeaderSegment(chunk))
     const baseStartMsCandidate =
       chunksForDoctor.find((chunk) => chunk.seq === 0)?.startMs ??
       playableChunksForDoctor[0]?.startMs ??

@@ -16,7 +16,7 @@ export interface SequencedChunkTiming extends SequencedChunkDuration {
 /**
  * Deterministically rebuilds absolute start/end timestamps for a session's chunk sequence.
  * The algorithm assumes `durationMs` already reflects the verified audio length for each chunk.
- * Chunk `seq === 0` is treated as the header/handshake chunk and therefore has zero duration.
+ * Any header/init chunk should be passed in with `durationMs: 0` by the caller.
  */
 export function computeSequentialTimings(
   baseStartMs: number,
@@ -30,12 +30,10 @@ export function computeSequentialTimings(
     const safeDuration = Number.isFinite(chunk.durationMs) && chunk.durationMs > 0 ? Math.round(chunk.durationMs) : 0
     // Build the monotonic start timestamp by adding the cumulative offset to the base.
     const startMs = Math.round(baseStartMs + rollingOffset)
-    // The end timestamp is the start plus the verified duration (header chunks stay zero-length).
-    const endMs = chunk.seq === 0 ? startMs : Math.round(startMs + safeDuration)
+    // The end timestamp is the start plus the verified duration.
+    const endMs = Math.round(startMs + safeDuration)
     // Accumulate the duration so the next chunk begins where this one finishes.
-    if (chunk.seq !== 0) {
-      rollingOffset += safeDuration
-    }
+    rollingOffset += safeDuration
     return {
       ...chunk,
       durationMs: safeDuration,

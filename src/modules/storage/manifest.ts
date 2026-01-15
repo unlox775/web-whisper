@@ -263,7 +263,8 @@ class IndexedDBManifestService implements ManifestService {
       blob,
       byteLength: blob.size,
       createdAt: Date.now(),
-      verifiedAudioMsec: entry.seq === 0 ? 0 : null,
+      // Only treat seq0 as init/header for mp4-like captures. For PCM->MP3 sessions, seq0 is real audio.
+      verifiedAudioMsec: entry.seq === 0 && /mp4|m4a/i.test(blob.type) ? 0 : null,
       timingStatus: DEFAULT_CHUNK_TIMING_STATUS,
     }
 
@@ -477,9 +478,15 @@ class IndexedDBManifestService implements ManifestService {
     const durations: number[] = new Array(ordered.length)
     const missingChunkIds: string[] = []
 
+    const sessionMime = normalizedSession?.mimeType ?? ''
+    const isMp4LikeSession = /mp4|m4a/i.test(sessionMime)
+    const likelyInitChunk =
+      isMp4LikeSession ? ordered.find((chunk) => chunk.seq === 0 && (chunk.endMs - chunk.startMs <= 10 || chunk.byteLength < 4096)) ?? null : null
+
     for (let i = 0; i < ordered.length; i += 1) {
       const chunk = ordered[i]
-      if (chunk.seq === 0) {
+      const isInit = likelyInitChunk?.id === chunk.id
+      if (isInit) {
         durations[i] = 0
         continue
       }
@@ -505,7 +512,7 @@ class IndexedDBManifestService implements ManifestService {
     }
 
     const baseStartMsCandidate =
-      ordered.find((chunk) => chunk.seq === 0)?.startMs ??
+      likelyInitChunk?.startMs ??
       normalizedSession?.startedAt ??
       ordered[0]?.startMs ??
       Date.now()
@@ -526,7 +533,7 @@ class IndexedDBManifestService implements ManifestService {
         missingChunkIds,
         totalVerifiedDurationMs: 0,
         baseStartMs,
-        verifiedChunkCount: ordered.filter((chunk, idx) => chunk.seq > 0 && durations[idx] > 0).length,
+        verifiedChunkCount: ordered.filter((_chunk, idx) => durations[idx] > 0).length,
         session: normalizedSession,
       }
     }
@@ -552,7 +559,7 @@ class IndexedDBManifestService implements ManifestService {
         ...current,
         startMs: plan.startMs,
         endMs: plan.endMs,
-        verifiedAudioMsec: plan.seq === 0 ? 0 : plan.durationMs,
+        verifiedAudioMsec: plan.durationMs,
         timingStatus: 'verified' as ChunkTimingStatus,
       }
 
@@ -570,8 +577,8 @@ class IndexedDBManifestService implements ManifestService {
 
       ordered[idx] = nextChunk
 
-      if (plan.seq > 0) {
-        // Accumulate verification totals so the caller can surface progress feedback.
+      // Accumulate verification totals so the caller can surface progress feedback.
+      if (plan.durationMs > 0) {
         verifiedChunkCount += 1
         totalVerifiedDurationMs += Math.max(0, plan.durationMs)
       }

@@ -210,8 +210,15 @@ export class RecordingSlicesApi {
     }
 
     const chunks = await this.#manifest.getChunkData(session.id)
-    const headerChunk = chunks.find((chunk) => chunk.seq === 0) ?? null
-    const playableChunks = chunks.filter((chunk) => chunk.seq > 0).sort((a, b) => a.seq - b.seq)
+    const sessionMime = session.mimeType ?? ''
+    const isMp4Like = /mp4|m4a/i.test(sessionMime)
+    const headerChunk =
+      isMp4Like
+        ? (chunks.find((chunk) => chunk.seq === 0 && (chunk.endMs - chunk.startMs <= 10 || chunk.byteLength < 4096)) ?? null)
+        : null
+    const playableChunks = chunks
+      .filter((chunk) => !headerChunk || chunk.id !== headerChunk.id)
+      .sort((a, b) => a.seq - b.seq)
     const baseStartMsCandidate =
       headerChunk?.startMs ??
       (playableChunks.length > 0 ? playableChunks[0].startMs : session.startedAt ?? Date.now())
