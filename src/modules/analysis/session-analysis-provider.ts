@@ -148,10 +148,29 @@ export class SessionAnalysisProvider {
       if (framesArray.length === 0) {
         return
       }
-      const durationMs = Math.max(0, profile.durationMs ?? framesArray.length * (profile.frameDurationMs ?? frameDurationMs))
+      const segmentFrameDuration =
+        profile.frameDurationMs > 0 ? profile.frameDurationMs : DEFAULT_SESSION_ANALYSIS_CONFIG.frameDurationMs
+
+      // Prefer the chunk timing range (captured/verified) over decoded durationMs. We've observed
+      // decodeAudioData sometimes returning inflated durations for individual fragments due to
+      // timestamp/edit-list quirks, which can cause the analysis timeline (and thus snips) to run
+      // beyond the real session audio length.
+      const timingDurationMs =
+        Number.isFinite(profile.chunkEndMs) && Number.isFinite(profile.chunkStartMs)
+          ? Math.max(0, Math.round(profile.chunkEndMs - profile.chunkStartMs))
+          : 0
+      const fallbackDurationMs = Math.max(
+        0,
+        Math.round(profile.durationMs ?? framesArray.length * segmentFrameDuration),
+      )
+      const durationMs = timingDurationMs > 0 ? timingDurationMs : fallbackDurationMs
       const startMs = cumulativeOffsetMs
-      const segmentFrameDuration = profile.frameDurationMs > 0 ? profile.frameDurationMs : DEFAULT_SESSION_ANALYSIS_CONFIG.frameDurationMs
-      framesArray.forEach((value, idx) => {
+
+      const expectedFrameCount = durationMs > 0 ? Math.ceil(durationMs / segmentFrameDuration) : framesArray.length
+      const usableFrameCount = Math.max(0, Math.min(framesArray.length, expectedFrameCount))
+
+      for (let idx = 0; idx < usableFrameCount; idx += 1) {
+        const value = framesArray[idx]
         const clampedValue = Number.isFinite(value) ? Math.max(0, value) : 0
         const frameStart = startMs + idx * segmentFrameDuration
         const frameEnd = Math.min(startMs + durationMs, frameStart + segmentFrameDuration)
@@ -163,7 +182,25 @@ export class SessionAnalysisProvider {
           normalized: clampedValue,
         })
         frameIndex += 1
-      })
+      }
+
+      // If the stored profile has fewer frames than expected, pad with zeros so subsequent
+      // segments don't shift earlier than their chunk timing implies.
+      for (let idx = usableFrameCount; idx < expectedFrameCount; idx += 1) {
+        const frameStart = startMs + idx * segmentFrameDuration
+        const frameEnd = Math.min(startMs + durationMs, frameStart + segmentFrameDuration)
+        if (frameEnd <= frameStart) {
+          break
+        }
+        frames.push({
+          index: frameIndex,
+          startMs: frameStart,
+          endMs: frameEnd,
+          rms: 0,
+          normalized: 0,
+        })
+        frameIndex += 1
+      }
       cumulativeOffsetMs += durationMs
       frameDurationMs = segmentFrameDuration
       if (sampleRate === 0 && profile.sampleRate > 0) {

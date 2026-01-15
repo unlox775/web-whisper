@@ -82,3 +82,5 @@ Decoded snip duration differs from expected
 Ok there is your doctor diagnosis, determine (1) what of your tests are broken, (2) what more test do you need to determine what is wrong with the recording/accessing libraries (3) or based on this, if you know what fixes you can make to the code or logging you can add, so when I do the next recording you will get the data you need to diagnose?
 
 Also, add a copy-logs (also copy all-diagnosis-tests) function that copies all logs this session, to the clipboard, so I can paste them here more easily
+
+Did you do anything to examine and fix the analysis timeline?  What is causing it to make snips up to 2 minutes for a source audio that is only 55 seconds long. Figure out where it is going wrong and fix that
