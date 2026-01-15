@@ -521,21 +521,6 @@ function App() {
   }, [captureState.state, captureState.startedAt])
 
   useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState !== 'visible') {
-        stopActivePlayback()
-      }
-    }
-    const handlePageHide = () => stopActivePlayback()
-    document.addEventListener('visibilitychange', handleVisibilityChange)
-    window.addEventListener('pagehide', handlePageHide)
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-      window.removeEventListener('pagehide', handlePageHide)
-    }
-  }, [stopActivePlayback])
-
-  useEffect(() => {
     if (captureState.state === 'recording') {
       setTranscriptionMounted(true)
       setTranscriptionLines(SIMULATED_STREAM.slice(0, 2))
@@ -1039,6 +1024,21 @@ function App() {
       audioRef.current.pause()
     }
   }, [])
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') {
+        stopActivePlayback()
+      }
+    }
+    const handlePageHide = () => stopActivePlayback()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('pagehide', handlePageHide)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('pagehide', handlePageHide)
+    }
+  }, [stopActivePlayback])
 
   const ensureSnipSlice = useCallback(
     async (snip: SnipRecord): Promise<RecordingAudioSlice | null> => {
