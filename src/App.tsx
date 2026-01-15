@@ -1279,14 +1279,26 @@ function App() {
     setDoctorReports(null)
 
     await manifestService.init()
+    // Make Doctor deterministic across refresh/no-refresh:
+    // - selectedRecording can be stale right after stop/timing reconciliation
+    // - recordingSlicesApi caches by session.updatedAt + chunkCount (stale session => stale cacheKey)
+    // Force a stable snapshot: verify timings (best-effort), clear slice caches, and re-read session.
+    try {
+      await manifestService.verifySessionChunkTimings(selectedRecording.id)
+    } catch {
+      // Ignore: timing verification may fail for partial/legacy data.
+    }
+    recordingSlicesApi.clearSession(selectedRecording.id)
+    const doctorSession = (await manifestService.getSession(selectedRecording.id)) ?? selectedRecording
+
     // Pull fresh chunk data for diagnostics so we don't race the detail-open effect.
     const chunksForDoctor = await manifestService.getChunkData(selectedRecording.id)
     const playableChunksForDoctor = chunksForDoctor.filter((chunk) => !isHeaderSegment(chunk))
     const baseStartMsCandidate =
       chunksForDoctor.find((chunk) => chunk.seq === 0)?.startMs ??
       playableChunksForDoctor[0]?.startMs ??
-      selectedRecording.startedAt
-    const baseStartMs = Number.isFinite(baseStartMsCandidate) ? Math.round(baseStartMsCandidate) : selectedRecording.startedAt
+      doctorSession.startedAt
+    const baseStartMs = Number.isFinite(baseStartMsCandidate) ? Math.round(baseStartMsCandidate) : doctorSession.startedAt
     const chunkTimebase = inferChunkTimebase(playableChunksForDoctor, baseStartMs)
     const playableChunkOffsets = playableChunksForDoctor.map((chunk) => ({
       ...chunk,
@@ -1295,7 +1307,7 @@ function App() {
 
     const durationMsGuess =
       selectedRecordingDurationMs ??
-      (playableChunkOffsets.length > 0 ? Math.max(...playableChunkOffsets.map((chunk) => chunk.endMs)) : selectedRecording.durationMs ?? 0)
+      (playableChunkOffsets.length > 0 ? Math.max(...playableChunkOffsets.map((chunk) => chunk.endMs)) : doctorSession.durationMs ?? 0)
     const totalDurationMs = Math.max(0, durationMsGuess)
     const stepMs = 100
     const segmentCount = totalDurationMs > 0 ? Math.ceil(totalDurationMs / stepMs) : 0
@@ -1379,10 +1391,10 @@ function App() {
         const endMs = Math.min(totalDurationMs, startMs + stepMs)
         try {
           const inspection = await recordingSlicesApi.inspectRange(
-            selectedRecording,
+            doctorSession,
             startMs,
             endMs,
-            selectedRecording.mimeType ?? null,
+            doctorSession.mimeType ?? null,
           )
           observedMs += inspection.durationMs
           observedCount += 1
@@ -1467,7 +1479,7 @@ function App() {
           const seq = chunk.seq
           expectedMs += Math.max(0, chunk.endMs - chunk.startMs)
           try {
-            const slice = await recordingSlicesApi.getChunkAudio(selectedRecording, seq)
+            const slice = await recordingSlicesApi.getChunkAudio(doctorSession, seq)
             if (!slice) {
               segments.push({
                 index: i,
@@ -1592,7 +1604,7 @@ function App() {
       let snipMaxEndMs: number | null = null
       let snipSumDurationMs: number | null = null
       try {
-        const snips = await recordingSlicesApi.listSnips(selectedRecording, selectedRecording.mimeType ?? null)
+        const snips = await recordingSlicesApi.listSnips(doctorSession, doctorSession.mimeType ?? null)
         snipCount = snips.length
         snipMaxEndMs = snips.length > 0 ? Math.max(...snips.map((snip) => snip.endMs)) : 0
         snipSumDurationMs = snips.reduce((sum, snip) => sum + Math.max(0, snip.durationMs), 0)
@@ -1730,7 +1742,7 @@ function App() {
 
     const runSnipScan = async () => {
       setDoctorProgress({ label: 'Snip scan (each snip)', completed: 0, total: 1 })
-      const snips = await recordingSlicesApi.listSnips(selectedRecording, selectedRecording.mimeType ?? null)
+      const snips = await recordingSlicesApi.listSnips(doctorSession, doctorSession.mimeType ?? null)
       const segments: DoctorSegmentResult[] = []
       const expectedDurationMs = snips.reduce((sum, snip) => sum + Math.max(0, snip.durationMs), 0)
       let observedDurationMs = 0
@@ -1743,10 +1755,10 @@ function App() {
         const snipNumber = i + 1
         try {
           const inspection = await recordingSlicesApi.inspectRange(
-            selectedRecording,
+            doctorSession,
             snip.startMs,
             snip.endMs,
-            selectedRecording.mimeType ?? null,
+            doctorSession.mimeType ?? null,
           )
           observedDurationMs += inspection.durationMs
           okCount += 1
