@@ -36,6 +36,8 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-221500: Added per-recording delete action plus a 15s no-audio timeout that beeps and stops recording.
 - 20260115-225500: Removed range/decoder caching in `recordingSlicesApi` to avoid stale decode state.
 - 20260115-225500: Added non-developer “Retry TX” action to retrigger all snip transcriptions.
+- 20260115-232500: Stop all active playback on tab hide to prevent stacked audio on return.
+- 20260115-232500: Retry TX now forces fresh snip list + ignores busy flags; delete blocked during active recording.
 
 ## 🚧 In progress
 

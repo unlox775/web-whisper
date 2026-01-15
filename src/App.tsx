@@ -521,6 +521,21 @@ function App() {
   }, [captureState.state, captureState.startedAt])
 
   useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') {
+        stopActivePlayback()
+      }
+    }
+    const handlePageHide = () => stopActivePlayback()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    window.addEventListener('pagehide', handlePageHide)
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange)
+      window.removeEventListener('pagehide', handlePageHide)
+    }
+  }, [stopActivePlayback])
+
+  useEffect(() => {
     if (captureState.state === 'recording') {
       setTranscriptionMounted(true)
       setTranscriptionLines(SIMULATED_STREAM.slice(0, 2))
@@ -1003,6 +1018,28 @@ function App() {
     }
   }, [])
 
+  const stopActivePlayback = useCallback(() => {
+    chunkAudioRef.current.forEach((entry) => {
+      entry.cleanup()
+      entry.audio.pause()
+      entry.audio.currentTime = entry.startTime
+    })
+    chunkAudioRef.current.clear()
+    setChunkPlayingId(null)
+
+    snipAudioRef.current.forEach((entry) => {
+      entry.cleanup()
+      entry.audio.pause()
+      entry.audio.currentTime = entry.startTime
+    })
+    snipAudioRef.current.clear()
+    setSnipPlayingId(null)
+
+    if (audioRef.current) {
+      audioRef.current.pause()
+    }
+  }, [])
+
   const ensureSnipSlice = useCallback(
     async (snip: SnipRecord): Promise<RecordingAudioSlice | null> => {
       if (!selectedRecording) {
@@ -1085,16 +1122,18 @@ function App() {
       snip,
       updateUi,
       force,
+      ignoreBusy = false,
     }: {
       session: SessionRecord
       snip: SnipRecord
       updateUi: boolean
       force: boolean
+      ignoreBusy?: boolean
     }) => {
       if (!force && getSnipTranscriptionText(snip)) {
         return
       }
-      if (updateUi && snipTranscriptionState[snip.id]) {
+      if (updateUi && snipTranscriptionState[snip.id] && !ignoreBusy) {
         return
       }
       const apiKey = settings?.groqApiKey?.trim() ?? ''
@@ -1200,23 +1239,22 @@ function App() {
     }
     setIsBulkTranscribing(true)
     try {
+      const storedSnips = await manifestService.listSnips(selectedRecording.id)
       const snips =
-        snipRecords.length > 0
-          ? snipRecords
+        storedSnips.length > 0
+          ? storedSnips
           : await recordingSlicesApi.listSnips(selectedRecording, selectedRecording.mimeType ?? null)
       if (snips.length === 0) {
         return
       }
-      if (snipRecords.length === 0) {
-        setSnipRecords(snips)
-      }
+      setSnipRecords(snips)
       for (const snip of snips) {
-        await transcribeSnip({ session: selectedRecording, snip, updateUi: true, force: true })
+        await transcribeSnip({ session: selectedRecording, snip, updateUi: true, force: true, ignoreBusy: true })
       }
     } finally {
       setIsBulkTranscribing(false)
     }
-  }, [isBulkTranscribing, selectedRecording, snipRecords, transcribeSnip])
+  }, [isBulkTranscribing, selectedRecording, transcribeSnip])
 
   const autoTranscribeSnipsForSession = useCallback(
     async (sessionId: string) => {
@@ -1518,6 +1556,12 @@ function App() {
 
   const handleDeleteRecording = async () => {
     if (!selectedRecording) return
+    if (selectedRecording.id === captureState.sessionId && captureState.state === 'recording') {
+      setErrorMessage('Stop the active recording before deleting it.')
+      await logWarn('Delete blocked for active recording', { sessionId: selectedRecording.id })
+      return
+    }
+    await manifestService.init()
     const confirmed = window.confirm('Delete this recording? This cannot be undone.')
     if (!confirmed) return
     try {
@@ -2815,7 +2859,18 @@ function App() {
                     🐞
                   </button>
                 ) : null}
-                  <button className="detail-delete" type="button" onClick={handleDeleteRecording} aria-label="Delete recording">
+                  <button
+                    className="detail-delete"
+                    type="button"
+                    onClick={() => void handleDeleteRecording()}
+                    aria-label="Delete recording"
+                    disabled={selectedRecording.id === captureState.sessionId && captureState.state === 'recording'}
+                    title={
+                      selectedRecording.id === captureState.sessionId && captureState.state === 'recording'
+                        ? 'Stop the active recording before deleting it.'
+                        : 'Delete recording'
+                    }
+                  >
                     🗑
                   </button>
                 <button className="detail-close" type="button" onClick={handleCloseDetail}>
