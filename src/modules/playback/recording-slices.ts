@@ -257,17 +257,60 @@ export class RecordingSlicesApi {
       return { samples: new Float32Array(0), sampleRate: 0, durationMs: 0, startMs: safeStartMs, endMs: safeStartMs }
     }
 
-    const overlaps = playable.filter((chunk) => chunk.startOffsetMs < safeEndMs && chunk.endOffsetMs > safeStartMs)
+    const overlaps = playable
+      .filter((chunk) => chunk.startOffsetMs < safeEndMs && chunk.endOffsetMs > safeStartMs)
+      .sort((a, b) => a.seq - b.seq)
     if (overlaps.length === 0) {
       return { samples: new Float32Array(0), sampleRate: 0, durationMs: 0, startMs: safeStartMs, endMs: safeStartMs }
+    }
+
+    // Some browsers emit cumulative MP4 blobs (each chunk contains audio from t=0..current),
+    // while our timing metadata still reflects the intended per-chunk window. In that case,
+    // stitch logic must NOT subtract chunk.startOffset; instead we can use one chunk that
+    // contains the whole desired range and slice by absolute session offset.
+    const decodedOverlaps: Array<{
+      chunk: StoredChunk & { startOffsetMs: number; endOffsetMs: number }
+      buffer: AudioBuffer
+      bufferDurationMs: number
+      expectedChunkDurationMs: number
+      isCumulative: boolean
+    }> = []
+
+    for (const chunk of overlaps) {
+      const buffer = await this.#decodeChunkToBuffer(session, chunk, headerChunk)
+      const bufferDurationMs = Math.max(0, buffer.duration * 1000)
+      const expectedChunkDurationMs = Math.max(0, chunk.endOffsetMs - chunk.startOffsetMs)
+      const isCumulative =
+        expectedChunkDurationMs > 0 &&
+        bufferDurationMs > expectedChunkDurationMs * 1.5 &&
+        bufferDurationMs > chunk.endOffsetMs * 0.8
+      decodedOverlaps.push({ chunk, buffer, bufferDurationMs, expectedChunkDurationMs, isCumulative })
+    }
+
+    const anyCumulative = decodedOverlaps.some((entry) => entry.isCumulative)
+    if (anyCumulative) {
+      // Choose the earliest chunk whose decoded buffer spans the requested end time.
+      const chosen =
+        decodedOverlaps.find((entry) => entry.bufferDurationMs >= safeEndMs - 10) ??
+        decodedOverlaps[decodedOverlaps.length - 1]
+      const sampleRate = chosen.buffer.sampleRate
+      const sliced = sliceAudioBufferToMono(chosen.buffer, safeStartMs, safeEndMs)
+      return {
+        samples: sliced.samples,
+        sampleRate,
+        durationMs: sliced.durationMs,
+        startMs: safeStartMs,
+        endMs: safeStartMs + sliced.durationMs,
+      }
     }
 
     const monoSlices: Float32Array[] = []
     let totalSamples = 0
     let sampleRate = 0
 
-    for (const chunk of overlaps) {
-      const buffer = await this.#decodeChunkToBuffer(session, chunk, headerChunk)
+    for (const entry of decodedOverlaps) {
+      const chunk = entry.chunk
+      const buffer = entry.buffer
       if (sampleRate === 0) sampleRate = buffer.sampleRate
 
       const chunkDurationMs = buffer.duration * 1000

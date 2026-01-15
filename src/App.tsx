@@ -1893,11 +1893,13 @@ function App() {
       audio.volume = playbackVolume
 
       const chunkDurationSeconds = Math.max(0, (chunk.endMs - chunk.startMs) / 1000)
-      // This audio source is the chunk blob itself (optionally prefixed with an init segment),
-      // so it always starts at t=0. (Using session-relative offsets here causes every chunk to
-      // seek to 0 due to clamping, which looks like "always plays from the beginning".)
-      const startTime = 0
-      const endTime = chunkDurationSeconds
+      // Some browsers emit cumulative MP4 chunks (each chunk contains audio from 0..current).
+      // In that case we must seek to the chunk's offset within the recording; otherwise play from 0.
+      const baseStartMsCandidate = headerChunk?.startMs ?? selectedRecording?.startedAt ?? chunk.startMs
+      const baseStartMs = Number.isFinite(baseStartMsCandidate) ? Math.round(baseStartMsCandidate) : chunk.startMs
+      const desiredOffsetSeconds = Math.max(0, (chunk.startMs - baseStartMs) / 1000)
+      let startTime = 0
+      let endTime = chunkDurationSeconds
 
       audioRef.current?.pause()
 
@@ -1955,6 +1957,11 @@ function App() {
             audio.addEventListener('error', handleMetadataError)
           })
         }
+        // Decide whether this chunk is cumulative based on its decoded duration.
+        if (Number.isFinite(audio.duration) && audio.duration >= desiredOffsetSeconds + chunkDurationSeconds - 0.05) {
+          startTime = desiredOffsetSeconds
+          endTime = startTime + chunkDurationSeconds
+        }
         audio.currentTime = startTime
         await audio.play()
         setChunkPlayingId(id)
@@ -1963,7 +1970,7 @@ function App() {
         finishPlayback()
       }
     },
-    [chunkPlayingId, ensureChunkPlaybackUrl, isHeaderSegment, playbackVolume],
+    [chunkPlayingId, ensureChunkPlaybackUrl, headerChunk?.startMs, isHeaderSegment, playbackVolume, selectedRecording?.startedAt],
   )
 
   const handleSnipPlayToggle = useCallback(

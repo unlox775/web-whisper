@@ -28,7 +28,7 @@ export interface PrepareSessionAnalysisOptions {
 }
 
 const MP4_MIME_PATTERN = /mp4|m4a/i
-const ANALYSIS_TIMELINE_VERSION = 2
+const ANALYSIS_TIMELINE_VERSION = 3
 
 export class SessionAnalysisProvider {
   #manifest: ManifestService
@@ -136,11 +136,13 @@ export class SessionAnalysisProvider {
       profilesBySeq.set(profile.seq, profile)
     })
 
+    const baseStartMs = verification.baseStartMs ?? session.startedAt
     const { frames, sampleRate, frameDurationMs, totalDurationMs } = this.#concatVolumeProfiles({
       orderedChunkSeq: orderedChunks.map((chunk) => chunk.seq),
       profilesBySeq,
       durationsBySeq,
       durationLimitMs,
+      baseStartMs,
     })
 
     const analysis = frames.length > 0
@@ -171,11 +173,13 @@ export class SessionAnalysisProvider {
     profilesBySeq,
     durationsBySeq,
     durationLimitMs,
+    baseStartMs,
   }: {
     orderedChunkSeq: number[]
     profilesBySeq: Map<number, ChunkVolumeProfileRecord>
     durationsBySeq: Map<number, number>
     durationLimitMs: number
+    baseStartMs: number
   }) {
     let cumulativeOffsetMs = 0
     const frames: VolumeFrame[] = []
@@ -204,10 +208,28 @@ export class SessionAnalysisProvider {
         durationLimitMs > 0 ? Math.max(0, Math.min(durationMs, durationLimitMs - cumulativeOffsetMs)) : durationMs
 
       const expectedFrameCount = clampedDurationMs > 0 ? Math.ceil(clampedDurationMs / segmentFrameDuration) : framesArray.length
-      const usableFrameCount = Math.max(0, Math.min(framesArray.length, expectedFrameCount))
+
+      // If the profile was generated from a cumulative MP4 blob (0..current), its frames start at t=0.
+      // We must slice the frame window corresponding to this chunk's start/end offsets; otherwise every
+      // chunk would repeatedly analyze the beginning of the session.
+      let segmentFrames = framesArray
+      if (profile && framesArray.length > 0 && timingDurationMs > 0) {
+        const profileDurationMs = Math.max(0, profile.durationMs ?? framesArray.length * segmentFrameDuration)
+        const chunkStartOffsetMs = Math.max(0, Math.round(profile.chunkStartMs - baseStartMs))
+        const chunkEndOffsetMs = Math.max(chunkStartOffsetMs, Math.round(profile.chunkEndMs - baseStartMs))
+        const isCumulativeProfile =
+          profileDurationMs > timingDurationMs * 1.5 && profileDurationMs > chunkEndOffsetMs * 0.8
+        if (isCumulativeProfile) {
+          const startFrame = Math.max(0, Math.floor(chunkStartOffsetMs / segmentFrameDuration))
+          const endFrame = Math.min(framesArray.length, Math.ceil(chunkEndOffsetMs / segmentFrameDuration))
+          segmentFrames = framesArray.slice(startFrame, Math.max(startFrame, endFrame))
+        }
+      }
+
+      const usableFrameCount = Math.max(0, Math.min(segmentFrames.length, expectedFrameCount))
 
       for (let idx = 0; idx < usableFrameCount; idx += 1) {
-        const value = framesArray[idx]
+        const value = segmentFrames[idx]
         const clampedValue = Number.isFinite(value) ? Math.max(0, value) : 0
         const frameStart = startMs + idx * segmentFrameDuration
         const frameEnd = Math.min(startMs + clampedDurationMs, frameStart + segmentFrameDuration)
