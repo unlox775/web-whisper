@@ -30,6 +30,7 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-203800: Added first-class snip records in IndexedDB, including transcription payloads and errors, plus a new developer console table to inspect them.
 - 20260115-203800: Snip list now renders stored snips, with per-snip retry transcription and Groq error surfaces.
 - 20260115-203800: Detail view shows concatenated snip transcription text with status/error metadata.
+- 20260115-211200: Simplified snip transcription payloads to store timestamped phrase segments instead of word-level entries.
 
 ## 🚧 In progress
 

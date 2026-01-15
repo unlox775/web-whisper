@@ -43,15 +43,11 @@ export interface ChunkVolumeProfileRecord extends ChunkVolumeProfile {
 
 export type SnipBreakReason = 'pause' | 'end'
 
-export type SnipWordTimestamp = {
-  text: string
-  startMs: number
-  endMs: number
-}
+export type SnipTranscriptSegment = [number, string]
 
 export type SnipTranscription = {
   text: string
-  words: SnipWordTimestamp[]
+  segments: SnipTranscriptSegment[]
   model: string
   language?: string | null
   createdAt: number
@@ -152,6 +148,14 @@ const normalizeSnipRecord = (record: SnipRecord): SnipRecord => {
   const startMs = Number.isFinite(record.startMs) ? record.startMs : 0
   const endMs = Number.isFinite(record.endMs) ? record.endMs : startMs
   const durationMs = Number.isFinite(record.durationMs) ? record.durationMs : Math.max(0, endMs - startMs)
+  const transcription = record.transcription
+    ? {
+        ...record.transcription,
+        segments: Array.isArray(record.transcription.segments) ? record.transcription.segments : [],
+        text: record.transcription.text ?? '',
+      }
+    : record.transcription
+
   return {
     ...record,
     index: Number.isFinite(record.index) ? record.index : 0,
@@ -160,7 +164,7 @@ const normalizeSnipRecord = (record: SnipRecord): SnipRecord => {
     durationMs,
     breakReason: record.breakReason ?? null,
     boundaryIndex: typeof record.boundaryIndex === 'number' ? record.boundaryIndex : null,
-    transcription: record.transcription ?? null,
+    transcription: transcription ?? null,
     transcriptionError: record.transcriptionError ?? null,
   }
 }

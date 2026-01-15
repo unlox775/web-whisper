@@ -10,14 +10,10 @@ export interface TranscriptionJobRequest {
 export interface TranscriptionResultPayload {
   jobId: string
   text: string
-  words: Array<{ text: string; startMs: number; endMs: number }>
+  segments: TranscriptionSegment[]
 }
 
-export type TranscriptionWord = {
-  text: string
-  startMs: number
-  endMs: number
-}
+export type TranscriptionSegment = [number, string]
 
 export interface TranscriptionAudioRequest {
   apiKey: string
@@ -29,7 +25,7 @@ export interface TranscriptionAudioRequest {
 
 export interface TranscriptionAudioResult {
   text: string
-  words: TranscriptionWord[]
+  segments: TranscriptionSegment[]
   model: string
   language?: string | null
 }
@@ -65,47 +61,41 @@ type GroqTranscriptionResponse = {
 const GROQ_TRANSCRIPTION_URL = 'https://api.groq.com/openai/v1/audio/transcriptions'
 const DEFAULT_GROQ_MODEL = 'whisper-large-v3'
 
-const toTranscriptionWord = (word: GroqResponseWord, fallbackText?: string): TranscriptionWord | null => {
-  const text = (word.word ?? word.text ?? fallbackText ?? '').trim()
-  if (!text) return null
-  const startMs = Number.isFinite(word.start) ? Math.max(0, (word.start ?? 0) * 1000) : 0
-  const endMs = Number.isFinite(word.end) ? Math.max(startMs, (word.end ?? 0) * 1000) : startMs
-  return { text, startMs, endMs }
+const normalizeSegment = (startSeconds: number | undefined, text: string | undefined): TranscriptionSegment | null => {
+  const phrase = (text ?? '').trim()
+  if (!phrase) return null
+  const startMs = Number.isFinite(startSeconds) ? Math.max(0, (startSeconds ?? 0) * 1000) : 0
+  return [startMs, phrase]
 }
 
-const extractWords = (payload: GroqTranscriptionResponse): TranscriptionWord[] => {
-  const words: TranscriptionWord[] = []
-  if (Array.isArray(payload.words)) {
-    payload.words.forEach((word) => {
-      const normalized = toTranscriptionWord(word)
-      if (normalized) words.push(normalized)
-    })
-  }
-
-  if (words.length === 0 && Array.isArray(payload.segments)) {
+const extractSegments = (payload: GroqTranscriptionResponse): TranscriptionSegment[] => {
+  const segments: TranscriptionSegment[] = []
+  if (Array.isArray(payload.segments)) {
     payload.segments.forEach((segment) => {
-      if (Array.isArray(segment.words) && segment.words.length > 0) {
-        segment.words.forEach((word) => {
-          const normalized = toTranscriptionWord(word)
-          if (normalized) words.push(normalized)
-        })
-        return
-      }
-      const segmentText = (segment.text ?? '').trim()
-      if (!segmentText) return
-      const fallback = toTranscriptionWord({ start: segment.start, end: segment.end }, segmentText)
-      if (fallback) words.push(fallback)
+      const normalized = normalizeSegment(segment.start, segment.text)
+      if (normalized) segments.push(normalized)
     })
   }
 
-  if (words.length === 0 && typeof payload.text === 'string') {
-    const fallbackText = payload.text.trim()
-    if (fallbackText) {
-      words.push({ text: fallbackText, startMs: 0, endMs: 0 })
+  if (segments.length === 0 && Array.isArray(payload.words) && payload.words.length > 0) {
+    const text = payload.words
+      .map((word) => (word.word ?? word.text ?? '').trim())
+      .filter((value) => value.length > 0)
+      .join(' ')
+      .trim()
+    if (text) {
+      const start = payload.words.find((word) => Number.isFinite(word.start))?.start
+      const normalized = normalizeSegment(start, text)
+      if (normalized) segments.push(normalized)
     }
   }
 
-  return words
+  if (segments.length === 0 && typeof payload.text === 'string') {
+    const normalized = normalizeSegment(0, payload.text)
+    if (normalized) segments.push(normalized)
+  }
+
+  return segments
 }
 
 class GroqTranscriptionService implements TranscriptionService {
@@ -170,12 +160,15 @@ class GroqTranscriptionService implements TranscriptionService {
     }
 
     const payload = JSON.parse(rawBody) as GroqTranscriptionResponse
-    const words = extractWords(payload)
-    const text = typeof payload.text === 'string' ? payload.text.trim() : words.map((word) => word.text).join(' ').trim()
+    const segments = extractSegments(payload)
+    const text =
+      typeof payload.text === 'string'
+        ? payload.text.trim()
+        : segments.map((segment) => segment[1]).join(' ').trim()
 
     return {
       text,
-      words,
+      segments,
       model: request.model ?? DEFAULT_GROQ_MODEL,
       language: payload.language ?? request.language ?? null,
     }

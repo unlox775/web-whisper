@@ -727,14 +727,16 @@ function App() {
 
   const snipTranscriptionSummary = useMemo(() => {
     const transcribedSnips = snipRecords.filter(
-      (snip) => Boolean(snip.transcription) && ((snip.transcription?.text?.trim() ?? '') || snip.transcription?.words?.length),
+      (snip) =>
+        Boolean(snip.transcription) &&
+        ((snip.transcription?.text?.trim() ?? '') || (snip.transcription?.segments?.length ?? 0) > 0),
     )
     const texts = transcribedSnips
       .map((snip) => {
         const direct = snip.transcription?.text?.trim() ?? ''
         if (direct) return direct
-        const words = snip.transcription?.words?.map((word) => word.text).join(' ').trim() ?? ''
-        return words
+        const segments = snip.transcription?.segments?.map((segment) => segment[1]).join(' ').trim() ?? ''
+        return segments
       })
       .filter((text) => text.length > 0)
     const errorCount = snipRecords.filter((snip) => Boolean(snip.transcriptionError)).length
@@ -1025,7 +1027,7 @@ function App() {
         })
         const transcription: SnipTranscription = {
           text: result.text,
-          words: result.words,
+          segments: result.segments,
           model: result.model,
           language: result.language ?? null,
           createdAt: Date.now(),
@@ -1042,7 +1044,7 @@ function App() {
           snipId: snip.id,
           model: result.model,
           textLength: result.text.length,
-          wordCount: result.words.length,
+          segmentCount: result.segments.length,
         })
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -2266,8 +2268,8 @@ function App() {
             name: 'snips',
             rows: snips.map((row) => ({
               ...row,
-              wordsPreview: row.transcription?.words?.slice(0, 6) ?? [],
-              wordsCount: row.transcription?.words?.length ?? 0,
+              segmentsPreview: row.transcription?.segments?.slice(0, 6) ?? [],
+              segmentsCount: row.transcription?.segments?.length ?? 0,
             })),
           },
         ])
@@ -3247,7 +3249,9 @@ function App() {
                             const snipKey = snip.id
                             const isSnipPlaying = snipPlayingId === snipKey
                             const isTranscribing = Boolean(snipTranscriptionState[snip.id])
-                            const hasTranscript = Boolean(snip.transcription?.text?.trim())
+                            const hasTranscript = Boolean(
+                              snip.transcription?.text?.trim() || (snip.transcription?.segments?.length ?? 0) > 0,
+                            )
                             const playLabel = isSnipPlaying ? `Pause snip ${snipNumber}` : `Play snip ${snipNumber}`
                             const transcribeLabel = isTranscribing
                               ? `Transcribing snip ${snipNumber}`
