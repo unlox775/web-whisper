@@ -48,6 +48,12 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-225125: Delete actions now log confirmation outcomes, verify deletes, and list delete buttons only show for no-audio or error sessions.
 - 20260115-230214: Capture progress now reports PCM-sample time and drives stop-button readiness.
 - 20260115-231618: Delete confirmation flow logs user activation context and avoids async before confirm.
+- 20260116-022815: Added windowed session analysis to compute incremental snips with a preserved tail during recording.
+- 20260116-022815: Snip generation now appends stable live snips during recording and finalizes the tail after stop.
+- 20260116-022815: Live recording refreshes chunk/snip lists and drives a real-time transcription overlay with auto-scroll.
+- 20260116-022815: Added live transcription queueing with retry gating based on recent successes.
+- 20260116-051121: Live transcription overlay hides during detail view and fades upward.
+- 20260116-051121: Live transcription queue now preserves snip order.
 
 ## 🚧 In progress
 
@@ -60,5 +66,5 @@ Fix the recording detail “debug” (bug icon) panel so:
 
 - Add/extend unit tests around slice resolution and stitching (where feasible without real audio fixtures).
 - Ensure `npm run build` passes and commit build artifacts as required by repo policy.
-- Add auto-transcription (post-snip) and optional word-level playback highlighting.
+- Tune live snip thresholds/tail buffers and consider histogram/snips overlay updates.
 

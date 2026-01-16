@@ -516,9 +516,9 @@ body {
 .transcription-fade {
   pointer-events: none;
   position: absolute;
-  inset: auto 0 0;
+  inset: 0 0 auto;
   height: 40%;
-  background: linear-gradient(0deg, rgba(15, 23, 42, 0.95), rgba(15, 23, 42, 0));
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.95), rgba(15, 23, 42, 0));
 }
 
 @keyframes slide-in {

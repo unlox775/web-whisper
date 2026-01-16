@@ -7,7 +7,7 @@ import {
 } from 'react'
 import { captureController } from './modules/capture/controller'
 import { RecordingAnalysisGraph } from './components/RecordingAnalysisGraph'
-import { type SessionAnalysis, type SegmentSummary } from './modules/analysis/session-analysis'
+import { type SessionAnalysis } from './modules/analysis/session-analysis'
 import './App.css'
 import {
   manifestService,
@@ -15,7 +15,6 @@ import {
   type LogEntryRecord,
   type LogSessionRecord,
   type SnipRecord,
-  type SnipSeed,
   type SnipTranscription,
   type StoredChunk,
   type SessionRecord,
@@ -62,6 +61,21 @@ type ChunkPlaybackEntry = {
   cleanup: () => void
   startTime: number
   endTime: number
+}
+
+type LiveTranscriptionQueueEntry = {
+  snip: SnipRecord
+  attempt: number
+}
+
+type LiveTranscriptionQueue = {
+  sessionId: string | null
+  active: boolean
+  pending: LiveTranscriptionQueueEntry[]
+  pendingIds: Set<string>
+  retryCounts: Map<string, number>
+  lastSuccessAt: number
+  lastMissingKeyWarnAt: number
 }
 
 type DoctorSegmentStatus = 'ok' | 'warn' | 'error'
@@ -115,13 +129,6 @@ type DoctorSanityReport = {
   }
 }
 
-const SIMULATED_STREAM = [
-  'Holding a steady floor — last snip landed cleanly.',
-  'Uploader healthy, chunk latency ~1.2 s.',
-  'Listening for extended pauses before the next break…',
-  'Stashing 3.8 s of tail audio for zero-cross alignment.',
-]
-
 const STATUS_META: Record<SessionRecord['status'], { label: string; pillClass: string }> = {
   recording: { label: 'Recording', pillClass: 'pill-progress' },
   ready: { label: 'Ready', pillClass: 'pill-synced' },
@@ -132,6 +139,12 @@ const MB = 1024 * 1024
 const DEFAULT_STORAGE_LIMIT_BYTES = 200 * MB
 const DEFAULT_GROQ_MODEL = 'whisper-large-v3'
 const MAX_TRANSCRIPTION_PREVIEW_CHARS = 180
+const LIVE_SNIP_REFRESH_INTERVAL_MS = 3000
+const LIVE_TRANSCRIPTION_SNIP_COUNT = 2
+const LIVE_TRANSCRIPTION_WORD_LIMIT = 60
+const LIVE_TRANSCRIPTION_RETRY_WINDOW_MS = 120_000
+const LIVE_TRANSCRIPTION_RETRY_DELAY_MS = 1500
+const LIVE_TRANSCRIPTION_MAX_RETRIES = 2
 
 const formatClock = (timestamp: number) =>
   new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp))
@@ -234,6 +247,14 @@ const formatTimecode = (seconds: number) => {
   return `${mins}:${secs.toString().padStart(2, '0')}`
 }
 
+const trimToLastWords = (text: string, limit: number) => {
+  const trimmed = text.trim()
+  if (!trimmed) return ''
+  const words = trimmed.split(/\s+/)
+  if (words.length <= limit) return trimmed
+  return words.slice(-limit).join(' ')
+}
+
 const LOG_TIME_BASE_OPTIONS: Intl.DateTimeFormatOptions = {
   hour: '2-digit',
   minute: '2-digit',
@@ -276,15 +297,6 @@ const buildTranscriptionPreview = (snips: SnipRecord[]): string => {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms))
 
-const toSnipSeed = (segment: SegmentSummary): SnipSeed => ({
-  index: segment.index,
-  startMs: segment.startMs,
-  endMs: segment.endMs,
-  durationMs: segment.durationMs,
-  breakReason: segment.breakReason,
-  boundaryIndex: segment.boundaryIndex,
-})
-
 function App() {
   const [settings, setSettings] = useState<RecorderSettings | null>(null)
   const [recordings, setRecordings] = useState<SessionRecord[]>([])
@@ -301,7 +313,7 @@ function App() {
     totalBytes: 0,
     limitBytes: DEFAULT_STORAGE_LIMIT_BYTES,
   })
-  const [transcriptionLines, setTranscriptionLines] = useState<string[]>(SIMULATED_STREAM.slice(0, 2))
+  const [liveSnipRecords, setLiveSnipRecords] = useState<SnipRecord[]>([])
   const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null)
   const [isTranscriptionMounted, setTranscriptionMounted] = useState(false)
   const [isTranscriptionVisible, setTranscriptionVisible] = useState(false)
@@ -352,7 +364,6 @@ function App() {
   const [isBulkTranscribing, setIsBulkTranscribing] = useState(false)
   const [noAudioAlertActive, setNoAudioAlertActive] = useState(false)
 
-  const streamCursor = useRef(1)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const transcriptionTextRef = useRef<HTMLTextAreaElement | null>(null)
   const lastAutoSelectSessionRef = useRef<string | null>(null)
@@ -362,15 +373,36 @@ function App() {
   const snipUrlMapRef = useRef<Map<string, string>>(new Map())
   const snipAudioRef = useRef<Map<string, ChunkPlaybackEntry>>(new Map())
   const snipSliceCacheRef = useRef<Map<string, RecordingAudioSlice>>(new Map())
+  const liveTranscriptionStreamRef = useRef<HTMLDivElement | null>(null)
   const lastUserInteractionRef = useRef<{ type: string; target: string; timestamp: number } | null>(null)
   const doctorRunIdRef = useRef(0)
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
   const sessionAnalysisProviderRef = useRef<SessionAnalysisProvider | null>(null)
   const autoTranscribeSessionsRef = useRef<Set<string>>(new Set())
+  const liveTranscriptionQueueRef = useRef<LiveTranscriptionQueue>({
+    sessionId: null,
+    active: false,
+    pending: [],
+    pendingIds: new Set(),
+    retryCounts: new Map(),
+    lastSuccessAt: 0,
+    lastMissingKeyWarnAt: 0,
+  })
+  const liveRefreshInFlightRef = useRef(false)
 
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
+  const liveTranscriptionLines = useMemo(() => {
+    const texts = liveSnipRecords.map((snip) => getSnipTranscriptionText(snip)).filter((text) => text.length > 0)
+    if (texts.length === 0) {
+      return []
+    }
+    const recent = texts.slice(-LIVE_TRANSCRIPTION_SNIP_COUNT)
+    return recent
+      .map((text) => trimToLastWords(text, LIVE_TRANSCRIPTION_WORD_LIMIT))
+      .filter((text) => text.length > 0)
+  }, [liveSnipRecords])
 
   const updateTranscriptionPreviewForSession = useCallback((sessionId: string, snips: SnipRecord[]) => {
     const preview = buildTranscriptionPreview(snips)
@@ -548,26 +580,18 @@ function App() {
   }, [loadSessions])
 
   useEffect(() => {
-    if (!captureState.sessionId || captureState.state !== 'recording') {
-      return
-    }
-    const interval = window.setInterval(() => {
-      streamCursor.current = (streamCursor.current + 1) % SIMULATED_STREAM.length
-      const nextLine = SIMULATED_STREAM[streamCursor.current]
-      setTranscriptionLines((prev) => [...prev.slice(-2), nextLine])
-      void loadSessions()
-    }, 3200)
-    return () => window.clearInterval(interval)
-  }, [captureState.sessionId, captureState.state, loadSessions])
-
-  useEffect(() => {
-    if (captureState.state === 'recording') {
+    const shouldShow = captureState.state === 'recording' && !selectedRecordingId
+    if (shouldShow) {
       setTranscriptionMounted(true)
-      setTranscriptionLines(SIMULATED_STREAM.slice(0, 2))
-      streamCursor.current = 1
       requestAnimationFrame(() => setTranscriptionVisible(true))
     } else {
       setTranscriptionVisible(false)
+    }
+  }, [captureState.state, selectedRecordingId])
+
+  useEffect(() => {
+    if (captureState.state !== 'recording') {
+      setLiveSnipRecords([])
     }
   }, [captureState.state])
 
@@ -589,6 +613,17 @@ function App() {
     const timeout = window.setTimeout(() => setTranscriptionMounted(false), 400)
     return () => window.clearTimeout(timeout)
   }, [isTranscriptionMounted, isTranscriptionVisible])
+
+  useEffect(() => {
+    if (!isTranscriptionVisible) {
+      return
+    }
+    const container = liveTranscriptionStreamRef.current
+    if (!container) {
+      return
+    }
+    container.scrollTop = container.scrollHeight
+  }, [isTranscriptionVisible, liveTranscriptionLines])
 
   useEffect(() => {
     if (typeof window === 'undefined' || !('ontouchstart' in window)) {
@@ -907,20 +942,17 @@ function App() {
           setSessionAnalysis(result.analysis)
           setAnalysisState('ready')
           setAnalysisError(null)
-          const seeds = result.analysis.segments.map((segment) => toSnipSeed(segment))
-          if (seeds.length > 0) {
-            try {
-              const updatedSnips = await manifestService.appendSnips(selectedRecording.id, seeds)
-              if (!cancelled) {
-                setSnipRecords(updatedSnips)
-              }
-            } catch (error) {
-              if (!cancelled) {
-                await logError('Failed to persist snip segments', {
-                  sessionId: selectedRecording.id,
-                  error: error instanceof Error ? error.message : String(error),
-                })
-              }
+          try {
+            const updatedSnips = await recordingSlicesApi.listSnips(selectedRecording, selectedRecording.mimeType ?? null)
+            if (!cancelled) {
+              setSnipRecords(updatedSnips)
+            }
+          } catch (error) {
+            if (!cancelled) {
+              await logError('Failed to refresh snip segments', {
+                sessionId: selectedRecording.id,
+                error: error instanceof Error ? error.message : String(error),
+              })
             }
           }
         } else {
@@ -1310,6 +1342,175 @@ function App() {
       snipTranscriptionState,
     ],
   )
+
+  const resetLiveTranscriptionQueue = useCallback((sessionId: string | null) => {
+    const queue = liveTranscriptionQueueRef.current
+    queue.sessionId = sessionId
+    queue.active = false
+    queue.pending = []
+    queue.pendingIds.clear()
+    queue.retryCounts.clear()
+    queue.lastSuccessAt = 0
+    queue.lastMissingKeyWarnAt = 0
+  }, [])
+
+  const runLiveTranscriptionQueue = useCallback(
+    async (session: SessionRecord) => {
+      const queue = liveTranscriptionQueueRef.current
+      if (queue.active || queue.sessionId !== session.id) {
+        return
+      }
+      queue.active = true
+      try {
+        while (queue.pending.length > 0) {
+          const entry = queue.pending.shift()
+          if (!entry) {
+            break
+          }
+          const snip = entry.snip
+          queue.pendingIds.delete(snip.id)
+          if (queue.sessionId !== session.id) {
+            break
+          }
+          const result = await transcribeSnip({
+            session,
+            snip,
+            updateUi: selectedRecording?.id === session.id,
+            force: true,
+            ignoreBusy: true,
+            reportError: true,
+          })
+          if (result.ok) {
+            queue.retryCounts.delete(snip.id)
+            queue.lastSuccessAt = Date.now()
+            continue
+          }
+          const nextCount = (queue.retryCounts.get(snip.id) ?? 0) + 1
+          queue.retryCounts.set(snip.id, nextCount)
+          const shouldRetry =
+            nextCount <= LIVE_TRANSCRIPTION_MAX_RETRIES &&
+            Date.now() - queue.lastSuccessAt < LIVE_TRANSCRIPTION_RETRY_WINDOW_MS
+          if (shouldRetry) {
+            await sleep(LIVE_TRANSCRIPTION_RETRY_DELAY_MS)
+            if (!queue.pendingIds.has(snip.id)) {
+              queue.pending.push({ snip, attempt: nextCount })
+              queue.pendingIds.add(snip.id)
+            }
+          }
+        }
+      } finally {
+        queue.active = false
+      }
+    },
+    [selectedRecording?.id, transcribeSnip],
+  )
+
+  const enqueueLiveTranscriptions = useCallback(
+    async (session: SessionRecord, snips: SnipRecord[]) => {
+      const queue = liveTranscriptionQueueRef.current
+      if (queue.sessionId !== session.id) {
+        resetLiveTranscriptionQueue(session.id)
+      }
+
+      const apiKey = settings?.groqApiKey?.trim() ?? ''
+      if (!apiKey) {
+        if (Date.now() - queue.lastMissingKeyWarnAt > 60_000) {
+          queue.lastMissingKeyWarnAt = Date.now()
+          void logWarn('Live transcription blocked (missing key)', {
+            sessionId: session.id,
+          })
+        }
+        return
+      }
+
+      const canRetryFailures =
+        queue.lastSuccessAt > 0 && Date.now() - queue.lastSuccessAt < LIVE_TRANSCRIPTION_RETRY_WINDOW_MS
+      const orderedSnips = [...snips].sort((a, b) => a.index - b.index)
+      orderedSnips.forEach((snip) => {
+        if (getSnipTranscriptionText(snip)) {
+          return
+        }
+        if (queue.pendingIds.has(snip.id)) {
+          return
+        }
+        const retryCount = queue.retryCounts.get(snip.id) ?? 0
+        if (snip.transcriptionError) {
+          if (!canRetryFailures || retryCount >= LIVE_TRANSCRIPTION_MAX_RETRIES) {
+            return
+          }
+        }
+        queue.pending.push({ snip, attempt: retryCount })
+        queue.pendingIds.add(snip.id)
+      })
+
+      if (!queue.active && queue.pending.length > 0) {
+        void runLiveTranscriptionQueue(session)
+      }
+    },
+    [resetLiveTranscriptionQueue, runLiveTranscriptionQueue, settings?.groqApiKey],
+  )
+
+  useEffect(() => {
+    if (captureState.state !== 'recording') {
+      resetLiveTranscriptionQueue(null)
+    }
+  }, [captureState.state, resetLiveTranscriptionQueue])
+
+  useEffect(() => {
+    if (!captureState.sessionId || captureState.state !== 'recording') {
+      return
+    }
+    const sessionId = captureState.sessionId
+    let cancelled = false
+    const tick = async () => {
+      if (cancelled || liveRefreshInFlightRef.current) {
+        return
+      }
+      liveRefreshInFlightRef.current = true
+      try {
+        const session = await manifestService.getSession(sessionId)
+        if (!session || session.status !== 'recording') {
+          return
+        }
+        const snips = await recordingSlicesApi.listSnips(session, session.mimeType ?? null)
+        if (cancelled) {
+          return
+        }
+        setLiveSnipRecords(snips)
+        if (selectedRecording?.id === sessionId) {
+          const [metadata] = await Promise.all([manifestService.getChunkData(sessionId)])
+          if (!cancelled) {
+            setChunkData(metadata)
+            setSnipRecords(snips)
+          }
+        }
+        await enqueueLiveTranscriptions(session, snips)
+        await loadSessions()
+      } catch (error) {
+        if (!cancelled) {
+          const message = error instanceof Error ? error.message : String(error)
+          void logWarn('Live snip refresh failed', {
+            sessionId,
+            error: message,
+          })
+        }
+      } finally {
+        liveRefreshInFlightRef.current = false
+      }
+    }
+    const interval = window.setInterval(tick, LIVE_SNIP_REFRESH_INTERVAL_MS)
+    void tick()
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [
+    captureState.sessionId,
+    captureState.state,
+    enqueueLiveTranscriptions,
+    loadSessions,
+    selectedRecording?.id,
+  ])
 
   const handleSnipTranscription = useCallback(
     async (snip: SnipRecord) => {
@@ -2974,8 +3175,11 @@ function App() {
       : 0
   const displayedBytes =
     captureState.state === 'recording' ? Math.max(captureState.bytesBuffered, estimatedBytes) : captureState.bytesBuffered
+  const isDetailRecordingActive =
+    selectedRecording?.id === captureState.sessionId && captureState.state === 'recording'
+  const shouldShowLiveTranscription = isTranscriptionMounted && !selectedRecordingId
   const displayDurationMs =
-    selectedRecording && selectedRecording.id === captureState.sessionId && captureState.state === 'recording'
+    isDetailRecordingActive
       ? capturedAudioMs
       : selectedRecordingDurationMs ?? selectedRecording?.durationMs ?? 0
   const resolvedPlaybackDurationSeconds = selectedRecordingDurationMs !== null
@@ -3081,7 +3285,7 @@ function App() {
               const hasTranscriptionError = transcriptionErrorCount > 0
               const errorNotes = session.status === 'error' ? session.notes ?? 'Recording error.' : ''
               const isRetrying = Boolean(retryingSessionIds[session.id])
-              const isTranscribing = Boolean(transcriptionInProgress[session.id] || isRetrying)
+              const isTranscribing = !isActiveRecording && Boolean(transcriptionInProgress[session.id] || isRetrying)
               const hasAudio =
                 session.chunkCount > 0 && session.totalBytes > 0 && (session.durationMs ?? 0) > 0
               const shouldShowListDelete = !hasAudio || session.status === 'error'
@@ -3171,18 +3375,17 @@ function App() {
         </section>
       </main>
 
-        {isTranscriptionMounted ? (
+        {shouldShowLiveTranscription ? (
           <section
             className={`transcription-panel${isTranscriptionVisible ? ' is-visible' : ''}`}
             aria-live="polite"
             aria-label="Live transcription preview"
           >
             <header className="transcription-header">
-              <h2>Live transcription (simulated)</h2>
-              <span className="transcription-meta">Real streaming will appear here once Groq integration lands.</span>
+              <h2>Live transcription</h2>
             </header>
-            <div className="transcription-stream">
-              {transcriptionLines.map((line, index) => (
+            <div className="transcription-stream" ref={liveTranscriptionStreamRef}>
+              {liveTranscriptionLines.map((line, index) => (
                 <p key={`${index}-${line.slice(0, 12)}`} className="transcription-line">
                   {line}
                 </p>
@@ -3977,6 +4180,12 @@ function App() {
                               : hasTranscript
                                 ? `Retry transcription for snip ${snipNumber}`
                                 : `Transcribe snip ${snipNumber}`
+                            const statusLabel =
+                              isTranscribing && !isDetailRecordingActive
+                                ? 'Transcribing…'
+                                : hasTranscript
+                                  ? 'Transcribed'
+                                  : 'Pending'
                             return (
                               <li key={snipKey} className="chunk-item">
                                 <button
@@ -3994,7 +4203,7 @@ function App() {
                                   {formatTimecode(Math.round(snip.startMs / 1000))} → {formatTimecode(Math.round(snip.endMs / 1000))}
                                 </span>
                                 <span className={`snip-transcription-status ${hasTranscript ? 'is-ready' : 'is-pending'}`}>
-                                  {isTranscribing ? 'Transcribing…' : hasTranscript ? 'Transcribed' : 'Pending'}
+                                  {statusLabel}
                                 </span>
                                 <button
                                   type="button"
