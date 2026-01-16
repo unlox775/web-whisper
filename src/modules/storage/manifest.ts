@@ -41,6 +41,35 @@ export interface ChunkVolumeProfileRecord extends ChunkVolumeProfile {
   updatedAt: number
 }
 
+export type SnipBreakReason = 'pause' | 'end'
+
+export type SnipTranscriptSegment = [number, string]
+
+export type SnipTranscription = {
+  text: string
+  segments: SnipTranscriptSegment[]
+  model: string
+  language?: string | null
+  createdAt: number
+}
+
+export type SnipRecord = {
+  id: string
+  sessionId: string
+  index: number
+  startMs: number
+  endMs: number
+  durationMs: number
+  breakReason: SnipBreakReason | null
+  boundaryIndex: number | null
+  createdAt: number
+  updatedAt: number
+  transcription?: SnipTranscription | null
+  transcriptionError?: string | null
+}
+
+export type SnipSeed = Pick<SnipRecord, 'index' | 'startMs' | 'endMs' | 'durationMs' | 'breakReason' | 'boundaryIndex'>
+
 export interface SessionTimingVerificationResult {
   sessionId: string
   status: ChunkTimingStatus
@@ -115,6 +144,31 @@ const sanitizeVolumeRecord = (record: any): ChunkVolumeProfileRecord => {
   }
 }
 
+const normalizeSnipRecord = (record: SnipRecord): SnipRecord => {
+  const startMs = Number.isFinite(record.startMs) ? record.startMs : 0
+  const endMs = Number.isFinite(record.endMs) ? record.endMs : startMs
+  const durationMs = Number.isFinite(record.durationMs) ? record.durationMs : Math.max(0, endMs - startMs)
+  const transcription = record.transcription
+    ? {
+        ...record.transcription,
+        segments: Array.isArray(record.transcription.segments) ? record.transcription.segments : [],
+        text: record.transcription.text ?? '',
+      }
+    : record.transcription
+
+  return {
+    ...record,
+    index: Number.isFinite(record.index) ? record.index : 0,
+    startMs,
+    endMs,
+    durationMs,
+    breakReason: record.breakReason ?? null,
+    boundaryIndex: typeof record.boundaryIndex === 'number' ? record.boundaryIndex : null,
+    transcription: transcription ?? null,
+    transcriptionError: record.transcriptionError ?? null,
+  }
+}
+
 interface DurableRecorderDB extends DBSchema {
   sessions: {
     key: string
@@ -130,6 +184,11 @@ interface DurableRecorderDB extends DBSchema {
     key: string
     value: ChunkVolumeProfileRecord
     indexes: { 'by-session': string; 'by-chunk': string }
+  }
+  snips: {
+    key: string
+    value: SnipRecord
+    indexes: { 'by-session': string }
   }
   logSessions: {
     key: string
@@ -159,7 +218,7 @@ export interface LogEntryRecord {
 }
 
 const DB_NAME = 'durable-audio-recorder'
-const DB_VERSION = 3
+const DB_VERSION = 4
 const MAX_LOG_SESSIONS = 50
 
 let dbPromise: Promise<IDBPDatabase<DurableRecorderDB>> | null = null
@@ -188,6 +247,11 @@ async function getDB(): Promise<IDBPDatabase<DurableRecorderDB>> {
           chunkVolumes.createIndex('by-session', 'sessionId')
           chunkVolumes.createIndex('by-chunk', 'chunkId')
         }
+
+        if (oldVersion < 4) {
+          const snips = db.createObjectStore('snips', { keyPath: 'id' })
+          snips.createIndex('by-session', 'sessionId')
+        }
       },
     })
   }
@@ -207,6 +271,12 @@ export interface ManifestService {
     storeChunkVolumeProfile(profile: ChunkVolumeProfile): Promise<void>
     getChunkVolumeProfile(chunkId: string): Promise<ChunkVolumeProfileRecord | null>
     listChunkVolumeProfiles(sessionId?: string): Promise<ChunkVolumeProfileRecord[]>
+  listSnips(sessionId?: string): Promise<SnipRecord[]>
+  appendSnips(sessionId: string, snips: SnipSeed[]): Promise<SnipRecord[]>
+  updateSnipTranscription(
+    snipId: string,
+    patch: { transcription?: SnipTranscription | null; transcriptionError?: string | null },
+  ): Promise<SnipRecord | null>
     deleteSession(sessionId: string): Promise<void>
     purgeLegacyMp4Sessions(): Promise<{ deletedSessions: number }>
     storageTotals(): Promise<{ totalBytes: number }>
@@ -396,9 +466,93 @@ class IndexedDBManifestService implements ManifestService {
     })
   }
 
+  async listSnips(sessionId?: string): Promise<SnipRecord[]> {
+    const db = await getDB()
+    const store = db.transaction('snips').store
+    let rowsRaw: SnipRecord[]
+    if (sessionId) {
+      rowsRaw = await store.index('by-session').getAll(sessionId)
+    } else {
+      rowsRaw = await store.getAll()
+    }
+    const rows = rowsRaw.map((record) => normalizeSnipRecord(record))
+    return rows.sort((a, b) => {
+      if (a.sessionId !== b.sessionId) {
+        return a.sessionId.localeCompare(b.sessionId)
+      }
+      return a.index - b.index
+    })
+  }
+
+  async appendSnips(sessionId: string, snips: SnipSeed[]): Promise<SnipRecord[]> {
+    const db = await getDB()
+    const tx = db.transaction('snips', 'readwrite')
+    const store = tx.objectStore('snips')
+    const existing = await store.index('by-session').getAll(sessionId)
+    const existingByIndex = new Map<number, SnipRecord>()
+    existing.forEach((snip) => {
+      existingByIndex.set(snip.index, snip)
+    })
+
+    const now = Date.now()
+    const created: SnipRecord[] = []
+    for (const snip of snips) {
+      if (existingByIndex.has(snip.index)) {
+        continue
+      }
+      const safeStartMs = Number.isFinite(snip.startMs) ? Math.max(0, snip.startMs) : 0
+      const safeEndMs = Number.isFinite(snip.endMs) ? Math.max(safeStartMs, snip.endMs) : safeStartMs
+      const durationMs = Number.isFinite(snip.durationMs) ? Math.max(0, snip.durationMs) : Math.max(0, safeEndMs - safeStartMs)
+      const record: SnipRecord = {
+        id: `${sessionId}-snip-${snip.index}`,
+        sessionId,
+        index: snip.index,
+        startMs: safeStartMs,
+        endMs: safeEndMs,
+        durationMs,
+        breakReason: snip.breakReason ?? null,
+        boundaryIndex: typeof snip.boundaryIndex === 'number' ? snip.boundaryIndex : null,
+        createdAt: now,
+        updatedAt: now,
+        transcription: null,
+        transcriptionError: null,
+      }
+      await store.put(record)
+      existingByIndex.set(record.index, record)
+      created.push(record)
+    }
+
+    await tx.done
+    const combined = Array.from(existingByIndex.values()).map((record) => normalizeSnipRecord(record))
+    return combined.sort((a, b) => a.index - b.index)
+  }
+
+  async updateSnipTranscription(
+    snipId: string,
+    patch: { transcription?: SnipTranscription | null; transcriptionError?: string | null },
+  ): Promise<SnipRecord | null> {
+    const db = await getDB()
+    const tx = db.transaction('snips', 'readwrite')
+    const store = tx.objectStore('snips')
+    const existing = await store.get(snipId)
+    if (!existing) {
+      await tx.done
+      return null
+    }
+    const updated: SnipRecord = normalizeSnipRecord({
+      ...existing,
+      transcription: patch.transcription !== undefined ? patch.transcription : existing.transcription,
+      transcriptionError: patch.transcriptionError !== undefined ? patch.transcriptionError : existing.transcriptionError,
+      updatedAt: Date.now(),
+    })
+    await store.put(updated)
+    await tx.done
+    return updated
+  }
+
   async deleteSession(sessionId: string): Promise<void> {
     const db = await getDB()
-    const tx = db.transaction(['sessions', 'chunks', 'chunkVolumes'], 'readwrite')
+    const tx = db.transaction(['sessions', 'chunks', 'chunkVolumes', 'snips'], 'readwrite')
     await tx.objectStore('sessions').delete(sessionId)
     const chunkStore = tx.objectStore('chunks')
     const chunkIndex = chunkStore.index('by-session')
@@ -408,6 +562,11 @@ class IndexedDBManifestService implements ManifestService {
     const volumeStore = tx.objectStore('chunkVolumes')
     const volumeIndex = volumeStore.index('by-session')
     for (let cursor = await volumeIndex.openCursor(sessionId); cursor; cursor = await cursor.continue()) {
+      await cursor.delete()
+    }
+    const snipStore = tx.objectStore('snips')
+    const snipIndex = snipStore.index('by-session')
+    for (let cursor = await snipIndex.openCursor(sessionId); cursor; cursor = await cursor.continue()) {
       await cursor.delete()
     }
     await tx.done

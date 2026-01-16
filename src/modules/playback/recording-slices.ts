@@ -1,6 +1,12 @@
 import { SessionAnalysisProvider } from '../analysis/session-analysis-provider'
-import type { SegmentSummary } from '../analysis/session-analysis'
-import { manifestService, type ManifestService, type SessionRecord, type StoredChunk } from '../storage/manifest'
+import {
+  manifestService,
+  type ManifestService,
+  type SessionRecord,
+  type SnipRecord,
+  type SnipSeed,
+  type StoredChunk,
+} from '../storage/manifest'
 
 export type RecordingSliceKind = 'chunk' | 'snip'
 
@@ -120,17 +126,6 @@ const sliceAudioBufferToMono = (
 export class RecordingSlicesApi {
   #manifest: ManifestService
   #analysisProvider: SessionAnalysisProvider
-  #decodedCache = new Map<string, { cacheKey: string; buffer: AudioBuffer }>()
-  #chunkIndexCache = new Map<
-    string,
-    {
-      cacheKey: string
-      baseStartMs: number
-      headerChunk: StoredChunk | null
-      playable: Array<StoredChunk & { startOffsetMs: number; endOffsetMs: number }>
-    }
-  >()
-  #chunkDecodeCache = new Map<string, { cacheKey: string; buffer: AudioBuffer }>()
   #audioContext: AudioContext | null = null
 
   constructor(manifest: ManifestService = manifestService, analysisProvider?: SessionAnalysisProvider) {
@@ -147,13 +142,34 @@ export class RecordingSlicesApi {
     return await this.#manifest.getChunkData(sessionId)
   }
 
-  async listSnips(session: SessionRecord, mimeTypeHint?: string | null): Promise<SegmentSummary[]> {
+  async listSnips(session: SessionRecord, mimeTypeHint?: string | null): Promise<SnipRecord[]> {
     await this.#ensureInit()
+    const storedSnips = await this.#manifest.listSnips(session.id)
+    const lastEndMs = storedSnips.length > 0 ? storedSnips[storedSnips.length - 1].endMs : 0
+    const needsRefresh =
+      storedSnips.length === 0 ||
+      (session.durationMs > 0 && lastEndMs < Math.max(0, session.durationMs - 1000))
+    if (!needsRefresh) {
+      return storedSnips
+    }
+
     const result = await this.#analysisProvider.prepareAnalysisForSession({
       session,
       mimeTypeHint: mimeTypeHint ?? session.mimeType ?? null,
     })
-    return result.analysis?.segments ?? []
+    const segments = result.analysis?.segments ?? []
+    if (segments.length === 0) {
+      return storedSnips
+    }
+    const seeds: SnipSeed[] = segments.map((segment) => ({
+      index: segment.index,
+      startMs: segment.startMs,
+      endMs: segment.endMs,
+      durationMs: segment.durationMs,
+      breakReason: segment.breakReason,
+      boundaryIndex: segment.boundaryIndex,
+    }))
+    return await this.#manifest.appendSnips(session.id, seeds)
   }
 
   async getChunkAudio(session: SessionRecord, seq: number): Promise<RecordingAudioSlice | null> {
@@ -203,12 +219,6 @@ export class RecordingSlicesApi {
     playable: Array<StoredChunk & { startOffsetMs: number; endOffsetMs: number }>
   }> {
     await this.#ensureInit()
-    const cacheKey = [session.id, session.updatedAt ?? 0, session.chunkCount ?? 0].join(':')
-    const cached = this.#chunkIndexCache.get(session.id)
-    if (cached?.cacheKey === cacheKey) {
-      return { baseStartMs: cached.baseStartMs, headerChunk: cached.headerChunk, playable: cached.playable }
-    }
-
     const chunks = await this.#manifest.getChunkData(session.id)
     const sessionMime = session.mimeType ?? ''
     const isMp4Like = /mp4|m4a/i.test(sessionMime)
@@ -231,26 +241,31 @@ export class RecordingSlicesApi {
       return { ...chunk, startOffsetMs: Math.max(0, startOffsetMs), endOffsetMs: Math.max(0, endOffsetMs) }
     })
 
-    this.#chunkIndexCache.set(session.id, { cacheKey, baseStartMs, headerChunk, playable })
     return { baseStartMs, headerChunk, playable }
   }
 
   async #decodeChunkToBuffer(session: SessionRecord, chunk: StoredChunk, headerChunk: StoredChunk | null): Promise<AudioBuffer> {
-    const cacheKey = [session.id, session.updatedAt ?? 0, session.chunkCount ?? 0].join(':')
-    const cached = this.#chunkDecodeCache.get(chunk.id)
-    if (cached?.cacheKey === cacheKey) {
-      return cached.buffer
-    }
-
     const mimeType = chunk.blob.type || session.mimeType || 'audio/mp4'
     const needsInit = headerChunk && headerChunk.id !== chunk.id && MP4_MIME_PATTERN.test(mimeType)
     const blob = needsInit ? new Blob([headerChunk.blob, chunk.blob], { type: mimeType }) : chunk.blob
 
     const audioContext = await this.#getAudioContext()
-    const arrayBuffer = await blob.arrayBuffer()
-    const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0))
-    this.#chunkDecodeCache.set(chunk.id, { cacheKey, buffer: decoded })
-    return decoded
+    try {
+      const arrayBuffer = await blob.arrayBuffer()
+      const decoded = await audioContext.decodeAudioData(arrayBuffer.slice(0))
+      return decoded
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const detail = [
+        `session=${session.id}`,
+        `chunk=${chunk.id}`,
+        `seq=${chunk.seq}`,
+        `bytes=${blob.size}`,
+        `mime=${mimeType}`,
+        needsInit ? 'init=1' : 'init=0',
+      ].join(' ')
+      throw new Error(`Failed to decode chunk audio (${detail})${message ? `: ${message}` : ''}`)
+    }
   }
 
   async #decodeRangeToMonoSamples(
@@ -398,18 +413,15 @@ export class RecordingSlicesApi {
   }
 
   async getSnipAudio(session: SessionRecord, snipNumber: number, mimeTypeHint?: string | null): Promise<RecordingAudioSlice | null> {
-    const segments = await this.listSnips(session, mimeTypeHint)
+    const snips = await this.listSnips(session, mimeTypeHint)
     const index = snipNumber - 1
-    const segment = segments[index]
-    if (!segment) return null
-    return await this.getRangeAudio(session, segment.startMs, segment.endMs, mimeTypeHint)
+    const snip = snips[index]
+    if (!snip) return null
+    return await this.getRangeAudio(session, snip.startMs, snip.endMs, mimeTypeHint)
   }
 
   clearSession(sessionId: string): void {
-    this.#decodedCache.delete(sessionId)
-    this.#chunkIndexCache.delete(sessionId)
-    // Chunk ids don't encode sessionId; clear the decode cache to avoid unbounded growth.
-    this.#chunkDecodeCache.clear()
+    void sessionId
   }
 }
 

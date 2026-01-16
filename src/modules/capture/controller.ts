@@ -17,6 +17,7 @@ export interface CaptureStateSnapshot {
   state: RecorderState
   startedAt: number | null
   lastChunkAt: number | null
+  capturedMs: number
   bytesBuffered: number
   mimeType: string | null
   chunksRecorded: number
@@ -66,6 +67,8 @@ class PcmMp3CaptureController implements CaptureController {
   #targetKbps = 64
   #chunkTargetSamples = 0
   #totalSamplesWritten = 0
+  #lastReportedSamples = 0
+  #progressStepSamples = 0
   #pendingBlocks: Int16Array[] = []
   #pendingSamples = 0
   #listeners = new Set<(state: CaptureStateSnapshot) => void>()
@@ -74,6 +77,7 @@ class PcmMp3CaptureController implements CaptureController {
     state: 'idle',
     startedAt: null,
     lastChunkAt: null,
+    capturedMs: 0,
     bytesBuffered: 0,
     mimeType: null,
     chunksRecorded: 0,
@@ -95,7 +99,7 @@ class PcmMp3CaptureController implements CaptureController {
       throw new Error('Recorder already running')
     }
 
-    this.#setState({ state: 'starting', error: undefined })
+    this.#setState({ state: 'starting', error: undefined, capturedMs: 0 })
     await manifestService.init()
 
     await logInfo('Requesting microphone stream')
@@ -131,10 +135,12 @@ class PcmMp3CaptureController implements CaptureController {
     this.#pendingBlocks = []
     this.#pendingSamples = 0
     this.#totalSamplesWritten = 0
+    this.#lastReportedSamples = 0
     this.#startedAt = Date.now()
     this.#sampleRate = context.sampleRate
     this.#targetKbps = Math.max(8, Math.round(options.targetBitrate / 1000))
     this.#chunkTargetSamples = Math.max(1, Math.round((options.chunkDurationMs / 1000) * this.#sampleRate))
+    this.#progressStepSamples = Math.max(1, Math.round(this.#sampleRate / 10))
     this.#hasSeenAudioProcess = false
 
     await logInfo('PCM capture started', {
@@ -163,6 +169,7 @@ class PcmMp3CaptureController implements CaptureController {
       sessionId: options.sessionId,
       startedAt: this.#startedAt,
       lastChunkAt: this.#startedAt,
+      capturedMs: 0,
       mimeType: MP3_MIME,
       bytesBuffered: 0,
       chunksRecorded: 0,
@@ -175,6 +182,12 @@ class PcmMp3CaptureController implements CaptureController {
       const block = floatToInt16(input)
       this.#pendingBlocks.push(block)
       this.#pendingSamples += block.length
+      const capturedSamples = this.#totalSamplesWritten + this.#pendingSamples
+      if (capturedSamples - this.#lastReportedSamples >= this.#progressStepSamples) {
+        this.#lastReportedSamples = capturedSamples
+        const capturedMs = Math.round((capturedSamples / this.#sampleRate) * 1000)
+        this.#setState({ capturedMs })
+      }
       if (this.#pendingSamples >= this.#chunkTargetSamples) {
         void this.#flushFullChunk().catch((error) => {
           console.error('[PCM Capture] chunk flush failed', error)
@@ -381,6 +394,7 @@ class PcmMp3CaptureController implements CaptureController {
       sessionId: null,
       startedAt: null,
       lastChunkAt: null,
+      capturedMs: 0,
       mimeType: null,
       chunksRecorded: 0,
       bytesBuffered: 0,

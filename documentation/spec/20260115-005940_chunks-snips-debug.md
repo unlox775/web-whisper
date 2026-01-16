@@ -27,6 +27,27 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260115-175214: PCM capture now updates the session `startedAt` to the actual capture-start time (after mic/audio graph setup), so `session.durationMs` and Doctor range-based checks don’t include setup latency.
 - 20260115-175214: Doctor “volume profile” sanity check now includes `seq=0` for MP3 sessions (it previously filtered `seq > 0`, creating a false “missing 1 profile” warning).
 - 20260115-180115: Doctor now forces a stable snapshot (fresh session from IndexedDB + cache clear + best-effort timing verification) so results don’t change just because you refreshed.
+- 20260115-203800: Added first-class snip records in IndexedDB, including transcription payloads and errors, plus a new developer console table to inspect them.
+- 20260115-203800: Snip list now renders stored snips, with per-snip retry transcription and Groq error surfaces.
+- 20260115-203800: Detail view shows concatenated snip transcription text with status/error metadata.
+- 20260115-211200: Simplified snip transcription payloads to store timestamped phrase segments instead of word-level entries.
+- 20260115-221500: Snip list now displays transcription text with tap-to-select for easy copying.
+- 20260115-221500: Auto-transcribe snips when recording stops (serial Groq calls) and show previews in the session list.
+- 20260115-221500: Added per-recording delete action plus a 15s no-audio timeout that beeps and stops recording.
+- 20260115-225500: Removed range/decoder caching in `recordingSlicesApi` to avoid stale decode state.
+- 20260115-225500: Added non-developer “Retry TX” action to retrigger all snip transcriptions.
+- 20260115-232500: Stop all active playback on tab hide to prevent stacked audio on return.
+- 20260115-232500: Retry TX now forces fresh snip list + ignores busy flags; delete blocked during active recording.
+- 20260115-235500: Added verbose decode error context and skip Groq when snip audio slice is empty.
+- 20260115-241500: Auto-transcribe waits and retries decode failures; no-audio alert now flashes screen.
+- 20260115-245500: Session list shows transcription errors with per-session Retry TX and auto-selects transcript on open.
+- 20260115-252500: Retry TX now targets failed snips first; stop button waits for audio flow and dev strip labels updated.
+- 20260115-260000: Auto-transcribe retries failed snips after successes; start button pulses while warming up and dev strip uses live elapsed data size.
+- 20260115-223934: Capture dev strip labels shortened and moved under the capture controls to avoid blocking the stop button.
+- 20260115-223934: Session list now shows a delete button, logs delete attempts, and adds retry/spinner states for pending or in-flight transcriptions.
+- 20260115-225125: Delete actions now log confirmation outcomes, verify deletes, and list delete buttons only show for no-audio or error sessions.
+- 20260115-230214: Capture progress now reports PCM-sample time and drives stop-button readiness.
+- 20260115-231618: Delete confirmation flow logs user activation context and avoids async before confirm.
 
 ## 🚧 In progress
 
@@ -37,7 +58,7 @@ Fix the recording detail “debug” (bug icon) panel so:
 
 ## ⏭️ Next actions
 
-- Update `documentation/README.md` status line(s) once snips are actually surfaced in the UI.
 - Add/extend unit tests around slice resolution and stitching (where feasible without real audio fixtures).
 - Ensure `npm run build` passes and commit build artifacts as required by repo policy.
+- Add auto-transcription (post-snip) and optional word-level playback highlighting.
 
