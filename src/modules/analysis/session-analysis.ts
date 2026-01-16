@@ -71,6 +71,14 @@ export interface SessionAnalysisConfig {
   initialIgnoreMs: number
 }
 
+export interface WindowedAnalysisResult {
+  analysis: SessionAnalysis | null
+  frames: VolumeFrame[]
+  windowStartMs: number
+  windowEndMs: number
+  windowDurationMs: number
+}
+
 export const DEFAULT_SESSION_ANALYSIS_CONFIG: SessionAnalysisConfig = {
   frameDurationMs: 50,
   minQuietDurationMs: 600,
@@ -402,6 +410,71 @@ export function analyzeSessionFromFrames(
       threshold,
       normalizedThreshold,
     },
+  }
+}
+
+export function analyzeSessionWindowFromFrames({
+  frames,
+  windowStartMs,
+  windowEndMs,
+  sampleRate,
+  frameDurationMs,
+  config,
+}: {
+  frames: VolumeFrame[]
+  windowStartMs: number
+  windowEndMs: number
+  sampleRate?: number
+  frameDurationMs?: number
+  config?: Partial<SessionAnalysisConfig>
+}): WindowedAnalysisResult {
+  const clampedStartMs = Math.max(0, Math.round(windowStartMs))
+  const clampedEndMs = Math.max(clampedStartMs, Math.round(windowEndMs))
+  const windowDurationMs = Math.max(0, clampedEndMs - clampedStartMs)
+
+  if (frames.length === 0 || windowDurationMs <= 0) {
+    return {
+      analysis: null,
+      frames: [],
+      windowStartMs: clampedStartMs,
+      windowEndMs: clampedEndMs,
+      windowDurationMs,
+    }
+  }
+
+  const rebasedFrames: VolumeFrame[] = []
+  for (const frame of frames) {
+    if (frame.endMs <= clampedStartMs || frame.startMs >= clampedEndMs) {
+      continue
+    }
+    const startMs = Math.max(0, frame.startMs - clampedStartMs)
+    const endMs = Math.min(clampedEndMs, frame.endMs) - clampedStartMs
+    if (endMs <= startMs) {
+      continue
+    }
+    rebasedFrames.push({
+      ...frame,
+      index: rebasedFrames.length,
+      startMs,
+      endMs,
+    })
+  }
+
+  const analysis = rebasedFrames.length > 0
+    ? analyzeSessionFromFrames(rebasedFrames, {
+        totalDurationMs: windowDurationMs,
+        sampleRate,
+        frameDurationMs,
+        config,
+      })
+    : null
+
+  return {
+    analysis,
+    frames: rebasedFrames,
+    windowStartMs: clampedStartMs,
+    windowEndMs: clampedEndMs,
+    windowDurationMs,
   }
 }
 

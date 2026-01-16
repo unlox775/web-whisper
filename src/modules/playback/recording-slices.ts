@@ -1,4 +1,5 @@
 import { SessionAnalysisProvider } from '../analysis/session-analysis-provider'
+import { analyzeSessionWindowFromFrames, DEFAULT_SESSION_ANALYSIS_CONFIG } from '../analysis/session-analysis'
 import {
   manifestService,
   type ManifestService,
@@ -32,6 +33,7 @@ export interface RecordingRangeInspection {
 }
 
 const MP4_MIME_PATTERN = /mp4|m4a/i
+const LIVE_SNIP_TAIL_MS = 15_000
 
 const writeAscii = (view: DataView, offset: number, value: string) => {
   for (let i = 0; i < value.length; i += 1) {
@@ -146,9 +148,16 @@ export class RecordingSlicesApi {
     await this.#ensureInit()
     const storedSnips = await this.#manifest.listSnips(session.id)
     const lastEndMs = storedSnips.length > 0 ? storedSnips[storedSnips.length - 1].endMs : 0
+    const sessionDurationMs = Math.max(0, session.durationMs ?? 0)
+    const isRecording = session.status === 'recording'
+    const tailMs = isRecording ? LIVE_SNIP_TAIL_MS : 0
+    const minWindowMs = isRecording ? DEFAULT_SESSION_ANALYSIS_CONFIG.minSegmentMs + tailMs : 0
+    const remainingMs = Math.max(0, sessionDurationMs - lastEndMs)
     const needsRefresh =
       storedSnips.length === 0 ||
-      (session.durationMs > 0 && lastEndMs < Math.max(0, session.durationMs - 1000))
+      (isRecording
+        ? remainingMs >= minWindowMs
+        : sessionDurationMs > 0 && lastEndMs < Math.max(0, sessionDurationMs - 1000))
     if (!needsRefresh) {
       return storedSnips
     }
@@ -156,19 +165,53 @@ export class RecordingSlicesApi {
     const result = await this.#analysisProvider.prepareAnalysisForSession({
       session,
       mimeTypeHint: mimeTypeHint ?? session.mimeType ?? null,
+      forceRefresh: isRecording,
     })
-    const segments = result.analysis?.segments ?? []
+    const analysisDurationMs = result.analysis?.stats.totalDurationMs ?? result.frames[result.frames.length - 1]?.endMs ?? 0
+    if (analysisDurationMs <= lastEndMs + 200) {
+      return storedSnips
+    }
+
+    const windowStartMs = Math.min(Math.max(0, lastEndMs), analysisDurationMs)
+    const windowEndMs = analysisDurationMs
+    const windowDurationMs = Math.max(0, windowEndMs - windowStartMs)
+    if (windowDurationMs <= 0 || (isRecording && windowDurationMs < minWindowMs)) {
+      return storedSnips
+    }
+
+    const windowResult = analyzeSessionWindowFromFrames({
+      frames: result.frames,
+      windowStartMs,
+      windowEndMs,
+      sampleRate: result.analysis?.stats.sampleRate ?? 0,
+      frameDurationMs: result.analysis?.stats.frameDurationMs ?? DEFAULT_SESSION_ANALYSIS_CONFIG.frameDurationMs,
+    })
+    const segments = windowResult.analysis?.segments ?? []
     if (segments.length === 0) {
       return storedSnips
     }
-    const seeds: SnipSeed[] = segments.map((segment) => ({
-      index: segment.index,
-      startMs: segment.startMs,
-      endMs: segment.endMs,
-      durationMs: segment.durationMs,
-      breakReason: segment.breakReason,
-      boundaryIndex: segment.boundaryIndex,
-    }))
+    const maxSnipEndMs = isRecording ? Math.max(0, windowDurationMs - tailMs) : windowDurationMs
+    const baseIndex = storedSnips.reduce((max, snip) => Math.max(max, snip.index), -1) + 1
+    const seeds: SnipSeed[] = []
+    segments.forEach((segment) => {
+      if (segment.endMs <= 0) {
+        return
+      }
+      if (segment.endMs > maxSnipEndMs) {
+        return
+      }
+      seeds.push({
+        index: baseIndex + seeds.length,
+        startMs: windowStartMs + segment.startMs,
+        endMs: windowStartMs + segment.endMs,
+        durationMs: segment.durationMs,
+        breakReason: segment.breakReason,
+        boundaryIndex: segment.boundaryIndex,
+      })
+    })
+    if (seeds.length === 0) {
+      return storedSnips
+    }
     return await this.#manifest.appendSnips(session.id, seeds)
   }
 
