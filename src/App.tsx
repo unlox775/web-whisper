@@ -580,13 +580,14 @@ function App() {
   }, [loadSessions])
 
   useEffect(() => {
-    if (captureState.state === 'recording') {
+    const shouldShow = captureState.state === 'recording' && !selectedRecordingId
+    if (shouldShow) {
       setTranscriptionMounted(true)
       requestAnimationFrame(() => setTranscriptionVisible(true))
     } else {
       setTranscriptionVisible(false)
     }
-  }, [captureState.state])
+  }, [captureState.state, selectedRecordingId])
 
   useEffect(() => {
     if (captureState.state !== 'recording') {
@@ -1424,7 +1425,8 @@ function App() {
 
       const canRetryFailures =
         queue.lastSuccessAt > 0 && Date.now() - queue.lastSuccessAt < LIVE_TRANSCRIPTION_RETRY_WINDOW_MS
-      snips.forEach((snip) => {
+      const orderedSnips = [...snips].sort((a, b) => a.index - b.index)
+      orderedSnips.forEach((snip) => {
         if (getSnipTranscriptionText(snip)) {
           return
         }
@@ -3175,6 +3177,7 @@ function App() {
     captureState.state === 'recording' ? Math.max(captureState.bytesBuffered, estimatedBytes) : captureState.bytesBuffered
   const isDetailRecordingActive =
     selectedRecording?.id === captureState.sessionId && captureState.state === 'recording'
+  const shouldShowLiveTranscription = isTranscriptionMounted && !selectedRecordingId
   const displayDurationMs =
     isDetailRecordingActive
       ? capturedAudioMs
@@ -3372,7 +3375,7 @@ function App() {
         </section>
       </main>
 
-        {isTranscriptionMounted ? (
+        {shouldShowLiveTranscription ? (
           <section
             className={`transcription-panel${isTranscriptionVisible ? ' is-visible' : ''}`}
             aria-live="polite"

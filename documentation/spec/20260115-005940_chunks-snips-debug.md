@@ -52,6 +52,8 @@ Fix the recording detail “debug” (bug icon) panel so:
 - 20260116-022815: Snip generation now appends stable live snips during recording and finalizes the tail after stop.
 - 20260116-022815: Live recording refreshes chunk/snip lists and drives a real-time transcription overlay with auto-scroll.
 - 20260116-022815: Added live transcription queueing with retry gating based on recent successes.
+- 20260116-051121: Live transcription overlay hides during detail view and fades upward.
+- 20260116-051121: Live transcription queue now preserves snip order.
 
 ## 🚧 In progress
 
