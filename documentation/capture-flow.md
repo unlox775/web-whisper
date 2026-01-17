@@ -1,94 +1,48 @@
-# Capture Flow – Step-by-Step Timeline
+# Capture Flow - Step-by-Step Timeline
 
-This document narrates a complete recording session, highlighting each event, the modules involved, and the logs you should expect to see. Use it alongside the developer console when diagnosing issues.
+This document narrates a complete recording session with the current PCM-first pipeline.
 
 ## 0. Preconditions
-
 - `initializeLogger()` has started a new log session.
-- `settingsStore` is loaded and the UI has rendered the idle state.
+- `settingsStore` is loaded and the UI is idle.
 
-## 1. User Presses “Start Recording”
+## 1. User presses "Start recording"
+1. `App.tsx` creates a `sessionId` and inserts a session row via `manifestService.createSession`.
+2. `captureController.start({ sessionId, targetBitrate, chunkDurationMs: 4000 })` is invoked.
+3. The controller calls `getUserMedia` with audio constraints.
+4. An AudioContext graph is created:
+   - MediaStream source -> ScriptProcessor -> mute gain -> destination.
+5. The controller logs `PCM capture started` and updates session metadata.
 
-1. `App.tsx` generates `sessionId = crypto.randomUUID()`.
-2. `manifestService.createSession({ id, startedAt, status: 'recording', ... })` inserts a stub row.
-3. `captureController.start({ sessionId, targetBitrate, chunkDurationMs: 4000 })` is invoked.
-4. Controller calls `manifestService.init()` (no-op if already open) and logs `Requesting microphone stream`.
-5. `getUserMedia` resolves → controller logs `Microphone stream acquired`.
-6. `selectMimeType` chooses AAC if supported; controller instantiates `MediaRecorder`.
-7. Event listeners are registered:
-   - `dataavailable`
-   - `stop`
-   - `error`
-8. `recorder.start(4000)` kicks off encoding. Controller logs `MediaRecorder started`.
-9. Controller updates state → subscribers (UI) show “Recording” pill, zero elapsed time.
+## 2. PCM processing loop (every audio callback)
+1. `onaudioprocess` receives a Float32 PCM block.
+2. The block is converted to Int16 and appended to a pending buffer.
+3. `capturedMs` is updated based on sample count, not wall-clock time.
+4. When pending samples exceed the chunk target, a flush is triggered.
 
-## 2. Every 4 Seconds (`dataavailable` Event)
+## 3. Chunk flush
+1. Pending Int16 blocks are encoded to MP3 via Lame.js.
+2. A chunk record is created using sample-based `startMs` and `endMs`.
+3. `manifestService.appendChunk` persists the blob and updates session totals.
+4. A volume profile is computed and stored for analysis.
+5. Logs include `PCM chunk encoded`, `Chunk persisted`, and `Chunk volume profile stored`.
 
-1. Recorder dispatches `dataavailable` with a `Blob`.
-2. Controller checks `event.data.size`:
-   - If zero → logs `Received empty audio chunk` with `recorder.state` and `requestedTimesliceMs`.
-   - Otherwise → continues.
-3. Controller determines chunk metadata:
-   - `chunkStart = lastChunkEndMs`
-   - `chunkDuration = event.timecode ?? (Date.now() - chunkStart)`
-   - `chunkEnd = chunkStart + chunkDuration`
-   - `isHeaderChunk = seq === 0`
-4. Controller logs `Chunk captured` with `durationMs`, `chunkStartMs`, `chunkEndMs`, and `timecode`.
-5. Chunk is enqueued for persistence via `manifestService.appendChunk` (executed sequentially).
-6. On success controller logs `Chunk persisted` and increments state (`chunksRecorded`, `bytesBuffered`, `lastChunkAt`).
-7. UI updates developer strip showing new chunk count and buffered size.
+## 4. While recording
+- The UI shows live duration from the capture state.
+- Developer mode shows chunk count and buffered size.
+- The analysis pipeline can run mid-recording using stored chunk volume profiles.
 
-## 3. Interacting While Recording
+## 5. User presses "Stop recording"
+1. `captureController.stop()` flushes any remainder chunk.
+2. The controller waits for the persist queue to finish.
+3. The session is reconciled and marked `ready` or `error`.
+4. Logs include `Recorder stop requested` and `Session timing reconciled`.
 
-- UI polls `manifestService.listSessions()` every few seconds (or on state change) to refresh durations and status text.
-- Developer overlay can fetch `manifestService.getChunksForInspection()` without disrupting capture.
-- If developer opens the detail view mid-recording, playback controls are disabled until at least one non-header chunk exists.
+## 6. No-audio watchdogs
+- The controller warns if no audio callback is detected within 9 seconds.
+- The UI stops the recording if no chunks appear after a longer timeout.
 
-## 4. User Presses “Stop Recording”
-
-1. UI calls `captureController.stop()`.
-2. Controller sets state to `stopping` and logs `Recorder stop requested`.
-3. If the recorder is still `recording`, controller logs `Flush initiated before stop` and triggers `#flushRecorder`:
-   - `requestData()` is called and logged.
-   - The next `dataavailable` is awaited (or timeout). If the chunk is non-empty, controller logs `Final flush produced chunk`; otherwise a warning is emitted.
-4. Once `MediaRecorder.state` becomes `inactive`, the controller detaches listeners and logs `MediaRecorder stop event fired`.
-
-## 5. Reconciling Session Metadata
-
-1. `await this.flushPending()` ensures all chunk writes are finished.
-2. Controller retrieves chunk metadata via `manifestService.getChunkMetadata(sessionId)`.
-3. Duration/bytes totals are recomputed (ignoring header chunk).
-4. Controller constructs `updatePatch` and calls `manifestService.updateSession(...)`.
-5. Controller logs `Session timing reconciled` with status, duration, total bytes, and chunk count.
-6. Controller resets internal fields (`#mediaRecorder`, `#stream`, etc.) and sets state to `idle`.
-
-## 6. UI Refresh
-
-1. `App.tsx` reloads the session list (now showing status `Ready` or `Error`).
-2. If developer detail view is open, it calls `manifestService.getChunkData(sessionId)` to populate the chunk list.
-3. Playback button is enabled; pressing it assembles a blob via `manifestService.buildSessionBlob` and plays through the hidden `<audio>` element.
-
-## 7. Developer Console Reference
-
-Log statements you should see in chronological order:
-
-1. `Requesting microphone stream`
-2. `Microphone stream acquired`
-3. `MediaRecorder started`
-4. Repeated: `Chunk captured` → `Chunk persisted`
-5. On stop: `Recorder stop requested`
-6. `Flush initiated before stop`
-7. `requestData issued for final flush`
-8. `Final flush produced chunk` (or warning if empty)
-9. `MediaRecorder stop event fired`
-10. `Session timing reconciled`
-
-If any of these are missing, the developer overlay (`Debug → Logs`) will make it visible. Matching timestamps with chunk metadata helps identify drift or missing events.
-
-## 8. Error Handling
-
-- If `getUserMedia` rejects, the exception bubbles up to the UI and a session stub is marked with `status: 'error'` + explanatory note.
-- If `MediaRecorder` fires an `error` event mid-session, the controller sets state to `error`, logs details, and still attempts to flush/persist whatever data is available.
-- The developer overlay shows failed chunks (size zero) and red “Error” pills so QA can spot the failure quickly.
-
-Use this timeline to cross-check the new documentation in `technology.md`, `pcm-walkthrough.md`, and `debugging.md`. Together they describe **what** should happen, **how** the underlying APIs behave, and **where** to look when things get weird.
+## 7. Playback and follow-up actions
+- Full playback uses `manifestService.buildSessionBlob`.
+- Chunk and snip playback use `recordingSlicesApi`.
+- Snip transcription can run after recording if a Groq key is configured.
