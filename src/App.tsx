@@ -6,6 +6,7 @@ import {
   useState,
 } from 'react'
 import { captureController } from './modules/capture/controller'
+import { initializeRecordingWakeLock, setRecordingWakeLockActive } from './modules/capture/wake-lock'
 import { RecordingAnalysisGraph } from './components/RecordingAnalysisGraph'
 import { type SessionAnalysis } from './modules/analysis/session-analysis'
 import './App.css'
@@ -25,6 +26,7 @@ import { settingsStore, type RecorderSettings } from './modules/settings/store'
 import {
   getActiveLogSession,
   initializeLogger,
+  logGlobalErrorsSince,
   logError,
   logInfo,
   logWarn,
@@ -375,6 +377,7 @@ function App() {
   const snipSliceCacheRef = useRef<Map<string, RecordingAudioSlice>>(new Map())
   const liveTranscriptionStreamRef = useRef<HTMLDivElement | null>(null)
   const lastUserInteractionRef = useRef<{ type: string; target: string; timestamp: number } | null>(null)
+  const recordStartAttemptRef = useRef<number | null>(null)
   const doctorRunIdRef = useRef(0)
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
@@ -541,6 +544,10 @@ function App() {
   }, [])
 
   useEffect(() => {
+    initializeRecordingWakeLock()
+  }, [])
+
+  useEffect(() => {
     void manifestService.reconcileDanglingSessions()
   }, [])
 
@@ -548,6 +555,17 @@ function App() {
     const unsubscribe = captureController.subscribe((state) => setCaptureState({ ...state }))
     return unsubscribe
   }, [])
+
+  useEffect(() => {
+    if (captureState.state === 'idle') {
+      recordStartAttemptRef.current = null
+    }
+  }, [captureState.state])
+
+  useEffect(() => {
+    const isRecording = captureState.state === 'recording'
+    void setRecordingWakeLockActive(isRecording, isRecording ? 'recording-active' : 'recording-inactive')
+  }, [captureState.state])
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -1719,6 +1737,8 @@ function App() {
   const startRecording = useCallback(async () => {
     if (captureState.state === 'recording') return
     let sessionId = ''
+    recordStartAttemptRef.current = Date.now()
+    void setRecordingWakeLockActive(true, 'recording-start-click')
     try {
       await logInfo('Recorder start requested', { previousState: captureState.state })
       setErrorMessage(null)
@@ -1755,6 +1775,8 @@ function App() {
       await loadSessions()
     } catch (error) {
       console.error('[UI] Failed to start recording', error)
+      recordStartAttemptRef.current = null
+      void setRecordingWakeLockActive(false, 'recording-start-failed')
       await logError('Recorder failed to start', {
         sessionId,
         error: error instanceof Error ? error.message : String(error),
@@ -1786,6 +1808,7 @@ function App() {
         error: error instanceof Error ? error.message : String(error),
       })
     } finally {
+      void setRecordingWakeLockActive(false, 'recording-stop-request')
       await loadSessions()
       if (sessionId) {
         void autoTranscribeSnipsForSession(sessionId)
@@ -1817,6 +1840,18 @@ function App() {
         sessionId: current.sessionId,
         timeoutMs: 15000,
         error: current.error ?? null,
+      })
+      const startAttemptAt = recordStartAttemptRef.current ?? current.startedAt ?? Date.now()
+      const lastInteraction = lastUserInteractionRef.current
+      void logGlobalErrorsSince(startAttemptAt, {
+        sessionId: current.sessionId,
+        timeoutMs: 15000,
+        captureState: {
+          state: current.state,
+          chunksRecorded: current.chunksRecorded,
+          error: current.error ?? null,
+        },
+        lastUserInteraction: lastInteraction ?? null,
       })
       triggerNoAudioAlert()
       void playAlertBeep()
