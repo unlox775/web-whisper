@@ -214,6 +214,7 @@ If chunk 2 sounds like “a snippet from the beginning of chunk 1” mixed into 
 The chunk debug button is intentionally “dumb” in the sense that it is playing the bytes of that chunk blob (plus optional header) and letting the browser decode it as-is.
 
 ---
+
 ## Why “Normal Play” can be correct while “Chunk Play” is weird
 
 Given the traces above:

@@ -1,44 +1,39 @@
-# Web Whisper Capture Documentation Hub
+# Web Whisper Documentation Hub
 
-Welcome to the technical documentation hub for the capture pipeline powering Web Whisper. This directory expands on the high-level specification (`documentation/spec/20251106-031710_capture-refinement.md`) with deep dives that assume no prior knowledge of audio engineering or browser media APIs. You will find:
+This folder contains the living documentation for Web Whisper. It is kept current with the codebase and separated from historical notes.
 
-- `technology.md` – a friendly primer on the pieces the browser provides (MediaStream, MediaRecorder, Blob, etc.) and how they relate to PCM audio samples.
-- `pcm-walkthrough.md` – a middle-school-level explanation of what Pulse-Code Modulation is, how samples are buffered, and why AAC/MP4 “init segments” exist.
-- `libraries.md` – an inventory of the modules, classes, and functions in this repository, with guidance on how they collaborate during a recording session.
-- `capture-flow.md` – a chronological walkthrough from the moment the user hits “Start” until the recorder is cleaned up, including event sequences, threading considerations, and timing heuristics.
-- `debugging.md` – practical guidance on reading the in-app developer console, interpreting new log messages, and verifying chunk metadata.
+- `documentation/spec/` holds session-by-session specs and prompt transcripts.
+- `documentation/ZZ_history/` holds archived docs with date prefixes.
 
-Each document links out to relevant public resources (MDN, Wikipedia, W3C) so you can explore deeper background material without leaving this repository. Start with `technology.md` if you are new to browser audio capture, then follow the links in that document to progress through the full capture lifecycle.
-# Project Status — Durable Audio Recorder PWA
+## Core docs
+- `architecture.md` - current system overview and data flows.
+- `technology.md` - browser API primer and PCM-first capture path.
+- `pcm-walkthrough.md` - PCM basics and why we encode to MP3.
+- `capture-flow.md` - runtime timeline from start to stop.
+- `libraries.md` - module map and responsibilities.
+- `debugging.md` - developer tooling, logs, and diagnostics.
+- `lessonslearned.md` - retrospective and timeline.
 
-This document tracks the real-world readiness of core capabilities. Status is intentionally blunt so we keep honest about what works today.
+## Project Status - Durable Audio Recorder PWA
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Installable PWA shell | 🟩 Ready | Scaffolding, theming, and service worker registration verified. |
-| Continuous capture tee | 🟨 In progress | Continuous MediaRecorder capture + fixed snips working; AudioWorklet analysis still pending. |
-| Chunk persistence & durability | 🟨 In progress | IndexedDB manifest persists chunks with deterministic timing verification; upload/backoff plumbing still outstanding. |
-| Recording playback | 🟨 In progress | Combined chunk playback available; needs waveform scrubber & buffering polish. |
-| Adaptive snip logic | 🟨 In progress | Snip segments derived from chunk volume profiles and surfaced in the detail debug panel; AudioWorklet/live metrics still pending. |
-| Live transcription | 🟨 In progress | Manual snip transcription via Groq; live streaming still simulated. |
-| Settings & Groq key intake | 🟨 In progress | Groq key now powers snip retry transcription; live streaming still pending. |
-| Telemetry & safeguards | 🟥 Not implemented | Offline, low-storage, and device-change handling TBD. |
-| Spec + prompt logging | 🟩 Ready | `documentation/spec/` entries created per session; prompt transcripts stored alongside specs. |
+| Installable PWA shell | Ready | Service worker and PWA packaging verified. |
+| PCM capture + MP3 chunking | Ready | AudioContext + ScriptProcessor + Lame.js. |
+| Chunk persistence | In progress | Durable local storage; retention policy still pending. |
+| Recording playback | Ready | Full session playback and chunk/snip playback. |
+| Analysis + snip segmentation | In progress | Heuristics tuned iteratively from volume profiles. |
+| Groq transcription | In progress | Snip-based transcription with API key required. |
+| Developer diagnostics | Ready | IndexedDB tables, logs, and doctor tests. |
+| Telemetry + uploads | Not implemented | No uploader or telemetry pipeline yet. |
+| Spec + prompt logging | Ready | `documentation/spec/` is the canonical log. |
 
 ## Current Focus
-
-- Wire the AudioWorklet analysis tee, adaptive snip heuristics, and diagnostics surfaced via developer mode.
-- Build the uploader worker with retry/backoff plus UI affordances for recovery and attention states.
-- Extend Groq transcription from manual snip retries into automatic streaming updates.
+- Harden analysis timing and snip heuristics across devices.
+- Improve retention policies and storage cap enforcement.
+- Refine live transcription UI and retry behaviors.
 
 ## Upcoming Milestones
-
-1. **Analysis & Snip Intelligence** — wire AudioWorklet metrics, adaptive boundaries, and session diagnostics.
-2. **Uploader & Retry Loop** — background worker, HTTP retry/backoff, and storage pressure safeguards.
-3. **Transcription Integration** — settings flow for Groq API key, 30-second batching, and retry controls on the session detail view.
-
-Refer to `documentation/spec/` for iteration-by-iteration breakdowns and prompt transcripts.
-
-## iOS Microphone Permissions
-
-- iOS currently prompts on every launch of a standalone PWA when requesting `getUserMedia`. To minimise prompts, open **Settings → Safari → Microphone** and ensure “Allow” is selected. If the PWA still prompts, grant access when asked—the browser does not persist the choice for installed PWAs yet.
+1. AudioWorklet migration for lower-latency PCM capture.
+2. Upload worker with retry/backoff and offline handling.
+3. Streaming transcription updates with better session timelines.

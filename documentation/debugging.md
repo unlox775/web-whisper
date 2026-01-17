@@ -1,64 +1,56 @@
 # Debugging Guide
 
-This guide explains how to validate chunk metadata, interpret the new log entries, and confirm that durations match the underlying audio. Use it when QA reports timing anomalies or missing audio.
+This guide explains how to inspect capture data, interpret logs, and run diagnostics.
 
-## 1. Developer Overlay Overview
+## 1. Developer mode overview
+- Enable Developer mode in Settings.
+- The bug icon in the header opens the Developer Console.
+- The bug icon in a session detail view reveals chunk and snip lists.
+- The doctor icon opens diagnostics for the selected recording.
 
-The overlay (toggle via 🐞) exposes two tabs:
+## 2. Developer Console (header bug icon)
+Two tabs are available:
+1. IndexedDB tables: sessions, chunks, chunkVolumes, snips, logSessions, logEntries.
+2. Logs: per-session log entries with timestamp, level, message, and details.
 
-1. **IndexedDB** – lists sessions and chunks, including `seq`, `startMs`, `endMs`, `blobSize`, and `verifiedByteLength`. The chunk list matches the metadata saved in IndexedDB.
-2. **Logs** – chronological view of log entries emitted by `captureController` and other modules. Filter using the dropdown to jump between sessions.
+## 3. Log messages you should expect
+- `Recorder start requested`
+- `Requesting microphone stream`
+- `Microphone stream acquired`
+- `PCM capture started`
+- `PCM chunk encoded` (debug)
+- `Chunk persisted`
+- `Chunk volume profile stored`
+- `Recorder stop requested`
+- `Session timing reconciled`
 
-### Keyboard Shortcuts
+If a message is missing, check the log session for errors around that time.
 
-- Press `Esc` to close any overlay quickly.
-- Use the left/right arrows in the Logs tab to move between log sessions.
+## 4. Chunk integrity checklist
+- For MP3 sessions, `seq 0` is real audio.
+- For legacy MP4 sessions, `seq 0` may be an init segment.
+- `endMs` should be greater than `startMs`.
+- `byteLength` should be larger than zero for audio chunks.
 
-## 2. Confirming Chunk Integrity
+## 5. Volume profiles and analysis
+Each chunk should have a volume profile entry. Missing profiles can:
+- prevent timing verification
+- shrink the histogram timeline
+- generate incorrect snips
 
-1. Start a test recording (e.g., 12 seconds). After stopping, open the developer overlay → IndexedDB tab → `chunks` table.
-2. Check for each sequence number:
-   - `seq === 0` should have `isHeaderChunk` flagged (in the JSON) and `blob.size` > 0 but `startMs === endMs` (init metadata). This chunk is expected to be “zero seconds.”
-   - For `seq > 0`, verify that `endMs - startMs` roughly matches four seconds (except the final chunk, which can be shorter).
-   - `blob.size` should be larger than zero. If zero, refer to the log entry `Received empty audio chunk` to diagnose the cause.
-3. Confirm that the final chunk’s `endMs` is close to the session’s `updatedAt` timestamp.
+Regenerate missing profiles via diagnostics or by re-opening the session.
 
-## 3. Reading Log Entries
+## 6. Doctor diagnostics
+The doctor panel runs targeted checks:
+- Sanity checks (session duration, chunk sums, snip bounds)
+- Chunk coverage scan (IndexedDB timing coverage)
+- Range access scan (decode and inspect slices)
+- Per-chunk decode scan
+- Snip scan (validate snip ranges)
 
-| Log Message | Meaning | Follow-up |
-| --- | --- | --- |
-| `Requesting microphone stream` | A new recording is being seeded. | If no follow-up appears, the user likely denied mic access. |
-| `Chunk captured` with `timecode: null` | We fell back to `Date.now()` for duration. | Ensure there is a matching `Chunk persisted` and inspect `durationMs`. |
-| `Chunk duration fallback applied` | Browser omitted `event.timecode`; we calculated duration manually. | Consistent occurrence is normal on Safari. If it happens mid-session on Chrome, note the timing. |
-| `Final flush produced chunk` | Stop routine yielded one last chunk. | If missing, the recorder may have stopped prematurely (look for warnings). |
-| `Final flush completed without non-empty chunk` | We asked for trailing data but none arrived. | Inspect subsequent chunks for zero length; user may have denied mic mid-recording. |
-| `Session timing reconciled` | Manifest totals were recomputed; log includes final duration/size. | Cross-check with session list to confirm UI shows the same duration. |
+Each test provides a summary, grouped findings, and JSON export.
 
-## 4. Verifying Playback Duration
-
-1. Open a session detail view and hit play. Observe the timer `current / total` under the transport controls.
-2. In Developer Mode, expand the chunk list; sum the `durationMs` values (UI shows seconds). They should match the total playback duration.
-3. If the UI reports a shorter duration than playback, inspect the chunk metadata for incorrect `startMs`/`endMs`. Use log timestamps to identify when the mismatch began.
-
-## 5. Checking IndexedDB Directly
-
-If the developer overlay doesn’t reveal the issue, open DevTools → Application → IndexedDB → `durable-audio-recorder`.
-
-- Inspect the `chunks` object store; confirm each entry’s `startMs`, `endMs`, and `byteLength`.
-- Use the “Download chunk” feature in the overlay (▶/⬇ buttons) to validate that the `Blob` plays independently.
-- Clear stores between tests (Developer overlay → “Reset DB”) to avoid stale data interfering with new recordings.
-
-## 6. Common Failure Modes
-
-| Symptom | Likely Cause | Remedy |
-| --- | --- | --- |
-| All chunks show identical `startMs` | Controller wasn’t updating `#lastChunkEndMs` (should be fixed by latest patch). If it reappears, look for skipped `Chunk captured` logs. | Reload app after clearing the DB; check logs for errors. |
-| Duration in UI shorter than playback | Some chunks had zero or tiny duration due to missing timecodes. | Compare log `timecode` values and ensure fallback durations look reasonable. |
-| Playback stalls | `buildSessionBlob` returned `null` because no audio chunks were stored. Likely due to denied microphone or persistent zero-length chunks. | Re-run with developer overlay open to watch logs as it happens. |
-
-## 7. Next Steps
-
-- If timing issues persist, capture the log session via “Download logs” (coming soon) or manually export the log entries using the IndexedDB inspector.
-- File an issue with the sequence of log messages and chunk metadata; include browser/OS details to reproduce.
-
-With these diagnostics you can distinguish between recorder glitches (browser/OS) and application logic regressions. When in doubt, capture the logs immediately after reproducing the problem and compare them with the expected timeline described in `capture-flow.md`.
+## 7. Common issues
+- No audio captured: verify microphone permissions and look for `No PCM audio callback detected`.
+- Timing drift: run timing verification and ensure volume profiles exist.
+- Legacy MP4 artifacts: consider purging old MP4 sessions.
