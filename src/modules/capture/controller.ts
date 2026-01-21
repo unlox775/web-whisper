@@ -24,12 +24,54 @@ export interface CaptureStateSnapshot {
   error?: string
 }
 
+export interface CaptureDiagnostics {
+  sessionId: string | null
+  state: RecorderState
+  startedAt: number | null
+  audioContext: {
+    state: string
+    sampleRate: number
+    baseLatency: number | null
+    outputLatency: number | null
+  } | null
+  stream: {
+    active: boolean
+    trackCount: number
+    tracks: Array<{
+      id: string
+      label: string
+      enabled: boolean
+      muted: boolean
+      readyState: string
+      settings?: MediaTrackSettings
+      constraints?: MediaTrackConstraints
+    }>
+  } | null
+  audioGraph: {
+    hasSource: boolean
+    hasProcessor: boolean
+    hasMuteGain: boolean
+    processorBufferSize: number | null
+    channelCount: number | null
+    channelCountMode: string | null
+    channelInterpretation: string | null
+  } | null
+  processing: {
+    hasSeenAudioProcess: boolean
+    pendingSamples: number
+    totalSamplesWritten: number
+    chunkTargetSamples: number
+    sampleRate: number
+  } | null
+}
+
 export interface CaptureController {
   readonly state: CaptureStateSnapshot
   start(options: CaptureStartOptions): Promise<void>
   stop(): Promise<void>
   flushPending(): Promise<void>
   attachAnalysisPort(_port: MessagePort): void
+  getDiagnostics(): CaptureDiagnostics
   subscribe(listener: (state: CaptureStateSnapshot) => void): () => void
 }
 
@@ -43,6 +85,37 @@ const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
 
 const MP3_MIME = 'audio/mpeg'
 const NO_AUDIO_TIMEOUT_MS = 9_000
+
+const describeTrack = (track: MediaStreamTrack) => ({
+  id: track.id,
+  label: track.label,
+  enabled: track.enabled,
+  muted: track.muted,
+  readyState: track.readyState,
+  settings: typeof track.getSettings === 'function' ? track.getSettings() : undefined,
+  constraints: typeof track.getConstraints === 'function' ? track.getConstraints() : undefined,
+})
+
+const describeStream = (stream: MediaStream | null) => {
+  if (!stream) return null
+  const tracks = stream.getAudioTracks()
+  return {
+    active: stream.active,
+    trackCount: tracks.length,
+    tracks: tracks.map((track) => describeTrack(track)),
+  }
+}
+
+const describeAudioContext = (context: AudioContext | null) => {
+  if (!context) return null
+  const outputLatency = 'outputLatency' in context ? (context as AudioContext & { outputLatency?: number }).outputLatency : null
+  return {
+    state: context.state,
+    sampleRate: context.sampleRate,
+    baseLatency: Number.isFinite(context.baseLatency) ? context.baseLatency : null,
+    outputLatency: Number.isFinite(outputLatency) ? outputLatency : null,
+  }
+}
 
 const floatToInt16 = (input: Float32Array): Int16Array => {
   const out = new Int16Array(input.length)
@@ -105,7 +178,7 @@ class PcmMp3CaptureController implements CaptureController {
     await logInfo('Requesting microphone stream')
     const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS)
     await logInfo('Microphone stream acquired', {
-      tracks: stream.getAudioTracks().map((track) => ({ id: track.id, label: track.label })),
+      stream: describeStream(stream),
     })
 
     const AudioContextCtor =
@@ -149,6 +222,7 @@ class PcmMp3CaptureController implements CaptureController {
       sampleRate: this.#sampleRate,
       chunkDurationMs: options.chunkDurationMs,
       mp3Kbps: this.#targetKbps,
+      audioContext: describeAudioContext(context),
     })
 
     // Ensure MP3 encoder is available before we start producing chunks.
@@ -448,6 +522,7 @@ class PcmMp3CaptureController implements CaptureController {
         void logWarn('No PCM audio callback detected within timeout', {
           sessionId: this.#sessionId,
           timeoutMs: NO_AUDIO_TIMEOUT_MS,
+          diagnostics: this.getDiagnostics(),
         })
       }
     }, NO_AUDIO_TIMEOUT_MS)
@@ -457,6 +532,36 @@ class PcmMp3CaptureController implements CaptureController {
     if (this.#noAudioTimeoutId !== null) {
       window.clearTimeout(this.#noAudioTimeoutId)
       this.#noAudioTimeoutId = null
+    }
+  }
+
+  getDiagnostics(): CaptureDiagnostics {
+    const processor = this.#processor
+    const hasGraph = Boolean(this.#source || this.#processor || this.#muteGain)
+    return {
+      sessionId: this.#sessionId,
+      state: this.#state.state,
+      startedAt: this.#state.startedAt,
+      audioContext: describeAudioContext(this.#audioContext),
+      stream: describeStream(this.#stream),
+      audioGraph: hasGraph
+        ? {
+            hasSource: Boolean(this.#source),
+            hasProcessor: Boolean(this.#processor),
+            hasMuteGain: Boolean(this.#muteGain),
+            processorBufferSize: typeof processor?.bufferSize === 'number' ? processor.bufferSize : null,
+            channelCount: typeof processor?.channelCount === 'number' ? processor.channelCount : null,
+            channelCountMode: processor?.channelCountMode ?? null,
+            channelInterpretation: processor?.channelInterpretation ?? null,
+          }
+        : null,
+      processing: {
+        hasSeenAudioProcess: this.#hasSeenAudioProcess,
+        pendingSamples: this.#pendingSamples,
+        totalSamplesWritten: this.#totalSamplesWritten,
+        chunkTargetSamples: this.#chunkTargetSamples,
+        sampleRate: this.#sampleRate,
+      },
     }
   }
 

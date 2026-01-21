@@ -131,22 +131,27 @@ type DoctorSanityReport = {
   }
 }
 
-const STATUS_META: Record<SessionRecord['status'], { label: string; pillClass: string }> = {
+type SessionDisplayStatus = SessionRecord['status'] | 'transcribing' | 'partial' | 'untranscribed'
+
+const STATUS_META: Record<SessionDisplayStatus, { label: string; pillClass: string }> = {
   recording: { label: 'Recording', pillClass: 'pill-progress' },
+  transcribing: { label: 'Transcribing', pillClass: 'pill-progress' },
   ready: { label: 'Ready', pillClass: 'pill-synced' },
+  partial: { label: 'Partially transcribed', pillClass: 'pill-attention' },
+  untranscribed: { label: 'Not transcribed', pillClass: 'pill-attention' },
   error: { label: 'Error', pillClass: 'pill-attention' },
 }
 
 const MB = 1024 * 1024
 const DEFAULT_STORAGE_LIMIT_BYTES = 200 * MB
-const DEFAULT_GROQ_MODEL = 'whisper-large-v3'
+const DEFAULT_GROQ_MODEL = 'whisper-large-v3-turbo'
 const MAX_TRANSCRIPTION_PREVIEW_CHARS = 180
 const LIVE_SNIP_REFRESH_INTERVAL_MS = 3000
 const LIVE_TRANSCRIPTION_SNIP_COUNT = 2
 const LIVE_TRANSCRIPTION_WORD_LIMIT = 60
 const LIVE_TRANSCRIPTION_RETRY_WINDOW_MS = 120_000
-const LIVE_TRANSCRIPTION_RETRY_DELAY_MS = 1500
-const LIVE_TRANSCRIPTION_MAX_RETRIES = 2
+const TRANSCRIPTION_RETRY_DELAYS_MS = [3000, 5000, 10000]
+const LIVE_TRANSCRIPTION_MAX_RETRIES = TRANSCRIPTION_RETRY_DELAYS_MS.length
 
 const formatClock = (timestamp: number) =>
   new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp))
@@ -307,6 +312,9 @@ function App() {
   const [snipRecords, setSnipRecords] = useState<SnipRecord[]>([])
   const [transcriptionPreviews, setTranscriptionPreviews] = useState<Record<string, string>>({})
   const [transcriptionErrorCounts, setTranscriptionErrorCounts] = useState<Record<string, number>>({})
+  const [transcriptionSnipCounts, setTranscriptionSnipCounts] = useState<
+    Record<string, { transcribedCount: number; total: number }>
+  >({})
   const [retryingSessionIds, setRetryingSessionIds] = useState<Record<string, boolean>>({})
   const [transcriptionInProgress, setTranscriptionInProgress] = useState<Record<string, boolean>>({})
   const [captureState, setCaptureState] = useState(captureController.state)
@@ -410,6 +418,8 @@ function App() {
   const updateTranscriptionPreviewForSession = useCallback((sessionId: string, snips: SnipRecord[]) => {
     const preview = buildTranscriptionPreview(snips)
     const errorCount = snips.filter((snip) => Boolean(snip.transcriptionError)).length
+    const transcribedCount = snips.filter((snip) => getSnipTranscriptionText(snip).length > 0).length
+    const total = snips.length
     setTranscriptionPreviews((prev) => {
       if (!preview) {
         if (!(sessionId in prev)) return prev
@@ -430,30 +440,49 @@ function App() {
       if (prev[sessionId] === errorCount) return prev
       return { ...prev, [sessionId]: errorCount }
     })
+    setTranscriptionSnipCounts((prev) => {
+      if (total === 0) {
+        if (!(sessionId in prev)) return prev
+        const next = { ...prev }
+        delete next[sessionId]
+        return next
+      }
+      const current = prev[sessionId]
+      if (current && current.transcribedCount === transcribedCount && current.total === total) {
+        return prev
+      }
+      return { ...prev, [sessionId]: { transcribedCount, total } }
+    })
   }, [])
 
   const refreshTranscriptionPreviews = useCallback(async (sessions: SessionRecord[]) => {
     try {
       const entries = await Promise.all(
         sessions.map(async (session) => {
-          if (session.status !== 'ready') return [session.id, '', 0] as const
+          if (session.status !== 'ready') return [session.id, '', 0, 0, 0] as const
           const snips = await manifestService.listSnips(session.id)
           const errorCount = snips.filter((snip) => Boolean(snip.transcriptionError)).length
-          return [session.id, buildTranscriptionPreview(snips), errorCount] as const
+          const transcribedCount = snips.filter((snip) => getSnipTranscriptionText(snip).length > 0).length
+          return [session.id, buildTranscriptionPreview(snips), errorCount, transcribedCount, snips.length] as const
         }),
       )
       const next: Record<string, string> = {}
       const nextErrors: Record<string, number> = {}
-      entries.forEach(([sessionId, preview, errorCount]) => {
+      const nextCounts: Record<string, { transcribedCount: number; total: number }> = {}
+      entries.forEach(([sessionId, preview, errorCount, transcribedCount, total]) => {
         if (preview) {
           next[sessionId] = preview
         }
         if (errorCount > 0) {
           nextErrors[sessionId] = errorCount
         }
+        if (total > 0) {
+          nextCounts[sessionId] = { transcribedCount, total }
+        }
       })
       setTranscriptionPreviews(next)
       setTranscriptionErrorCounts(nextErrors)
+      setTranscriptionSnipCounts(nextCounts)
     } catch (error) {
       await logError('Transcription preview load failed', {
         error: error instanceof Error ? error.message : String(error),
@@ -1409,7 +1438,9 @@ function App() {
             nextCount <= LIVE_TRANSCRIPTION_MAX_RETRIES &&
             Date.now() - queue.lastSuccessAt < LIVE_TRANSCRIPTION_RETRY_WINDOW_MS
           if (shouldRetry) {
-            await sleep(LIVE_TRANSCRIPTION_RETRY_DELAY_MS)
+            const delayMs =
+              TRANSCRIPTION_RETRY_DELAYS_MS[Math.min(nextCount - 1, TRANSCRIPTION_RETRY_DELAYS_MS.length - 1)]
+            await sleep(delayMs)
             if (!queue.pendingIds.has(snip.id)) {
               queue.pending.push({ snip, attempt: nextCount })
               queue.pendingIds.add(snip.id)
@@ -1661,58 +1692,28 @@ function App() {
           return
         }
 
-        let anySuccess = false
-        const failedSnips: SnipRecord[] = []
+        const maxAttempts = TRANSCRIPTION_RETRY_DELAYS_MS.length + 1
         for (const snip of snips) {
           if (getSnipTranscriptionText(snip)) {
             continue
           }
-          const firstAttempt = await transcribeSnip({
-            session,
-            snip,
-            updateUi: selectedRecording?.id === sessionId,
-            force: false,
-            reportError: false,
-          })
-          if (firstAttempt.ok) {
-            anySuccess = true
-            continue
-          }
-          if (firstAttempt.error && /Groq API key missing/i.test(firstAttempt.error)) {
-            failedSnips.push(snip)
-            continue
-          }
-          const shouldRetry = firstAttempt.error
-            ? /decode|object can not be found here|Snip audio slice is empty/i.test(firstAttempt.error)
-            : true
-          if (shouldRetry) {
-            await sleep(1500)
-          }
-          const retryResult = await transcribeSnip({
-            session,
-            snip,
-            updateUi: selectedRecording?.id === sessionId,
-            force: true,
-            ignoreBusy: true,
-            reportError: true,
-          })
-          if (retryResult.ok) {
-            anySuccess = true
-          } else {
-            failedSnips.push(snip)
-          }
-        }
-        if (anySuccess && failedSnips.length > 0) {
-          await sleep(2000)
-          for (const snip of failedSnips) {
-            await transcribeSnip({
+          for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+            if (attempt > 0) {
+              const delayMs =
+                TRANSCRIPTION_RETRY_DELAYS_MS[Math.min(attempt - 1, TRANSCRIPTION_RETRY_DELAYS_MS.length - 1)]
+              await sleep(delayMs)
+            }
+            const result = await transcribeSnip({
               session,
               snip,
               updateUi: selectedRecording?.id === sessionId,
-              force: true,
-              ignoreBusy: true,
-              reportError: true,
+              force: attempt > 0,
+              ignoreBusy: attempt > 0,
+              reportError: attempt === maxAttempts - 1,
             })
+            if (result.ok) {
+              break
+            }
           }
         }
       } finally {
@@ -1836,10 +1837,13 @@ function App() {
       if (current.chunksRecorded > 0) {
         return
       }
+      const diagnostics =
+        typeof captureController.getDiagnostics === 'function' ? captureController.getDiagnostics() : null
       void logWarn('No audio captured after timeout; stopping recording', {
         sessionId: current.sessionId,
         timeoutMs: 15000,
         error: current.error ?? null,
+        diagnostics,
       })
       const startAttemptAt = recordStartAttemptRef.current ?? current.startedAt ?? Date.now()
       const lastInteraction = lastUserInteractionRef.current
@@ -1851,6 +1855,7 @@ function App() {
           chunksRecorded: current.chunksRecorded,
           error: current.error ?? null,
         },
+        diagnostics,
         lastUserInteraction: lastInteraction ?? null,
       })
       triggerNoAudioAlert()
@@ -3310,17 +3315,34 @@ function App() {
         <section className="session-section" aria-label="Recording sessions">
           <ul className="session-list">
             {recordings.map((session) => {
-              const statusMeta = STATUS_META[session.status]
               const isActiveRecording = session.id === captureState.sessionId && captureState.state === 'recording'
               const durationLabel = isActiveRecording
                 ? formatTimecode(Math.floor(capturedAudioMs / 1000))
                 : formatSessionDuration(session.durationMs)
               const transcriptionPreview = transcriptionPreviews[session.id] ?? ''
               const transcriptionErrorCount = transcriptionErrorCounts[session.id] ?? 0
+              const transcriptionCounts = transcriptionSnipCounts[session.id]
+              const transcribedCount = transcriptionCounts?.transcribedCount ?? 0
+              const totalSnips = transcriptionCounts?.total ?? 0
+              const hasTranscript = transcribedCount > 0
               const hasTranscriptionError = transcriptionErrorCount > 0
+              const hasSnips = totalSnips > 0 || hasTranscriptionError
               const errorNotes = session.status === 'error' ? session.notes ?? 'Recording error.' : ''
               const isRetrying = Boolean(retryingSessionIds[session.id])
               const isTranscribing = !isActiveRecording && Boolean(transcriptionInProgress[session.id] || isRetrying)
+              const displayStatus: SessionDisplayStatus =
+                session.status === 'error'
+                  ? 'error'
+                  : isActiveRecording
+                    ? 'recording'
+                    : isTranscribing
+                      ? 'transcribing'
+                      : hasTranscriptionError && hasSnips
+                        ? hasTranscript
+                          ? 'partial'
+                          : 'untranscribed'
+                        : session.status
+              const statusMeta = STATUS_META[displayStatus]
               const hasAudio =
                 session.chunkCount > 0 && session.totalBytes > 0 && (session.durationMs ?? 0) > 0
               const shouldShowListDelete = !hasAudio || session.status === 'error'
@@ -3337,11 +3359,15 @@ function App() {
                 ? 'Recording in progress...'
                 : errorNotes
                   ? errorNotes
-                  : transcriptionPreview
-                    ? transcriptionPreview
-                    : hasTranscriptionError
-                      ? `Error transcribing (${transcriptionErrorCount})`
-                      : 'Transcription pending...'
+                  : isTranscribing
+                    ? 'Finishing transcription...'
+                    : transcriptionPreview
+                      ? transcriptionPreview
+                      : hasTranscriptionError
+                        ? hasTranscript
+                          ? `Partially transcribed (${transcribedCount}/${totalSnips})`
+                          : 'Transcription failed for all snips.'
+                        : 'Transcription pending...'
               return (
                 <li key={session.id}>
                   <article

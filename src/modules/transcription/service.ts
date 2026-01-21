@@ -59,7 +59,7 @@ type GroqTranscriptionResponse = {
 }
 
 const GROQ_TRANSCRIPTION_URL = 'https://api.groq.com/openai/v1/audio/transcriptions'
-const DEFAULT_GROQ_MODEL = 'whisper-large-v3'
+const DEFAULT_GROQ_MODEL = 'whisper-large-v3-turbo'
 
 const normalizeSegment = (startSeconds: number | undefined, text: string | undefined): TranscriptionSegment | null => {
   const phrase = (text ?? '').trim()
