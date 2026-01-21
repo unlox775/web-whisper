@@ -10,6 +10,8 @@
 - Derived session list statuses for transcribing/partial/untranscribed sessions.
 - Logged capture diagnostics (stream + audio context) during no-audio timeouts.
 - Documented the 2026-01-21 no-audio capture event in the debugging guide.
+- Shortened session pill labels for partial/failed transcription.
+- Added a live transcription placeholder message for pending state.
 
 ## 🚧 In progress
 - Validate iOS wake lock support and fallback behavior.

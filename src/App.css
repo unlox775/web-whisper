@@ -513,6 +513,13 @@ body {
   animation: slide-in 0.35s ease;
 }
 
+.transcription-empty {
+  margin: 0;
+  text-align: center;
+  font-style: italic;
+  color: rgba(226, 232, 240, 0.72);
+}
+
 .transcription-fade {
   pointer-events: none;
   position: absolute;

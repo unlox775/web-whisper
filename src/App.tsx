@@ -137,8 +137,8 @@ const STATUS_META: Record<SessionDisplayStatus, { label: string; pillClass: stri
   recording: { label: 'Recording', pillClass: 'pill-progress' },
   transcribing: { label: 'Transcribing', pillClass: 'pill-progress' },
   ready: { label: 'Ready', pillClass: 'pill-synced' },
-  partial: { label: 'Partially transcribed', pillClass: 'pill-attention' },
-  untranscribed: { label: 'Not transcribed', pillClass: 'pill-attention' },
+  partial: { label: 'Part TX', pillClass: 'pill-attention' },
+  untranscribed: { label: 'TX failed', pillClass: 'pill-attention' },
   error: { label: 'Error', pillClass: 'pill-attention' },
 }
 
@@ -3446,11 +3446,15 @@ function App() {
               <h2>Live transcription</h2>
             </header>
             <div className="transcription-stream" ref={liveTranscriptionStreamRef}>
-              {liveTranscriptionLines.map((line, index) => (
-                <p key={`${index}-${line.slice(0, 12)}`} className="transcription-line">
-                  {line}
-                </p>
-              ))}
+              {liveTranscriptionLines.length === 0 ? (
+                <p className="transcription-empty">Pending - first words arrive in about 30 seconds.</p>
+              ) : (
+                liveTranscriptionLines.map((line, index) => (
+                  <p key={`${index}-${line.slice(0, 12)}`} className="transcription-line">
+                    {line}
+                  </p>
+                ))
+              )}
               <div className="transcription-fade" aria-hidden="true" />
             </div>
           </section>
