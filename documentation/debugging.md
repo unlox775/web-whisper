@@ -54,3 +54,44 @@ Each test provides a summary, grouped findings, and JSON export.
 - No audio captured: verify microphone permissions and look for `No PCM audio callback detected`.
 - Timing drift: run timing verification and ensure volume profiles exist.
 - Legacy MP4 artifacts: consider purging old MP4 sessions.
+
+## 8. No-audio capture example (2026-01-21)
+This is a captured no-audio session to keep as a reference when debugging future incidents.
+
+Doctor report (compact):
+- Session: 956931e5-a8c6-459b-bc05-f649a4653661
+- StartedAt: 2026-01-21T15:34:08.579Z
+- DurationMs: 0 (=0.0s)
+- Mime: audio/mpeg  Chunks: 0  Timing: unverified
+
+Recent logs (last 30):
+- 2026-01-21T15:17:27.197Z info Chunk persisted
+- 2026-01-21T15:17:27.261Z debug Chunk volume profile stored
+- 2026-01-21T15:17:27.654Z info Recorder stop requested
+- 2026-01-21T15:17:27.678Z debug PCM chunk encoded
+- 2026-01-21T15:17:27.687Z info Wake lock released after recording
+- 2026-01-21T15:17:27.696Z info Chunk persisted
+- 2026-01-21T15:17:27.711Z debug Chunk volume profile stored
+- 2026-01-21T15:17:27.718Z info Session timing reconciled
+- 2026-01-21T15:17:27.719Z info Recorder stopped
+- 2026-01-21T15:17:30.615Z error Snip transcription failed
+- 2026-01-21T15:17:33.649Z info Playback source prepared
+- 2026-01-21T15:17:36.239Z info Snip transcription started
+- 2026-01-21T15:17:37.402Z info Snip transcription completed
+- 2026-01-21T15:34:06.245Z info Detail view closed
+- 2026-01-21T15:34:07.058Z info Recorder start requested
+- 2026-01-21T15:34:07.060Z info Wake lock acquired for recording
+- 2026-01-21T15:34:07.068Z info Requesting microphone stream
+- 2026-01-21T15:34:07.073Z info Wake lock released after recording
+- 2026-01-21T15:34:08.551Z info Microphone stream acquired
+- 2026-01-21T15:34:08.579Z info PCM capture started
+- 2026-01-21T15:34:08.584Z info Recorder started
+- 2026-01-21T15:34:08.589Z info Wake lock acquired for recording
+- 2026-01-21T15:34:17.586Z warn No PCM audio callback detected within timeout
+- 2026-01-21T15:34:23.590Z info No global errors captured during recording start window
+- 2026-01-21T15:34:23.590Z warn No audio captured after timeout; stopping recording
+- 2026-01-21T15:34:23.601Z info Recorder stop requested
+- 2026-01-21T15:34:23.620Z info Wake lock released after recording
+- 2026-01-21T15:34:23.624Z error Session completed without playable audio
+- 2026-01-21T15:34:23.628Z info Session timing reconciled
+- 2026-01-21T15:34:23.629Z info Recorder stopped
