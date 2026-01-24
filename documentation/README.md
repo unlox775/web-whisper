@@ -32,10 +32,13 @@ This folder contains the living documentation for Web Whisper. It is kept curren
 ## Current Focus
 - Improve retention policies and storage cap enforcement.
 - Clarify transcription onboarding, key validation, and disabled-mode UX.
+- Add clipboard-first transcription UX for completed sessions.
+- Investigate intermittent iOS microphone connection failures.
 - Run a cross-browser compatibility pass and document blockers.
 
 ## Upcoming Milestones
 1. iOS native wrapper for background recording reliability.
 2. Automatic retention and deletion for completed snips.
 3. Full-session audio download and transcription onboarding polish.
-4. Cross-browser test matrix with targeted fixes.
+4. Clipboard-first transcription UX for faster copy.
+5. Cross-browser test matrix with targeted fixes.
