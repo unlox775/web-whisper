@@ -3,10 +3,9 @@
 This is a terse list of final polish and platform tasks. Each item includes the task,
 the goals, and acceptance criteria to confirm completion.
 
-## Known issues (current)
-- Intermittent iOS microphone connection failure: recording start sometimes fails to
-  attach to the mic on iOS, with limited diagnostics available. Needs further capture
-  and root-cause analysis.
+Related:
+- Known issues: [knownissues.md](knownissues.md)
+- Contributor roadmap: [contributor-roadmap.md](contributor-roadmap.md)
 
 ## 1) iOS native app and background recording
 Task: Ship a minimal native iOS wrapper so recording continues while the app is in
@@ -83,24 +82,6 @@ Acceptance criteria:
 - Session tiles expose a copy icon that copies completed transcripts without opening
   the detail view.
 - Manual copy remains available for partial/failed transcripts with clear state.
-
-## Contributor roadmap (optional)
-These are valuable, but not planned for the core roadmap. They are open to community
-contributions.
-
-### 9) Android native wrapper
-Task: Build a minimal Android wrapper for background recording and store publishing.
-Goals: Provide parity with iOS background audio support for Android users.
-Acceptance criteria:
-- Background recording works reliably on a representative Android device.
-- Build instructions exist for local signing and Play Store submission.
-
-### 10) Localization (non-English UI + transcription)
-Task: Add localization for UI strings and expand language support for transcription.
-Goals: Allow use beyond English while keeping defaults simple.
-Acceptance criteria:
-- UI strings are centralized and at least one non-English locale is supported.
-- Users can select a transcription language (or auto-detect) in settings.
 
 ## Deferred until after feedback
 - Visual polish beyond necessary usability fixes.

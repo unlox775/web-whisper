@@ -46,12 +46,12 @@ web-whisper is a Progressive Web App (PWA) that captures long-form audio directl
 - Clipboard-first transcription UX (auto-copy + quick copy button).
 - Cross-browser compatibility matrix and fixes.
 - Usability feedback sessions before UI polish.
-- Contributor ideas: Android native wrapper, localization.
 
 See `documentation/roadmap.md` for detailed goals and acceptance criteria.
+See `documentation/contributor-roadmap.md` for optional community contributions.
 
 ### Known issues
-- Intermittent iOS microphone connection failures during recording start.
+See `documentation/knownissues.md` for the current list and diagnostic notes.
 
 ## Building It Yourself
 

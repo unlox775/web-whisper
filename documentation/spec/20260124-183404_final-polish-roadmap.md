@@ -2,8 +2,9 @@
 
 ## ✅ Done
 - Captured final polish roadmap with goals and acceptance criteria.
-- Added known iOS microphone issue and clipboard-first transcription UX.
-- Added contributor roadmap items (Android wrapper, localization).
+- Split roadmap, known issues, and contributor roadmap into separate files.
+- Documented the intermittent iOS mic failure in known issues with references.
+- Moved contributor items (Android wrapper, localization) to a separate roadmap.
 - Updated root README roadmap and support notes.
 - Linked roadmap and refreshed documentation hub focus/milestones.
 

@@ -14,6 +14,8 @@ This folder contains the living documentation for Web Whisper. It is kept curren
 - `debugging.md` - developer tooling, logs, and diagnostics.
 - `lessonslearned.md` - retrospective and timeline.
 - `roadmap.md` - final polish roadmap and acceptance criteria.
+- `knownissues.md` - known bugs and platform limitations.
+- `contributor-roadmap.md` - optional community contributions.
 
 ## Project Status - Durable Audio Recorder PWA
 
@@ -33,8 +35,9 @@ This folder contains the living documentation for Web Whisper. It is kept curren
 - Improve retention policies and storage cap enforcement.
 - Clarify transcription onboarding, key validation, and disabled-mode UX.
 - Add clipboard-first transcription UX for completed sessions.
-- Investigate intermittent iOS microphone connection failures.
 - Run a cross-browser compatibility pass and document blockers.
+
+Known issues live in `documentation/knownissues.md`.
 
 ## Upcoming Milestones
 1. iOS native wrapper for background recording reliability.
