@@ -2,7 +2,7 @@
 
 web-whisper is a Progressive Web App (PWA) that captures long-form audio directly in the browser, encodes it into durable MP3 chunks, and prepares snips for transcription with OpenAI's Whisper (served via [Groq](https://groq.com/)). The project showcases how far you can get with modern AI tooling. This entire app is being assembled inside [Cursor](https://cursor.com/) with the help of cursor agents.
 
-> **Project status:** MVP in progress. PCM capture, chunking, playback, diagnostics, and snip-based transcription are live. Upload/backoff logic, storage enforcement, and AudioWorklet capture are next on the roadmap.
+> **Project status:** MVP in progress. PCM capture, chunking, playback, diagnostics, and snip-based transcription are live. Next up: storage retention, transcription onboarding, and iOS background recording.
 
 ## Try It Now
 
@@ -11,9 +11,10 @@ web-whisper is a Progressive Web App (PWA) that captures long-form audio directl
 
 ## How to Use
 
-1. **Get a Groq API key (optional for now, required for transcription):**
+1. **Get a Groq API key (optional for recording, required for transcription):**
    - Create a free Groq account: https://console.groq.com/
    - Generate an API token (Groq’s Whisper-large-v3 endpoint is extremely affordable—most casual use stays within the free tier).
+   - If you skip this step, the app records audio but does not transcribe.
 2. **Open the PWA:** visit the URL above, or install it as a home-screen app.
 3. **Configure settings:** tap “Settings” in the header to store your Groq API key, set a storage cap, and toggle developer mode.
 4. **Record:** tap “Start recording.” The app captures PCM, encodes MP3 chunks every ~4 seconds, and persists them to IndexedDB immediately.
@@ -38,10 +39,14 @@ web-whisper is a Progressive Web App (PWA) that captures long-form audio directl
 
 ### Roadmap
 
-- AudioWorklet capture path and lower-latency analysis.
-- Upload worker with retry/backoff and offline handling.
-- Storage cap enforcement and retention policies.
-- Streaming transcription polish and live timeline UI.
+- iOS native wrapper for reliable background recording.
+- Storage retention and automatic deletion for completed snips.
+- Transcription onboarding, key validation, and disabled-mode UX.
+- Full-session audio download.
+- Cross-browser compatibility matrix and fixes.
+- Usability feedback sessions before UI polish.
+
+See `documentation/roadmap.md` for detailed goals and acceptance criteria.
 
 ## Building It Yourself
 
@@ -57,6 +62,12 @@ The PWA build artifacts land in `docs/` for GitHub Pages hosting: `npm run build
 ## Collaboration Log
 
 Every iteration is documented in `documentation/spec/` as a paired markdown spec + prompt transcript (e.g., `20251105-224815_developer-mode.md` and `...-PROMPT.txt`). That folder is the canonical changelog of AI-assisted development sessions.
+
+## Support and maintenance
+
+This is an open-source personal tool. Please file issues on GitHub if you hit bugs.
+Maintenance is best-effort, and community contributions are welcome. If you want to
+build the iOS app, use your own Apple Developer credentials.
 
 ## OpenAI Whisper + Groq
 
