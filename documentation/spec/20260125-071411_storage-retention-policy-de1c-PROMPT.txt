@@ -9,3 +9,6 @@ These spec files are where you make your planning, where you make your todos, an
 
 Make sure all this is in your agentic instructions. then revamp your spec for this request and grade where you planned/measured up and evaluate whether you really are complete on the value and acceptance criteria. Then if deficient, fix and complete things!
 why is it not deleting?  I set my max storage to 2MB, but it never seemed to purge even older ones that were transcribed
+purge should happen immediately upon a new chunk being written (and as such this new chunk is not transcribed therefore not relevant to be considered for deletion BTW), then again 2 minutes later, etc, no sooner than 2 mins apart. 
+
+I let a recording run for 4 minutes flat, and the total storage (of all recordings) was at 18 MB nearly all from recordings with completed transcriptions. So I reasonably expected you to purge audio from the oldest until under 2MB

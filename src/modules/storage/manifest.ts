@@ -667,6 +667,36 @@ class IndexedDBManifestService implements ManifestService {
     })
     snipsBySession.forEach((items) => items.sort((a, b) => a.startMs - b.startMs))
 
+    const ABSOLUTE_THRESHOLD_MS = 1_000_000_000_000
+    const earliestChunkStartBySession = new Map<string, number>()
+    chunks.forEach((chunk) => {
+      const current = earliestChunkStartBySession.get(chunk.sessionId)
+      if (current === undefined || chunk.startMs < current) {
+        earliestChunkStartBySession.set(chunk.sessionId, chunk.startMs)
+      }
+    })
+    const snipAbsoluteBySession = new Map<string, boolean>()
+    snipsBySession.forEach((items, sessionId) => {
+      snipAbsoluteBySession.set(
+        sessionId,
+        items.some((snip) => snip.startMs > ABSOLUTE_THRESHOLD_MS || snip.endMs > ABSOLUTE_THRESHOLD_MS),
+      )
+    })
+    const sessionTimingById = new Map<
+      string,
+      { baseStartMs: number; baseIsAbsolute: boolean; snipIsAbsolute: boolean }
+    >()
+    sessions.forEach((session) => {
+      const baseCandidate =
+        Number.isFinite(session.startedAt) ? Math.round(session.startedAt) : (earliestChunkStartBySession.get(session.id) ?? 0)
+      const baseStartMs = Number.isFinite(baseCandidate) ? baseCandidate : 0
+      sessionTimingById.set(session.id, {
+        baseStartMs,
+        baseIsAbsolute: baseStartMs > ABSOLUTE_THRESHOLD_MS,
+        snipIsAbsolute: snipAbsoluteBySession.get(session.id) ?? false,
+      })
+    })
+
     const COVERAGE_EPSILON_MS = 4
     const isHeaderChunk = (chunk: StoredChunk, session: SessionRecord | null): boolean => {
       const mimeType = chunk.blob.type || session?.mimeType || ''
@@ -676,10 +706,45 @@ class IndexedDBManifestService implements ManifestService {
       const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
       return chunk.seq === 0 && (durationMs <= 10 || chunk.byteLength < 4096)
     }
-    const getOverlappingSnips = (snipsForSession: SnipRecord[] | undefined, chunk: StoredChunk): SnipRecord[] => {
+    const normalizeChunkRange = (
+      chunk: StoredChunk,
+      timing: { baseStartMs: number; baseIsAbsolute: boolean; snipIsAbsolute: boolean },
+    ) => {
+      const { baseStartMs, baseIsAbsolute, snipIsAbsolute } = timing
+      const chunkIsAbsolute = baseIsAbsolute && chunk.startMs > ABSOLUTE_THRESHOLD_MS
+      const startMs = snipIsAbsolute
+        ? chunkIsAbsolute
+          ? chunk.startMs
+          : baseIsAbsolute
+            ? baseStartMs + chunk.startMs
+            : chunk.startMs
+        : chunkIsAbsolute
+          ? chunk.startMs - baseStartMs
+          : chunk.startMs
+      const endMs = snipIsAbsolute
+        ? chunkIsAbsolute
+          ? chunk.endMs
+          : baseIsAbsolute
+            ? baseStartMs + chunk.endMs
+            : chunk.endMs
+        : chunkIsAbsolute
+          ? chunk.endMs - baseStartMs
+          : chunk.endMs
+      const safeStart = Number.isFinite(startMs) ? startMs : 0
+      const safeEnd = Number.isFinite(endMs) ? endMs : safeStart
+      return {
+        startMs: snipIsAbsolute ? safeStart : Math.max(0, safeStart),
+        endMs: snipIsAbsolute ? safeEnd : Math.max(Math.max(0, safeStart), safeEnd),
+      }
+    }
+    const getOverlappingSnips = (
+      snipsForSession: SnipRecord[] | undefined,
+      chunkStartMs: number,
+      chunkEndMs: number,
+    ): SnipRecord[] => {
       if (!snipsForSession || snipsForSession.length === 0) return []
-      const overlapStart = chunk.startMs + COVERAGE_EPSILON_MS
-      const overlapEnd = chunk.endMs - COVERAGE_EPSILON_MS
+      const overlapStart = chunkStartMs + COVERAGE_EPSILON_MS
+      const overlapEnd = chunkEndMs - COVERAGE_EPSILON_MS
       if (overlapEnd <= overlapStart) {
         return []
       }
@@ -702,7 +767,13 @@ class IndexedDBManifestService implements ManifestService {
       const session = sessionById.get(chunk.sessionId) ?? null
       if (isHeaderChunk(chunk, session)) continue
       const snipsForSession = snipsBySession.get(chunk.sessionId)
-      const overlaps = getOverlappingSnips(snipsForSession, chunk)
+      const timing = sessionTimingById.get(chunk.sessionId) ?? {
+        baseStartMs: 0,
+        baseIsAbsolute: false,
+        snipIsAbsolute: false,
+      }
+      const normalized = normalizeChunkRange(chunk, timing)
+      const overlaps = getOverlappingSnips(snipsForSession, normalized.startMs, normalized.endMs)
       if (overlaps.length === 0) continue
       if (!overlaps.every((snip) => snip.transcription && !snip.transcriptionError)) {
         continue
