@@ -3,6 +3,7 @@
 ## ✅ Done
 - Logged branch-specific spec guidance for this runtime.
 - Noted the new per-branch spec requirement.
+- Relocated branch prompts from the legacy roadmap prompt log into this branch log.
 
 ## 🚧 In progress
 - None.

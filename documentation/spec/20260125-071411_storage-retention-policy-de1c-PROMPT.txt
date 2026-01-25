@@ -1,3 +1,7 @@
+Please start and complete this roadmap item: Storage retention and automatic deletion (see doc)
+
 Update your agent instructions, you keep adding to the same spec doc instead of making new ones!  
 
 New standard: the spec doc contains the branch name, and no more than one branch per spec. That means, if your branch name for the current agentic runtime is not the same branch name as the spec, make a new one (and new prompt file). Fix
+
+No! Undo your edits to the previous spec file!  That was from a past agentic flow, move those edits to a NEW spec/prompt file!!!   Moron!!!
