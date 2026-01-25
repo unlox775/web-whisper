@@ -28,6 +28,14 @@ Notes:
 - This appears to be intermittent and device-specific on iOS.
 - Root cause is unclear; may be a WebKit audio pipeline or permission issue.
 
+Possible workaround (inconsistent):
+- When the app is stuck on the "starting" screen, open the app switcher and
+  fully switch to another app (not just a quick swipe).
+- You may hear a low beep when leaving and a higher beep when returning.
+- Wait for the recording attempt to stop/fail, then delete the failed recordings.
+- Switch to another app and return again before starting a new recording.
+- This has worked a few times but is not reliable; timing seems to matter.
+
 Suggested diagnostics to collect:
 - Device model + iOS version.
 - Whether running as PWA or in Safari/Chrome.
