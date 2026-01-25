@@ -405,6 +405,8 @@ function App() {
   const liveRefreshInFlightRef = useRef(false)
   const retentionInFlightRef = useRef(false)
   const lastRetentionAtRef = useRef(0)
+  const lastRetentionSessionIdRef = useRef<string | null>(null)
+  const lastRetentionChunkCountRef = useRef(0)
 
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
@@ -678,6 +680,22 @@ function App() {
     const isRecording = captureState.state === 'recording'
     void setRecordingWakeLockActive(isRecording, isRecording ? 'recording-active' : 'recording-inactive')
   }, [captureState.state])
+
+  useEffect(() => {
+    if (captureState.state !== 'recording' || !captureState.sessionId) {
+      lastRetentionSessionIdRef.current = captureState.sessionId ?? null
+      lastRetentionChunkCountRef.current = captureState.chunksRecorded
+      return
+    }
+    if (lastRetentionSessionIdRef.current !== captureState.sessionId) {
+      lastRetentionSessionIdRef.current = captureState.sessionId
+      lastRetentionChunkCountRef.current = 0
+    }
+    if (captureState.chunksRecorded > lastRetentionChunkCountRef.current) {
+      lastRetentionChunkCountRef.current = captureState.chunksRecorded
+      void runRetentionPass({ reason: 'chunk-written' })
+    }
+  }, [captureState.chunksRecorded, captureState.sessionId, captureState.state, runRetentionPass])
 
   useEffect(() => {
     if (captureState.state !== 'recording') {
