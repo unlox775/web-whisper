@@ -9,6 +9,7 @@
 - Updated root README roadmap and support notes.
 - Linked roadmap and refreshed documentation hub focus/milestones.
 - Added AI usage guidance and linked it from the documentation hub.
+- Expanded AI usage guidance to preserve the full speech with clearer flow.
 - Sanitized spec prompt logs to replace profanity with benign wording.
 
 ## 🚧 In progress
