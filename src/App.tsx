@@ -380,6 +380,7 @@ function App() {
   const transcriptionTextRef = useRef<HTMLTextAreaElement | null>(null)
   const lastAutoSelectSessionRef = useRef<string | null>(null)
   const audioUrlRef = useRef<string | null>(null)
+  const playbackRafRef = useRef<number | null>(null)
   const chunkUrlMapRef = useRef<Map<string, string>>(new Map())
   const chunkAudioRef = useRef<Map<string, ChunkPlaybackEntry>>(new Map())
   const snipUrlMapRef = useRef<Map<string, string>>(new Map())
@@ -854,10 +855,29 @@ function App() {
     const handleTime = () => setAudioState((prev) => ({ ...prev, position: audio.currentTime }))
     const handleDuration = () =>
       setAudioState((prev) => ({ ...prev, duration: Number.isFinite(audio.duration) ? audio.duration : 0 }))
-    const handlePlay = () => setAudioState((prev) => ({ ...prev, playing: true }))
-    const handlePause = () => setAudioState((prev) => ({ ...prev, playing: false }))
-    const handleEnded = () =>
+    const stopRaf = () => {
+      if (playbackRafRef.current !== null) {
+        window.cancelAnimationFrame(playbackRafRef.current)
+        playbackRafRef.current = null
+      }
+    }
+    const tick = () => {
+      setAudioState((prev) => ({ ...prev, position: audio.currentTime }))
+      playbackRafRef.current = window.requestAnimationFrame(tick)
+    }
+    const handlePlay = () => {
+      setAudioState((prev) => ({ ...prev, playing: true }))
+      stopRaf()
+      playbackRafRef.current = window.requestAnimationFrame(tick)
+    }
+    const handlePause = () => {
+      setAudioState((prev) => ({ ...prev, playing: false }))
+      stopRaf()
+    }
+    const handleEnded = () => {
       setAudioState((prev) => ({ ...prev, playing: false, position: audio.duration || prev.position }))
+      stopRaf()
+    }
 
     audio.addEventListener('timeupdate', handleTime)
     audio.addEventListener('durationchange', handleDuration)
@@ -866,6 +886,7 @@ function App() {
     audio.addEventListener('ended', handleEnded)
 
     return () => {
+      stopRaf()
       audio.removeEventListener('timeupdate', handleTime)
       audio.removeEventListener('durationchange', handleDuration)
       audio.removeEventListener('play', handlePlay)

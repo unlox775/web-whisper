@@ -28,6 +28,7 @@
 - Updated eligibility to allow chunks spanning multiple transcribed snips (while blocking any with untranscribed overlaps).
 - Normalized chunk timestamps to session offsets when snips are relative, enabling expected purges.
 - Added gapped playback timeline and hashed progress bar for purged spans with friendly messaging.
+- Added rAF-driven playback position updates to keep the playhead moving on iOS.
 - Logged per-branch spec guidance and relocated prompts into this branch log.
 - Disabled session-level retry when only purged snips remain and added purge messaging in session list previews.
 
@@ -40,6 +41,7 @@
 - `src/modules/storage/manifest.ts`: normalize chunk ranges to match snip time bases (absolute vs offset) for overlap checks.
 - `src/App.tsx`: build playback from non-purged chunks and map playback position onto the original timeline.
 - `src/App.css`: add hashed gap styling for purged spans and disabled playback styling.
+- `src/App.tsx`: drive playback position updates via requestAnimationFrame during playback.
 - `src/App.tsx`: extended session list counts to hide retry actions when all snips are purged.
 - `src/App.css`: added styling for purged snip/chunk indicators and retention notices.
 - `AGENTS.md`: documented per-branch spec rule and spec content requirements.
