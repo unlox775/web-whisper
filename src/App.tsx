@@ -1176,8 +1176,8 @@ function App() {
   const headerChunk = useMemo(() => chunkData.find(isHeaderSegment) ?? null, [chunkData, isHeaderSegment])
 
   const playableChunkCount = useMemo(
-    () => chunkData.filter((chunk) => !isHeaderSegment(chunk)).length,
-    [chunkData, isHeaderSegment],
+    () => chunkData.filter((chunk) => !isHeaderSegment(chunk) && !isChunkAudioPurged(chunk)).length,
+    [chunkData, isChunkAudioPurged, isHeaderSegment],
   )
 
     const createChunkCompositeBlob = useCallback(
@@ -2030,15 +2030,28 @@ function App() {
     async (forceReload = false) => {
       if (!selectedRecording) return false
       const mime = selectedRecording.mimeType ?? 'audio/mp4'
-      const blob = await manifestService.buildSessionBlob(selectedRecording.id, mime)
-      if (!blob) {
+      const chunks = await manifestService.getChunkData(selectedRecording.id)
+      const orderedChunks = [...chunks].sort((a, b) => a.seq - b.seq)
+      if (orderedChunks.length === 0) {
         throw new Error('No audio available yet. Keep recording to capture chunks.')
       }
+      const headerChunk = orderedChunks.find((chunk) => isHeaderSegment(chunk)) ?? null
+      const playableChunks = orderedChunks.filter((chunk) => !isHeaderSegment(chunk) && !isChunkAudioPurged(chunk))
+      if (playableChunks.length === 0) {
+        throw new Error('Audio for this recording was purged.')
+      }
+      const parts: BlobPart[] = []
+      if (headerChunk && /mp4|m4a/i.test(mime)) {
+        parts.push(headerChunk.blob)
+      }
+      playableChunks.forEach((chunk) => parts.push(chunk.blob))
+      const blob = new Blob(parts, { type: mime })
       await logInfo('Playback source prepared', {
         sessionId: selectedRecording.id,
         blobSize: blob.size,
         blobType: blob.type,
       })
+      setChunkData(orderedChunks)
       if (audioUrlRef.current && !forceReload) {
         return true
       }
@@ -2055,7 +2068,7 @@ function App() {
       }
       return true
     },
-    [selectedRecording],
+    [isChunkAudioPurged, isHeaderSegment, selectedRecording],
   )
 
   useEffect(() => {
@@ -2064,6 +2077,7 @@ function App() {
     }
     void preparePlaybackSource(true).catch((error) => {
       console.error('[UI] Failed to prepare playback on detail open', error)
+      setPlaybackError(error instanceof Error ? error.message : String(error))
     })
   }, [
     preparePlaybackSource,
@@ -2076,6 +2090,15 @@ function App() {
 
   const handlePlaybackToggle = useCallback(async () => {
     if (!selectedRecording) return
+    const playableNow = chunkData.some((chunk) => !isHeaderSegment(chunk) && !isChunkAudioPurged(chunk))
+    if (!playableNow) {
+      const message = 'Audio was purged for this recording and is no longer available.'
+      setPlaybackError(message)
+      if (typeof window !== 'undefined') {
+        window.alert(message)
+      }
+      return
+    }
     setPlaybackError(null)
     setIsLoadingPlayback(true)
     try {
@@ -2103,7 +2126,7 @@ function App() {
     } finally {
       setIsLoadingPlayback(false)
     }
-  }, [preparePlaybackSource, selectedRecording])
+  }, [chunkData, isChunkAudioPurged, isHeaderSegment, preparePlaybackSource, selectedRecording])
 
   const handleCloseDetail = async () => {
     chunkAudioRef.current.forEach((entry) => {
@@ -3392,9 +3415,122 @@ function App() {
   const resolvedPlaybackDurationSeconds = selectedRecordingDurationMs !== null
     ? Math.max(selectedRecordingDurationMs / 1000, audioState.duration)
     : Math.max(displayDurationMs / 1000, audioState.duration)
+  const playbackTimeline = useMemo(() => {
+    if (!selectedRecording || chunkData.length === 0) return null
+    const ABSOLUTE_THRESHOLD_MS = 1_000_000_000_000
+    const starts = chunkData.map((chunk) => chunk.startMs).filter((value) => Number.isFinite(value))
+    const baseStartMsCandidate = starts.length > 0 ? Math.min(...starts) : 0
+    const baseStartMs = Number.isFinite(baseStartMsCandidate) ? baseStartMsCandidate : 0
+    const isAbsolute = baseStartMs > ABSOLUTE_THRESHOLD_MS
+    const normalize = (value: number) => (isAbsolute ? value - baseStartMs : value)
+    const rawSegments = chunkData
+      .filter((chunk) => !isHeaderSegment(chunk))
+      .map((chunk) => {
+        const startMs = normalize(chunk.startMs)
+        const endMs = normalize(chunk.endMs)
+        if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) {
+          return null
+        }
+        return {
+          startMs,
+          endMs,
+          hasAudio: !isChunkAudioPurged(chunk),
+        }
+      })
+      .filter((segment): segment is { startMs: number; endMs: number; hasAudio: boolean } => Boolean(segment))
+      .sort((a, b) => a.startMs - b.startMs)
+
+    const sessionDurationMs = Math.max(
+      selectedRecording.durationMs ?? 0,
+      rawSegments.reduce((max, segment) => Math.max(max, segment.endMs), 0),
+    )
+    const segments: Array<{ startMs: number; endMs: number; hasAudio: boolean }> = []
+    const EPSILON = 4
+    let cursor = 0
+    const pushSegment = (segment: { startMs: number; endMs: number; hasAudio: boolean }) => {
+      if (segment.endMs <= segment.startMs) return
+      const last = segments[segments.length - 1]
+      if (last && last.hasAudio === segment.hasAudio && Math.abs(last.endMs - segment.startMs) <= EPSILON) {
+        last.endMs = Math.max(last.endMs, segment.endMs)
+        return
+      }
+      segments.push(segment)
+    }
+
+    rawSegments.forEach((segment) => {
+      let startMs = Math.max(0, segment.startMs)
+      let endMs = Math.max(startMs, segment.endMs)
+      if (sessionDurationMs > 0) {
+        startMs = Math.min(startMs, sessionDurationMs)
+        endMs = Math.min(endMs, sessionDurationMs)
+      }
+      if (endMs <= cursor) {
+        return
+      }
+      if (startMs > cursor + EPSILON) {
+        pushSegment({ startMs: cursor, endMs: startMs, hasAudio: false })
+      }
+      pushSegment({ startMs, endMs, hasAudio: segment.hasAudio })
+      cursor = Math.max(cursor, endMs)
+    })
+
+    if (sessionDurationMs > 0 && cursor < sessionDurationMs - EPSILON) {
+      pushSegment({ startMs: cursor, endMs: sessionDurationMs, hasAudio: false })
+    }
+
+    const playableSegments = segments.filter((segment) => segment.hasAudio)
+    const playbackMap: Array<{ startMs: number; endMs: number; playStartMs: number; playEndMs: number }> = []
+    let playCursor = 0
+    playableSegments.forEach((segment) => {
+      const duration = Math.max(0, segment.endMs - segment.startMs)
+      if (duration <= 0) return
+      playbackMap.push({
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        playStartMs: playCursor,
+        playEndMs: playCursor + duration,
+      })
+      playCursor += duration
+    })
+
+    return {
+      durationMs: sessionDurationMs,
+      segments,
+      playableDurationMs: playCursor,
+      playbackMap,
+    }
+  }, [chunkData, isChunkAudioPurged, isHeaderSegment, selectedRecording])
+
+  const hasPlayableAudio = (playbackTimeline?.playableDurationMs ?? 0) > 0
+  const playbackDisplayPositionSeconds = useMemo(() => {
+    if (!playbackTimeline || playbackTimeline.playbackMap.length === 0) {
+      return audioState.position
+    }
+    const currentMs = Math.max(0, audioState.position * 1000)
+    const match =
+      playbackTimeline.playbackMap.find((segment) => currentMs <= segment.playEndMs) ??
+      playbackTimeline.playbackMap[playbackTimeline.playbackMap.length - 1]
+    const localOffset = Math.max(0, Math.min(currentMs - match.playStartMs, match.endMs - match.startMs))
+    return Math.max(0, (match.startMs + localOffset) / 1000)
+  }, [audioState.position, playbackTimeline])
   const playbackProgress = resolvedPlaybackDurationSeconds > 0
-    ? (audioState.position / resolvedPlaybackDurationSeconds) * 100
+    ? (playbackDisplayPositionSeconds / resolvedPlaybackDurationSeconds) * 100
     : 0
+  const playbackGapSegments = useMemo(() => {
+    if (!playbackTimeline || playbackTimeline.durationMs <= 0) return []
+    const clampPct = (value: number) => Math.max(0, Math.min(100, value))
+    return playbackTimeline.segments
+      .filter((segment) => !segment.hasAudio)
+      .map((segment) => {
+        const startPct = clampPct((segment.startMs / playbackTimeline.durationMs) * 100)
+        const endPct = clampPct((segment.endMs / playbackTimeline.durationMs) * 100)
+        return {
+          startPct,
+          widthPct: Math.max(0, endPct - startPct),
+        }
+      })
+      .filter((segment) => segment.widthPct > 0)
+  }, [playbackTimeline])
   const hasInitSegment = /mp4|m4a/i.test(captureState.mimeType ?? '') && captureState.chunksRecorded > 0
   const effectiveChunkCount = Math.max(0, captureState.chunksRecorded - (hasInitSegment ? 1 : 0))
 
@@ -3729,21 +3865,29 @@ function App() {
                   </p>
                 ) : null}
               </div>
-                <div className="playback-controls">
+              <div className="playback-controls">
                 <button
-                  className="playback-button"
+                  className={`playback-button${hasPlayableAudio ? '' : ' is-disabled'}`}
                   type="button"
                   onClick={handlePlaybackToggle}
-                  disabled={isLoadingPlayback || selectedRecording.chunkCount === 0}
+                  disabled={isLoadingPlayback}
+                  aria-disabled={!hasPlayableAudio}
                   aria-pressed={audioState.playing}
                 >
                   {isLoadingPlayback ? '…' : audioState.playing ? '⏸' : '▶'}
                 </button>
                 <div className="playback-progress" aria-hidden="true">
+                  {playbackGapSegments.map((segment, index) => (
+                    <span
+                      key={`gap-${index}-${segment.startPct}`}
+                      className="playback-gap"
+                      style={{ left: `${segment.startPct}%`, width: `${segment.widthPct}%` }}
+                    />
+                  ))}
                   <div className="playback-progress-bar" style={{ width: `${playbackProgress}%` }} />
                 </div>
                   <span className="playback-timestamps">
-                    {formatTimecode(audioState.position)} / {formatTimecode(resolvedPlaybackDurationSeconds)}
+                    {formatTimecode(playbackDisplayPositionSeconds)} / {formatTimecode(resolvedPlaybackDurationSeconds)}
                   </span>
                 <div className={`volume-control ${isVolumeSliderOpen ? 'is-open' : ''}`}>
                   <button
@@ -3768,7 +3912,12 @@ function App() {
                   ) : null}
                 </div>
               </div>
-                {playbackError ? <p className="detail-notes" role="alert">{playbackError}</p> : null}
+              {playbackError ? <p className="detail-notes" role="alert">{playbackError}</p> : null}
+              {!hasPlayableAudio ? (
+                <p className="detail-notes" role="status">
+                  Audio was purged for this recording. Playback is unavailable.
+                </p>
+              ) : null}
                   {developerMode && isAnalysisGraphOpen ? (
                     <div className="detail-analysis">
                       {analysisState === 'loading' ? (

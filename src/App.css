@@ -1472,9 +1472,21 @@ body {
   transition: border-color 0.2s ease, transform 0.1s ease;
 }
 
+.playback-button.is-disabled {
+  border-color: rgba(148, 163, 184, 0.35);
+  color: #94a3b8;
+  cursor: not-allowed;
+  transform: none;
+}
+
 .playback-button:hover {
   border-color: rgba(94, 234, 212, 0.7);
   transform: translateY(-1px);
+}
+
+.playback-button.is-disabled:hover {
+  border-color: rgba(148, 163, 184, 0.35);
+  transform: none;
 }
 
 .playback-progress {
@@ -1484,11 +1496,28 @@ body {
   background: rgba(15, 23, 42, 0.5);
   overflow: hidden;
   border: 1px solid rgba(94, 234, 212, 0.15);
+  position: relative;
 }
 
 .playback-progress-bar {
   height: 100%;
   background: linear-gradient(90deg, rgba(34, 211, 238, 0.9), rgba(6, 182, 212, 0.6));
+  position: relative;
+  z-index: 1;
+}
+
+.playback-gap {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background-image: repeating-linear-gradient(
+    45deg,
+    rgba(251, 191, 36, 0.4) 0,
+    rgba(251, 191, 36, 0.4) 6px,
+    rgba(251, 191, 36, 0.1) 6px,
+    rgba(251, 191, 36, 0.1) 12px
+  );
+  opacity: 0.8;
 }
 
 .playback-timestamps {
