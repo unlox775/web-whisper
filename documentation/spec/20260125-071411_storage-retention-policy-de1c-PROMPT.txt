@@ -5,3 +5,6 @@ Update your agent instructions, you keep adding to the same spec doc instead of 
 New standard: the spec doc contains the branch name, and no more than one branch per spec. That means, if your branch name for the current agentic runtime is not the same branch name as the spec, make a new one (and new prompt file). Fix
 
 No! Undo your edits to the previous spec file!  That was from a past agentic flow, move those edits to a NEW spec/prompt file!!!   Moron!!!
+These spec files are where you make your planning, where you make your todos, and build then expand your acceptance criteria.  It is where you explain what edits you made, where and why. 
+
+Make sure all this is in your agentic instructions. then revamp your spec for this request and grade where you planned/measured up and evaluate whether you really are complete on the value and acceptance criteria. Then if deficient, fix and complete things!

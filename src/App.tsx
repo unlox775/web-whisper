@@ -315,7 +315,7 @@ function App() {
   const [transcriptionPreviews, setTranscriptionPreviews] = useState<Record<string, string>>({})
   const [transcriptionErrorCounts, setTranscriptionErrorCounts] = useState<Record<string, number>>({})
   const [transcriptionSnipCounts, setTranscriptionSnipCounts] = useState<
-    Record<string, { transcribedCount: number; total: number }>
+    Record<string, { transcribedCount: number; total: number; purgedCount: number; retryableCount: number }>
   >({})
   const [retryingSessionIds, setRetryingSessionIds] = useState<Record<string, boolean>>({})
   const [transcriptionInProgress, setTranscriptionInProgress] = useState<Record<string, boolean>>({})
@@ -429,7 +429,9 @@ function App() {
     const preview = buildTranscriptionPreview(snips)
     const errorCount = snips.filter((snip) => Boolean(snip.transcriptionError)).length
     const transcribedCount = snips.filter((snip) => getSnipTranscriptionText(snip).length > 0).length
+    const purgedCount = snips.filter((snip) => isSnipAudioPurged(snip)).length
     const total = snips.length
+    const retryableCount = Math.max(0, total - purgedCount)
     setTranscriptionPreviews((prev) => {
       if (!preview) {
         if (!(sessionId in prev)) return prev
@@ -458,28 +460,48 @@ function App() {
         return next
       }
       const current = prev[sessionId]
-      if (current && current.transcribedCount === transcribedCount && current.total === total) {
+      if (
+        current &&
+        current.transcribedCount === transcribedCount &&
+        current.total === total &&
+        current.purgedCount === purgedCount &&
+        current.retryableCount === retryableCount
+      ) {
         return prev
       }
-      return { ...prev, [sessionId]: { transcribedCount, total } }
+      return { ...prev, [sessionId]: { transcribedCount, total, purgedCount, retryableCount } }
     })
-  }, [])
+  }, [isSnipAudioPurged])
 
   const refreshTranscriptionPreviews = useCallback(async (sessions: SessionRecord[]) => {
     try {
       const entries = await Promise.all(
         sessions.map(async (session) => {
-          if (session.status !== 'ready') return [session.id, '', 0, 0, 0] as const
+          if (session.status !== 'ready') return [session.id, '', 0, 0, 0, 0, 0] as const
           const snips = await manifestService.listSnips(session.id)
           const errorCount = snips.filter((snip) => Boolean(snip.transcriptionError)).length
           const transcribedCount = snips.filter((snip) => getSnipTranscriptionText(snip).length > 0).length
-          return [session.id, buildTranscriptionPreview(snips), errorCount, transcribedCount, snips.length] as const
+          const purgedCount = snips.filter((snip) => isSnipAudioPurged(snip)).length
+          const total = snips.length
+          const retryableCount = Math.max(0, total - purgedCount)
+          return [
+            session.id,
+            buildTranscriptionPreview(snips),
+            errorCount,
+            transcribedCount,
+            total,
+            purgedCount,
+            retryableCount,
+          ] as const
         }),
       )
       const next: Record<string, string> = {}
       const nextErrors: Record<string, number> = {}
-      const nextCounts: Record<string, { transcribedCount: number; total: number }> = {}
-      entries.forEach(([sessionId, preview, errorCount, transcribedCount, total]) => {
+      const nextCounts: Record<
+        string,
+        { transcribedCount: number; total: number; purgedCount: number; retryableCount: number }
+      > = {}
+      entries.forEach(([sessionId, preview, errorCount, transcribedCount, total, purgedCount, retryableCount]) => {
         if (preview) {
           next[sessionId] = preview
         }
@@ -487,7 +509,7 @@ function App() {
           nextErrors[sessionId] = errorCount
         }
         if (total > 0) {
-          nextCounts[sessionId] = { transcribedCount, total }
+          nextCounts[sessionId] = { transcribedCount, total, purgedCount, retryableCount }
         }
       })
       setTranscriptionPreviews(next)
@@ -498,7 +520,7 @@ function App() {
         error: error instanceof Error ? error.message : String(error),
       })
     }
-  }, [])
+  }, [isSnipAudioPurged])
 
   /** Loads the latest session manifest snapshot and triggers background verification. */
   const loadSessions = useCallback(async () => {
@@ -3440,12 +3462,15 @@ function App() {
               const transcriptionCounts = transcriptionSnipCounts[session.id]
               const transcribedCount = transcriptionCounts?.transcribedCount ?? 0
               const totalSnips = transcriptionCounts?.total ?? 0
+              const purgedSnips = transcriptionCounts?.purgedCount ?? 0
+              const retryableSnips = transcriptionCounts?.retryableCount ?? Math.max(0, totalSnips - purgedSnips)
               const hasTranscript = transcribedCount > 0
               const hasTranscriptionError = transcriptionErrorCount > 0
               const hasSnips = totalSnips > 0 || hasTranscriptionError
               const errorNotes = session.status === 'error' ? session.notes ?? 'Recording error.' : ''
               const isRetrying = Boolean(retryingSessionIds[session.id])
               const isTranscribing = !isActiveRecording && Boolean(transcriptionInProgress[session.id] || isRetrying)
+              const canRetryTranscription = retryableSnips > 0
               const displayStatus: SessionDisplayStatus =
                 session.status === 'error'
                   ? 'error'
@@ -3479,6 +3504,8 @@ function App() {
                     ? 'Finishing transcription...'
                     : transcriptionPreview
                       ? transcriptionPreview
+                      : purgedSnips > 0 && !hasTranscriptionError
+                        ? `Audio purged for ${purgedSnips} snip${purgedSnips === 1 ? '' : 's'}.`
                       : hasTranscriptionError
                         ? hasTranscript
                           ? `Partially transcribed (${transcribedCount}/${totalSnips})`
@@ -3510,7 +3537,10 @@ function App() {
                     <div className="session-preview-row">
                       <p className="session-preview">{previewText}</p>
                       {isTranscribing ? <span className="session-spinner" aria-label="Transcribing…" /> : null}
-                      {!isTranscribing && (hasTranscriptionError || (!transcriptionPreview && !errorNotes)) && session.status === 'ready' ? (
+                      {!isTranscribing &&
+                      canRetryTranscription &&
+                      (hasTranscriptionError || (!transcriptionPreview && !errorNotes)) &&
+                      session.status === 'ready' ? (
                         <button
                           type="button"
                           className="session-retry"
