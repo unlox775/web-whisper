@@ -12,6 +12,7 @@ This file documents how we keep human + agent collaboration transparent and audi
 - Every material update must append to the corresponding pair under `documentation/spec/`:
   - `YYYYMMDD-HHMMSS_slug.md` — living Markdown changelog describing what changed, what remains undone, and any follow-up actions.
   - `YYYYMMDD-HHMMSS_slug-PROMPT.txt` — plaintext transcript capturing **every** user prompt or follow-up, appended newest-last and kept verbatim (no formatting edits).
+- Spec files must include the active branch name and track only one branch; create a new spec/prompt pair when the branch changes.
 - Use 24-hour UTC timestamps (retrieved via `date -u +%Y%m%d-%H%M%S`) to keep ordering unambiguous.
 - Slugs should be short and hyphenated (e.g., `mvp-foundation`, `capture-loop`).
 - For each new instruction, append the raw transcript to the prompt log before writing code.
