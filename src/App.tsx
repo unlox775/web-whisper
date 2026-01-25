@@ -595,12 +595,13 @@ function App() {
     })
   }, [refreshTranscriptionPreviews, storageLimitBytes])
 
-  const runRetentionPass = useCallback(async () => {
+  const runRetentionPass = useCallback(async (options?: { force?: boolean; reason?: string }) => {
     if (retentionInFlightRef.current) {
       return
     }
     const now = Date.now()
-    if (now - lastRetentionAtRef.current < RETENTION_PASS_INTERVAL_MS) {
+    const shouldDebounce = !options?.force
+    if (shouldDebounce && now - lastRetentionAtRef.current < RETENTION_PASS_INTERVAL_MS) {
       return
     }
     retentionInFlightRef.current = true
@@ -615,6 +616,7 @@ function App() {
           limitBytes: result.limitBytes,
           purgedChunks: result.purgedChunkIds.length,
           purgedSnips: result.purgedSnipIds.length,
+          reason: options?.reason ?? (shouldDebounce ? 'debounced' : 'manual'),
         })
       }
       if (result.afterBytes > result.limitBytes) {
@@ -623,12 +625,14 @@ function App() {
           afterBytes: result.afterBytes,
           limitBytes: result.limitBytes,
           purgedChunks: result.purgedChunkIds.length,
+          reason: options?.reason ?? (shouldDebounce ? 'debounced' : 'manual'),
         })
       }
       setBufferTotals({ totalBytes: result.afterBytes, limitBytes: storageLimitBytes })
     } catch (error) {
       await logError('Storage retention pass failed', {
         error: error instanceof Error ? error.message : String(error),
+        reason: options?.reason ?? (shouldDebounce ? 'debounced' : 'manual'),
       })
     } finally {
       retentionInFlightRef.current = false
@@ -636,6 +640,13 @@ function App() {
   }, [storageLimitBytes])
 
   useEffect(() => settingsStore.subscribe((value) => setSettings({ ...value })), [])
+
+  useEffect(() => {
+    if (settings?.storageLimitBytes == null) {
+      return
+    }
+    void runRetentionPass({ force: true, reason: 'settings-change' })
+  }, [runRetentionPass, settings?.storageLimitBytes])
 
   useEffect(() => {
     void initializeLogger()

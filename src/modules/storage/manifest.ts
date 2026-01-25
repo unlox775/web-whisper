@@ -656,17 +656,16 @@ class IndexedDBManifestService implements ManifestService {
       sessionTotals.set(chunk.sessionId, (sessionTotals.get(chunk.sessionId) ?? 0) + chunk.byteLength)
     })
 
-    const transcribedSnipsBySession = new Map<string, SnipRecord[]>()
+    const snipsBySession = new Map<string, SnipRecord[]>()
     snips.forEach((snip) => {
-      if (!snip.transcription || snip.transcriptionError) return
-      const existing = transcribedSnipsBySession.get(snip.sessionId)
+      const existing = snipsBySession.get(snip.sessionId)
       if (existing) {
         existing.push(snip)
       } else {
-        transcribedSnipsBySession.set(snip.sessionId, [snip])
+        snipsBySession.set(snip.sessionId, [snip])
       }
     })
-    transcribedSnipsBySession.forEach((items) => items.sort((a, b) => a.startMs - b.startMs))
+    snipsBySession.forEach((items) => items.sort((a, b) => a.startMs - b.startMs))
 
     const COVERAGE_EPSILON_MS = 4
     const isHeaderChunk = (chunk: StoredChunk, session: SessionRecord | null): boolean => {
@@ -677,31 +676,38 @@ class IndexedDBManifestService implements ManifestService {
       const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
       return chunk.seq === 0 && (durationMs <= 10 || chunk.byteLength < 4096)
     }
-    const findCoveringSnip = (snipsForSession: SnipRecord[] | undefined, chunk: StoredChunk): SnipRecord | null => {
-      if (!snipsForSession || snipsForSession.length === 0) return null
-      const startMs = chunk.startMs
-      const endMs = chunk.endMs
-      for (const snip of snipsForSession) {
-        if (startMs + COVERAGE_EPSILON_MS < snip.startMs) {
-          continue
-        }
-        if (endMs - COVERAGE_EPSILON_MS > snip.endMs) {
-          continue
-        }
-        return snip
+    const getOverlappingSnips = (snipsForSession: SnipRecord[] | undefined, chunk: StoredChunk): SnipRecord[] => {
+      if (!snipsForSession || snipsForSession.length === 0) return []
+      const overlapStart = chunk.startMs + COVERAGE_EPSILON_MS
+      const overlapEnd = chunk.endMs - COVERAGE_EPSILON_MS
+      if (overlapEnd <= overlapStart) {
+        return []
       }
-      return null
+      const overlaps: SnipRecord[] = []
+      for (const snip of snipsForSession) {
+        if (snip.endMs <= overlapStart) {
+          continue
+        }
+        if (snip.startMs >= overlapEnd) {
+          break
+        }
+        overlaps.push(snip)
+      }
+      return overlaps
     }
 
-    const eligible: Array<{ chunk: StoredChunk; snip: SnipRecord; session: SessionRecord | null }> = []
+    const eligible: Array<{ chunk: StoredChunk; snipIds: string[]; session: SessionRecord | null }> = []
     for (const chunk of chunks) {
       if (chunk.byteLength <= 0 || chunk.blob.size <= 0) continue
       const session = sessionById.get(chunk.sessionId) ?? null
       if (isHeaderChunk(chunk, session)) continue
-      const snipsForSession = transcribedSnipsBySession.get(chunk.sessionId)
-      const covering = findCoveringSnip(snipsForSession, chunk)
-      if (!covering) continue
-      eligible.push({ chunk, snip: covering, session })
+      const snipsForSession = snipsBySession.get(chunk.sessionId)
+      const overlaps = getOverlappingSnips(snipsForSession, chunk)
+      if (overlaps.length === 0) continue
+      if (!overlaps.every((snip) => snip.transcription && !snip.transcriptionError)) {
+        continue
+      }
+      eligible.push({ chunk, snipIds: overlaps.map((snip) => snip.id), session })
     }
 
     eligible.sort((a, b) => {
@@ -732,7 +738,7 @@ class IndexedDBManifestService implements ManifestService {
       totalBytes = Math.max(0, totalBytes - removedBytes)
       sessionTotals.set(chunk.sessionId, Math.max(0, (sessionTotals.get(chunk.sessionId) ?? 0) - removedBytes))
       updatedSessionIds.add(chunk.sessionId)
-      purgedSnipIds.add(entry.snip.id)
+      entry.snipIds.forEach((snipId) => purgedSnipIds.add(snipId))
     }
 
     for (const sessionId of updatedSessionIds) {

@@ -8,3 +8,4 @@ No! Undo your edits to the previous spec file!  That was from a past agentic flo
 These spec files are where you make your planning, where you make your todos, and build then expand your acceptance criteria.  It is where you explain what edits you made, where and why. 
 
 Make sure all this is in your agentic instructions. then revamp your spec for this request and grade where you planned/measured up and evaluate whether you really are complete on the value and acceptance criteria. Then if deficient, fix and complete things!
+why is it not deleting?  I set my max storage to 2MB, but it never seemed to purge even older ones that were transcribed
