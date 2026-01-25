@@ -152,6 +152,8 @@ const LIVE_TRANSCRIPTION_WORD_LIMIT = 60
 const LIVE_TRANSCRIPTION_RETRY_WINDOW_MS = 120_000
 const TRANSCRIPTION_RETRY_DELAYS_MS = [3000, 5000, 10000]
 const LIVE_TRANSCRIPTION_MAX_RETRIES = TRANSCRIPTION_RETRY_DELAYS_MS.length
+const RETENTION_PASS_INTERVAL_MS = 120_000
+const AUDIO_PURGED_NOTICE = 'Audio was purged to stay under the storage cap. Transcription retries are disabled.'
 
 const formatClock = (timestamp: number) =>
   new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp))
@@ -401,6 +403,8 @@ function App() {
     lastMissingKeyWarnAt: 0,
   })
   const liveRefreshInFlightRef = useRef(false)
+  const retentionInFlightRef = useRef(false)
+  const lastRetentionAtRef = useRef(0)
 
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
@@ -414,6 +418,12 @@ function App() {
       .map((text) => trimToLastWords(text, LIVE_TRANSCRIPTION_WORD_LIMIT))
       .filter((text) => text.length > 0)
   }, [liveSnipRecords])
+
+  const isSnipAudioPurged = useCallback((snip: SnipRecord) => Boolean(snip.audioPurgedAt), [])
+  const isChunkAudioPurged = useCallback(
+    (chunk: StoredChunk) => Boolean(chunk.audioPurgedAt) || chunk.byteLength <= 0 || chunk.blob.size <= 0,
+    [],
+  )
 
   const updateTranscriptionPreviewForSession = useCallback((sessionId: string, snips: SnipRecord[]) => {
     const preview = buildTranscriptionPreview(snips)
@@ -563,6 +573,46 @@ function App() {
     })
   }, [refreshTranscriptionPreviews, storageLimitBytes])
 
+  const runRetentionPass = useCallback(async () => {
+    if (retentionInFlightRef.current) {
+      return
+    }
+    const now = Date.now()
+    if (now - lastRetentionAtRef.current < RETENTION_PASS_INTERVAL_MS) {
+      return
+    }
+    retentionInFlightRef.current = true
+    lastRetentionAtRef.current = now
+    try {
+      await manifestService.init()
+      const result = await manifestService.applyRetentionPolicy({ limitBytes: storageLimitBytes, now })
+      if (result.purgedChunkIds.length > 0) {
+        await logInfo('Storage retention purged audio', {
+          beforeBytes: result.beforeBytes,
+          afterBytes: result.afterBytes,
+          limitBytes: result.limitBytes,
+          purgedChunks: result.purgedChunkIds.length,
+          purgedSnips: result.purgedSnipIds.length,
+        })
+      }
+      if (result.afterBytes > result.limitBytes) {
+        await logWarn('Storage retention unable to meet cap', {
+          beforeBytes: result.beforeBytes,
+          afterBytes: result.afterBytes,
+          limitBytes: result.limitBytes,
+          purgedChunks: result.purgedChunkIds.length,
+        })
+      }
+      setBufferTotals({ totalBytes: result.afterBytes, limitBytes: storageLimitBytes })
+    } catch (error) {
+      await logError('Storage retention pass failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      retentionInFlightRef.current = false
+    }
+  }, [storageLimitBytes])
+
   useEffect(() => settingsStore.subscribe((value) => setSettings({ ...value })), [])
 
   useEffect(() => {
@@ -595,6 +645,23 @@ function App() {
     const isRecording = captureState.state === 'recording'
     void setRecordingWakeLockActive(isRecording, isRecording ? 'recording-active' : 'recording-inactive')
   }, [captureState.state])
+
+  useEffect(() => {
+    if (captureState.state !== 'recording') {
+      return
+    }
+    let cancelled = false
+    const tick = () => {
+      if (cancelled) return
+      void runRetentionPass()
+    }
+    const interval = window.setInterval(tick, RETENTION_PASS_INTERVAL_MS)
+    void tick()
+    return () => {
+      cancelled = true
+      window.clearInterval(interval)
+    }
+  }, [captureState.state, runRetentionPass])
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -907,13 +974,16 @@ function App() {
   const snipTranscriptionSummary = useMemo(() => {
     const texts = snipRecords.map((snip) => getSnipTranscriptionText(snip)).filter((text) => text.length > 0)
     const errorCount = snipRecords.filter((snip) => Boolean(snip.transcriptionError)).length
+    const purgedCount = snipRecords.filter((snip) => isSnipAudioPurged(snip)).length
     return {
       text: texts.join(' ').trim(),
       transcribedCount: texts.length,
       errorCount,
       total: snipRecords.length,
+      purgedCount,
+      retryableCount: Math.max(0, snipRecords.length - purgedCount),
     }
-  }, [snipRecords])
+  }, [isSnipAudioPurged, snipRecords])
 
   useEffect(() => {
     if (!selectedRecording) {
@@ -1075,7 +1145,10 @@ function App() {
     )
 
     const ensureChunkPlaybackUrl = useCallback(
-      (chunk: StoredChunk) => {
+      (chunk: StoredChunk): string | null => {
+        if (isChunkAudioPurged(chunk)) {
+          return null
+        }
         const map = chunkUrlMapRef.current
         const existing = map.get(chunk.id)
         if (existing) {
@@ -1086,7 +1159,7 @@ function App() {
         map.set(chunk.id, url)
         return url
       },
-      [createChunkCompositeBlob],
+      [createChunkCompositeBlob, isChunkAudioPurged],
     )
 
     const handleChunkDownload = useCallback(
@@ -1191,6 +1264,9 @@ function App() {
       if (!selectedRecording) {
         return null
       }
+      if (isSnipAudioPurged(snip)) {
+        return null
+      }
       const cacheKey = snip.id
       const existing = snipSliceCacheRef.current.get(cacheKey)
       if (existing) {
@@ -1205,7 +1281,7 @@ function App() {
       snipSliceCacheRef.current.set(cacheKey, slice)
       return slice
     },
-    [selectedRecording],
+    [isSnipAudioPurged, selectedRecording],
   )
 
   const ensureSnipPlaybackUrl = useCallback(
@@ -1228,6 +1304,9 @@ function App() {
 
   const handleSnipDownload = useCallback(
     async (snip: SnipRecord, snipNumber: number) => {
+      if (isSnipAudioPurged(snip)) {
+        return
+      }
       const resolved = await ensureSnipPlaybackUrl(snip)
       if (!resolved) {
         return
@@ -1241,17 +1320,20 @@ function App() {
       link.click()
       document.body.removeChild(link)
     },
-    [ensureSnipPlaybackUrl],
+    [ensureSnipPlaybackUrl, isSnipAudioPurged],
   )
 
   const resolveSnipSlice = useCallback(
     async (session: SessionRecord, snip: SnipRecord): Promise<RecordingAudioSlice | null> => {
+      if (isSnipAudioPurged(snip)) {
+        return null
+      }
       if (selectedRecording?.id === session.id) {
         return await ensureSnipSlice(snip)
       }
       return await recordingSlicesApi.getRangeAudio(session, snip.startMs, snip.endMs, session.mimeType ?? null)
     },
-    [ensureSnipSlice, selectedRecording?.id],
+    [ensureSnipSlice, isSnipAudioPurged, selectedRecording?.id],
   )
 
   const refreshTranscriptionPreviewForSession = useCallback(
@@ -1262,10 +1344,14 @@ function App() {
     [updateTranscriptionPreviewForSession],
   )
 
-  const selectSnipsForRetry = useCallback((snips: SnipRecord[]) => {
-    const failed = snips.filter((snip) => Boolean(snip.transcriptionError))
-    return failed.length > 0 ? failed : snips
-  }, [])
+  const selectSnipsForRetry = useCallback(
+    (snips: SnipRecord[]) => {
+      const eligible = snips.filter((snip) => !isSnipAudioPurged(snip))
+      const failed = eligible.filter((snip) => Boolean(snip.transcriptionError))
+      return failed.length > 0 ? failed : eligible
+    },
+    [isSnipAudioPurged],
+  )
 
   const transcribeSnip = useCallback(
     async ({
@@ -1285,6 +1371,13 @@ function App() {
     }): Promise<{ ok: boolean; error?: string }> => {
       if (!force && getSnipTranscriptionText(snip)) {
         return { ok: true }
+      }
+      if (isSnipAudioPurged(snip)) {
+        await logWarn('Snip transcription blocked (audio purged)', {
+          sessionId: session.id,
+          snipId: snip.id,
+        })
+        return { ok: false, error: AUDIO_PURGED_NOTICE }
       }
       if (updateUi && snipTranscriptionState[snip.id] && !ignoreBusy) {
         return { ok: false }
@@ -1386,6 +1479,7 @@ function App() {
       refreshTranscriptionPreviewForSession,
       resolveSnipSlice,
       settings?.groqApiKey,
+      isSnipAudioPurged,
       snipTranscriptionState,
     ],
   )
@@ -1479,6 +1573,9 @@ function App() {
         if (getSnipTranscriptionText(snip)) {
           return
         }
+        if (isSnipAudioPurged(snip)) {
+          return
+        }
         if (queue.pendingIds.has(snip.id)) {
           return
         }
@@ -1496,7 +1593,7 @@ function App() {
         void runLiveTranscriptionQueue(session)
       }
     },
-    [resetLiveTranscriptionQueue, runLiveTranscriptionQueue, settings?.groqApiKey],
+    [isSnipAudioPurged, resetLiveTranscriptionQueue, runLiveTranscriptionQueue, settings?.groqApiKey],
   )
 
   useEffect(() => {
@@ -1566,9 +1663,12 @@ function App() {
       if (!selectedRecording) {
         return
       }
+      if (isSnipAudioPurged(snip)) {
+        return
+      }
       await transcribeSnip({ session: selectedRecording, snip, updateUi: true, force: true })
     },
-    [selectedRecording, transcribeSnip],
+    [isSnipAudioPurged, selectedRecording, transcribeSnip],
   )
 
   const handleRetryAllTranscriptions = useCallback(async () => {
@@ -1589,6 +1689,9 @@ function App() {
       }
       setSnipRecords(snips)
       const targets = selectSnipsForRetry(snips)
+      if (targets.length === 0) {
+        return
+      }
       for (const snip of targets) {
         await transcribeSnip({ session: selectedRecording, snip, updateUi: true, force: true, ignoreBusy: true })
       }
@@ -1625,6 +1728,9 @@ function App() {
           setSnipRecords(snips)
         }
         const targets = selectSnipsForRetry(snips)
+        if (targets.length === 0) {
+          return
+        }
         for (const snip of targets) {
           await transcribeSnip({
             session,
@@ -1679,6 +1785,7 @@ function App() {
           const updatedSnips: SnipRecord[] = []
           for (const snip of snips) {
             if (getSnipTranscriptionText(snip)) continue
+            if (isSnipAudioPurged(snip)) continue
             const updated = await manifestService.updateSnipTranscription(snip.id, { transcriptionError: message })
             if (updated) {
               updatedSnips.push(updated)
@@ -1695,6 +1802,9 @@ function App() {
         const maxAttempts = TRANSCRIPTION_RETRY_DELAYS_MS.length + 1
         for (const snip of snips) {
           if (getSnipTranscriptionText(snip)) {
+            continue
+          }
+          if (isSnipAudioPurged(snip)) {
             continue
           }
           for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
@@ -1727,7 +1837,7 @@ function App() {
         })
       }
     },
-    [refreshTranscriptionPreviewForSession, selectedRecording?.id, settings?.groqApiKey, transcribeSnip],
+    [isSnipAudioPurged, refreshTranscriptionPreviewForSession, selectedRecording?.id, settings?.groqApiKey, transcribeSnip],
   )
 
   const refreshAndClearErrors = useCallback(async () => {
@@ -2947,6 +3057,9 @@ function App() {
       if (isHeaderSegment(chunk)) {
         return
       }
+      if (isChunkAudioPurged(chunk)) {
+        return
+      }
 
       const audio = new Audio()
       const url = ensureChunkPlaybackUrl(chunk)
@@ -3000,12 +3113,15 @@ function App() {
         finishPlayback()
       }
     },
-    [chunkPlayingId, ensureChunkPlaybackUrl, isHeaderSegment, playbackVolume],
+    [chunkPlayingId, ensureChunkPlaybackUrl, isChunkAudioPurged, isHeaderSegment, playbackVolume],
   )
 
   const handleSnipPlayToggle = useCallback(
     async (snip: SnipRecord) => {
       if (!selectedRecording) {
+        return
+      }
+      if (isSnipAudioPurged(snip)) {
         return
       }
       const snipKey = snip.id
@@ -3101,7 +3217,7 @@ function App() {
         finishPlayback()
       }
     },
-    [ensureSnipPlaybackUrl, playbackVolume, selectedRecording, snipPlayingId],
+    [ensureSnipPlaybackUrl, isSnipAudioPurged, playbackVolume, selectedRecording, snipPlayingId],
   )
 
     const loadDeveloperTables = useCallback(async () => {
@@ -3621,7 +3737,7 @@ function App() {
                       type="button"
                       className="detail-transcription-retry"
                       onClick={() => void handleRetryAllTranscriptions()}
-                      disabled={isBulkTranscribing || snipRecords.length === 0}
+                      disabled={isBulkTranscribing || snipRecords.length === 0 || snipTranscriptionSummary.retryableCount === 0}
                     >
                       {isBulkTranscribing ? 'Retrying…' : 'Retry TX'}
                     </button>
@@ -3652,6 +3768,13 @@ function App() {
                     <p className="detail-transcription-error" role="alert">
                       {snipTranscriptionSummary.errorCount} snip transcription error
                       {snipTranscriptionSummary.errorCount === 1 ? '' : 's'} recorded. See the snip list for details.
+                    </p>
+                  ) : null}
+                  {snipTranscriptionSummary.purgedCount > 0 ? (
+                    <p className="detail-transcription-note">
+                      Audio purged for {snipTranscriptionSummary.purgedCount} snip
+                      {snipTranscriptionSummary.purgedCount === 1 ? '' : 's'} to stay under the storage cap. Retries are
+                      disabled for purged audio.
                     </p>
                   ) : null}
                 </div>
@@ -4178,11 +4301,14 @@ function App() {
                             const header = isHeaderSegment(chunk)
                             const isChunkPlaying = chunkPlayingId === chunk.id
                             const sequenceLabel = chunk.seq + 1
+                            const isPurgedChunk = isChunkAudioPurged(chunk)
                             const playLabel = header
                               ? `Chunk ${sequenceLabel} is an init segment without audio`
-                              : isChunkPlaying
-                                ? `Pause chunk ${sequenceLabel}`
-                                : `Play chunk ${sequenceLabel}`
+                              : isPurgedChunk
+                                ? `Chunk ${sequenceLabel} audio purged`
+                                : isChunkPlaying
+                                  ? `Pause chunk ${sequenceLabel}`
+                                  : `Play chunk ${sequenceLabel}`
                             return (
                               <li key={chunk.id} className={`chunk-item ${header ? 'header-chunk' : ''}`}>
                                 <button
@@ -4191,8 +4317,14 @@ function App() {
                                   onClick={() => void handleChunkPlayToggle(chunk)}
                                   aria-pressed={isChunkPlaying}
                                   aria-label={playLabel}
-                                  disabled={header}
-                                  title={header ? 'Init segment (no audio payload)' : undefined}
+                                  disabled={header || isPurgedChunk}
+                                  title={
+                                    header
+                                      ? 'Init segment (no audio payload)'
+                                      : isPurgedChunk
+                                        ? 'Audio purged to stay under the storage cap'
+                                        : undefined
+                                  }
                                 >
                                   {header ? 'NA' : isChunkPlaying ? '⏸' : '▶'}
                                 </button>
@@ -4204,12 +4336,19 @@ function App() {
                                   className="chunk-download"
                                   onClick={() => handleChunkDownload(chunk)}
                                   aria-label={`Download chunk ${sequenceLabel}`}
-                                  disabled={header}
-                                  title={header ? 'Init segment (typically no downloadable audio)' : undefined}
+                                  disabled={header || isPurgedChunk}
+                                  title={
+                                    header
+                                      ? 'Init segment (typically no downloadable audio)'
+                                      : isPurgedChunk
+                                        ? 'Audio purged to stay under the storage cap'
+                                        : undefined
+                                  }
                                 >
                                   ⬇
                                 </button>
                                 {header ? <span className="chunk-flag">init segment</span> : null}
+                                {isPurgedChunk ? <span className="chunk-flag is-purged">purged</span> : null}
                               </li>
                             )
                           })}
@@ -4239,18 +4378,27 @@ function App() {
                             const isTranscribing = Boolean(snipTranscriptionState[snip.id])
                             const snipTranscript = getSnipTranscriptionText(snip)
                             const hasTranscript = snipTranscript.length > 0
-                            const playLabel = isSnipPlaying ? `Pause snip ${snipNumber}` : `Play snip ${snipNumber}`
-                            const transcribeLabel = isTranscribing
-                              ? `Transcribing snip ${snipNumber}`
-                              : hasTranscript
-                                ? `Retry transcription for snip ${snipNumber}`
-                                : `Transcribe snip ${snipNumber}`
-                            const statusLabel =
-                              isTranscribing && !isDetailRecordingActive
+                            const isPurged = isSnipAudioPurged(snip)
+                            const playLabel = isPurged
+                              ? `Snip ${snipNumber} audio purged`
+                              : isSnipPlaying
+                                ? `Pause snip ${snipNumber}`
+                                : `Play snip ${snipNumber}`
+                            const transcribeLabel = isPurged
+                              ? `Snip ${snipNumber} audio purged`
+                              : isTranscribing
+                                ? `Transcribing snip ${snipNumber}`
+                                : hasTranscript
+                                  ? `Retry transcription for snip ${snipNumber}`
+                                  : `Transcribe snip ${snipNumber}`
+                            const statusLabel = isPurged
+                              ? 'Audio purged'
+                              : isTranscribing && !isDetailRecordingActive
                                 ? 'Transcribing…'
                                 : hasTranscript
                                   ? 'Transcribed'
                                   : 'Pending'
+                            const statusClass = isPurged ? 'is-purged' : hasTranscript ? 'is-ready' : 'is-pending'
                             return (
                               <li key={snipKey} className="chunk-item">
                                 <button
@@ -4259,6 +4407,7 @@ function App() {
                                   onClick={() => void handleSnipPlayToggle(snip)}
                                   aria-pressed={isSnipPlaying}
                                   aria-label={playLabel}
+                                  disabled={isPurged}
                                 >
                                   {isSnipPlaying ? '⏸' : '▶'}
                                 </button>
@@ -4267,7 +4416,7 @@ function App() {
                                 <span>
                                   {formatTimecode(Math.round(snip.startMs / 1000))} → {formatTimecode(Math.round(snip.endMs / 1000))}
                                 </span>
-                                <span className={`snip-transcription-status ${hasTranscript ? 'is-ready' : 'is-pending'}`}>
+                                <span className={`snip-transcription-status ${statusClass}`}>
                                   {statusLabel}
                                 </span>
                                 <button
@@ -4275,6 +4424,7 @@ function App() {
                                   className="chunk-download"
                                   onClick={() => void handleSnipDownload(snip, snipNumber)}
                                   aria-label={`Download snip ${snipNumber}`}
+                                  disabled={isPurged}
                                 >
                                   ⬇
                                 </button>
@@ -4283,7 +4433,7 @@ function App() {
                                   className="snip-transcribe"
                                   onClick={() => void handleSnipTranscription(snip)}
                                   aria-label={transcribeLabel}
-                                  disabled={isTranscribing}
+                                  disabled={isTranscribing || isPurged}
                                 >
                                   {hasTranscript ? 'Retry' : 'Tx'}
                                 </button>
@@ -4302,6 +4452,7 @@ function App() {
                                     {snip.transcriptionError}
                                   </span>
                                 ) : null}
+                                {isPurged ? <span className="snip-retention-note">{AUDIO_PURGED_NOTICE}</span> : null}
                               </li>
                             )
                           })}

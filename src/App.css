@@ -778,6 +778,12 @@ body {
   color: #fca5a5;
 }
 
+.detail-transcription-note {
+  margin: 0.35rem 0 0;
+  font-size: 0.75rem;
+  color: #fcd34d;
+}
+
 .detail-notes {
   margin: 0;
   color: #fca5a5;
@@ -1353,10 +1359,21 @@ body {
   color: #fca5a5;
 }
 
+.snip-transcription-status.is-purged {
+  border-color: rgba(251, 191, 36, 0.45);
+  color: #fcd34d;
+}
+
 .snip-transcription-error {
   flex-basis: 100%;
   font-size: 0.72rem;
   color: #fca5a5;
+}
+
+.snip-retention-note {
+  flex-basis: 100%;
+  font-size: 0.72rem;
+  color: #fcd34d;
 }
 
 .snip-transcription-text {
@@ -1399,6 +1416,12 @@ body {
   border-radius: 999px;
   padding: 0.1rem 0.5rem;
   background: rgba(248, 113, 113, 0.12);
+}
+
+.chunk-flag.is-purged {
+  color: #fcd34d;
+  border-color: rgba(251, 191, 36, 0.5);
+  background: rgba(251, 191, 36, 0.12);
 }
 
 .playback-controls {

@@ -23,7 +23,7 @@ This folder contains the living documentation for Web Whisper. It is kept curren
 | --- | --- | --- |
 | Installable PWA shell | Ready | Service worker and PWA packaging verified. |
 | PCM capture + MP3 chunking | Ready | AudioContext + ScriptProcessor + Lame.js. |
-| Chunk persistence | In progress | Durable local storage; retention policy still pending. |
+| Chunk persistence | Ready | Durable local storage with retention enforcement. |
 | Recording playback | Ready | Full session playback and chunk/snip playback. |
 | Analysis + snip segmentation | In progress | Heuristics tuned iteratively from volume profiles. |
 | Groq transcription | In progress | Snip-based transcription with API key required. |
@@ -32,7 +32,6 @@ This folder contains the living documentation for Web Whisper. It is kept curren
 | Spec + prompt logging | Ready | `documentation/spec/` is the canonical log. |
 
 ## Current Focus
-- Improve retention policies and storage cap enforcement.
 - Clarify transcription onboarding, key validation, and disabled-mode UX.
 - Add clipboard-first transcription UX for completed sessions.
 - Run a cross-browser compatibility pass and document blockers.
@@ -41,7 +40,6 @@ Known issues live in `documentation/knownissues.md`.
 
 ## Upcoming Milestones
 1. iOS native wrapper for background recording reliability.
-2. Automatic retention and deletion for completed snips.
-3. Full-session audio download and transcription onboarding polish.
-4. Clipboard-first transcription UX for faster copy.
-5. Cross-browser test matrix with targeted fixes.
+2. Full-session audio download and transcription onboarding polish.
+3. Clipboard-first transcription UX for faster copy.
+4. Cross-browser test matrix with targeted fixes.
