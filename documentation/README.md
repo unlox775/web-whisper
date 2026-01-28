@@ -13,6 +13,7 @@ This folder contains the living documentation for Web Whisper. It is kept curren
 - `libraries.md` - module map and responsibilities.
 - `debugging.md` - developer tooling, logs, and diagnostics.
 - `lessonslearned.md` - retrospective and timeline.
+- `ai-usage.md` - how to use AI with Web Whisper.
 - `roadmap.md` - final polish roadmap and acceptance criteria.
 - `knownissues.md` - known bugs and platform limitations.
 - `contributor-roadmap.md` - optional community contributions.
