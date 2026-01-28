@@ -1,3 +1,5 @@
+export type TranscriptionMode = 'enabled' | 'disabled'
+
 export interface RecorderSettings {
   pauseSensitivity: number
   minPauseMs: number
@@ -6,6 +8,8 @@ export interface RecorderSettings {
   overlapMs: number
   targetBitrate: number
   groqApiKey?: string
+  transcriptionMode: TranscriptionMode
+  transcriptionOnboardingDismissed: boolean
   developerMode: boolean
   storageLimitBytes: number
 }
@@ -25,11 +29,29 @@ const defaultSettings: RecorderSettings = {
   overlapMs: 800,
   targetBitrate: 64000,
   groqApiKey: '',
+  transcriptionMode: 'disabled',
+  transcriptionOnboardingDismissed: false,
   developerMode: false,
   storageLimitBytes: 200 * MB,
 }
 
 const STORAGE_KEY = 'durable-recorder-settings'
+
+const isTranscriptionMode = (value: unknown): value is TranscriptionMode => value === 'enabled' || value === 'disabled'
+
+function normalizeSettings(parsed: Partial<RecorderSettings> | null): RecorderSettings {
+  const merged: RecorderSettings = { ...defaultSettings, ...parsed }
+  const hasMode = parsed && isTranscriptionMode(parsed.transcriptionMode)
+  const hasOnboardingDismissed = parsed && typeof parsed.transcriptionOnboardingDismissed === 'boolean'
+  if (!hasMode) {
+    const hasKey = typeof merged.groqApiKey === 'string' && merged.groqApiKey.trim().length > 0
+    merged.transcriptionMode = hasKey ? 'enabled' : 'disabled'
+  }
+  if (!hasOnboardingDismissed) {
+    merged.transcriptionOnboardingDismissed = false
+  }
+  return merged
+}
 
 function loadFromStorage(): RecorderSettings | null {
   if (typeof window === 'undefined') return null
@@ -38,7 +60,7 @@ function loadFromStorage(): RecorderSettings | null {
   try {
     const parsed = JSON.parse(raw) as Partial<RecorderSettings>
     if (!parsed) return null
-    return { ...defaultSettings, ...parsed }
+    return normalizeSettings(parsed)
   } catch (error) {
     console.warn('[SettingsStore] Failed to parse settings', error)
     return null
@@ -55,7 +77,7 @@ class PersistentSettingsStore implements SettingsStore {
   #listeners = new Set<(settings: RecorderSettings) => void>()
 
   constructor() {
-    this.#settings = loadFromStorage() ?? { ...defaultSettings }
+    this.#settings = loadFromStorage() ?? normalizeSettings(null)
   }
 
   async get(): Promise<RecorderSettings> {
@@ -63,7 +85,7 @@ class PersistentSettingsStore implements SettingsStore {
   }
 
   async set(patch: Partial<RecorderSettings>): Promise<RecorderSettings> {
-    this.#settings = { ...this.#settings, ...patch }
+    this.#settings = normalizeSettings({ ...this.#settings, ...patch })
     persistToStorage(this.#settings)
     this.#listeners.forEach((listener) => listener(this.#settings))
     return this.#settings

@@ -32,7 +32,7 @@ import {
   logWarn,
   shutdownLogger,
 } from './modules/logging/logger'
-import { transcriptionService } from './modules/transcription/service'
+import { transcriptionService, validateGroqApiKey } from './modules/transcription/service'
 
 type DeveloperTable = {
   name: string
@@ -77,8 +77,9 @@ type LiveTranscriptionQueue = {
   pendingIds: Set<string>
   retryCounts: Map<string, number>
   lastSuccessAt: number
-  lastMissingKeyWarnAt: number
 }
+
+type TranscriptionKeyStatus = 'missing' | 'unchecked' | 'validating' | 'valid' | 'invalid'
 
 type DoctorSegmentStatus = 'ok' | 'warn' | 'error'
 
@@ -154,6 +155,8 @@ const TRANSCRIPTION_RETRY_DELAYS_MS = [3000, 5000, 10000]
 const LIVE_TRANSCRIPTION_MAX_RETRIES = TRANSCRIPTION_RETRY_DELAYS_MS.length
 const RETENTION_PASS_INTERVAL_MS = 120_000
 const AUDIO_PURGED_NOTICE = 'Audio was purged to stay under the storage cap. Transcription retries are disabled.'
+const GROQ_KEY_URL = 'https://console.groq.com/keys'
+const GROQ_PRICING_URL = 'https://groq.com/pricing'
 
 const formatClock = (timestamp: number) =>
   new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp))
@@ -375,6 +378,8 @@ function App() {
   const [snipTranscriptionState, setSnipTranscriptionState] = useState<Record<string, boolean>>({})
   const [isBulkTranscribing, setIsBulkTranscribing] = useState(false)
   const [noAudioAlertActive, setNoAudioAlertActive] = useState(false)
+  const [transcriptionKeyStatus, setTranscriptionKeyStatus] = useState<TranscriptionKeyStatus>('missing')
+  const [transcriptionKeyError, setTranscriptionKeyError] = useState<string | null>(null)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const transcriptionTextRef = useRef<HTMLTextAreaElement | null>(null)
@@ -401,16 +406,120 @@ function App() {
     pendingIds: new Set(),
     retryCounts: new Map(),
     lastSuccessAt: 0,
-    lastMissingKeyWarnAt: 0,
   })
   const liveRefreshInFlightRef = useRef(false)
   const retentionInFlightRef = useRef(false)
   const lastRetentionAtRef = useRef(0)
   const lastRetentionSessionIdRef = useRef<string | null>(null)
   const lastRetentionChunkCountRef = useRef(0)
+  const lastGroqKeyRef = useRef<string | null>(null)
 
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
+  const transcriptionMode = settings?.transcriptionMode ?? 'disabled'
+  const isTranscriptionEnabled = transcriptionMode === 'enabled'
+  const hasGroqKey = Boolean(settings?.groqApiKey?.trim())
+  const transcriptionBlockReason = useMemo(() => {
+    if (!isTranscriptionEnabled) {
+      return 'Transcription is disabled. Enable it in Settings to start.'
+    }
+    if (!hasGroqKey) {
+      return 'Groq API key missing. Add it in Settings to enable transcription.'
+    }
+    if (transcriptionKeyStatus === 'invalid') {
+      return transcriptionKeyError ?? 'Groq API key validation failed. Retry validation in Settings.'
+    }
+    if (transcriptionKeyStatus === 'validating') {
+      return 'Validating Groq API key...'
+    }
+    if (transcriptionKeyStatus === 'unchecked') {
+      return 'Groq API key not validated yet. Validate it in Settings.'
+    }
+    return null
+  }, [hasGroqKey, isTranscriptionEnabled, transcriptionKeyError, transcriptionKeyStatus])
+  const canTranscribe = transcriptionBlockReason === null
+  const shouldShowTranscriptionOnboarding = Boolean(settings && !settings.transcriptionOnboardingDismissed && !hasGroqKey)
+  const transcriptionStatusLabel = !isTranscriptionEnabled
+    ? 'Disabled'
+    : canTranscribe
+      ? 'Enabled'
+      : transcriptionKeyStatus === 'invalid'
+        ? 'Enabled (invalid key)'
+        : transcriptionKeyStatus === 'validating'
+          ? 'Enabled (validating)'
+          : !hasGroqKey
+            ? 'Enabled (missing key)'
+            : 'Enabled (needs validation)'
+  const transcriptionStatusClass = !isTranscriptionEnabled ? 'is-muted' : canTranscribe ? 'is-good' : 'is-warn'
+  const transcriptionKeyStatusLabel = !hasGroqKey
+    ? 'Missing'
+    : transcriptionKeyStatus === 'valid'
+      ? 'Valid'
+      : transcriptionKeyStatus === 'validating'
+        ? 'Validating'
+        : transcriptionKeyStatus === 'invalid'
+          ? 'Invalid'
+          : 'Not checked'
+  const transcriptionKeyStatusClass =
+    transcriptionKeyStatus === 'valid'
+      ? 'is-good'
+      : transcriptionKeyStatus === 'validating'
+        ? 'is-warn'
+        : transcriptionKeyStatus === 'invalid'
+          ? 'is-bad'
+          : 'is-muted'
+
+  const runGroqKeyValidation = useCallback(async () => {
+    const apiKey = settings?.groqApiKey?.trim() ?? ''
+    if (!apiKey) {
+      setTranscriptionKeyStatus('missing')
+      setTranscriptionKeyError(null)
+      return false
+    }
+    setTranscriptionKeyStatus('validating')
+    setTranscriptionKeyError(null)
+    try {
+      const result = await validateGroqApiKey(apiKey)
+      if (result.ok) {
+        setTranscriptionKeyStatus('valid')
+        setTranscriptionKeyError(null)
+        return true
+      }
+      setTranscriptionKeyStatus('invalid')
+      setTranscriptionKeyError(result.message ?? 'Groq API key validation failed.')
+      return false
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setTranscriptionKeyStatus('invalid')
+      setTranscriptionKeyError(message)
+      return false
+    }
+  }, [settings?.groqApiKey])
+
+  useEffect(() => {
+    const apiKey = settings?.groqApiKey?.trim() ?? ''
+    if (!apiKey) {
+      lastGroqKeyRef.current = null
+      setTranscriptionKeyStatus('missing')
+      setTranscriptionKeyError(null)
+      return
+    }
+    if (lastGroqKeyRef.current !== apiKey) {
+      lastGroqKeyRef.current = apiKey
+      setTranscriptionKeyStatus('unchecked')
+      setTranscriptionKeyError(null)
+    }
+  }, [settings?.groqApiKey])
+
+  useEffect(() => {
+    if (!isTranscriptionEnabled || !hasGroqKey) {
+      return
+    }
+    if (transcriptionKeyStatus !== 'unchecked') {
+      return
+    }
+    void runGroqKeyValidation()
+  }, [hasGroqKey, isTranscriptionEnabled, runGroqKeyValidation, transcriptionKeyStatus])
   const liveTranscriptionLines = useMemo(() => {
     const texts = liveSnipRecords.map((snip) => getSnipTranscriptionText(snip)).filter((text) => text.length > 0)
     if (texts.length === 0) {
@@ -1454,19 +1563,10 @@ function App() {
       if (updateUi && snipTranscriptionState[snip.id] && !ignoreBusy) {
         return { ok: false }
       }
-      const apiKey = settings?.groqApiKey?.trim() ?? ''
-      if (!apiKey) {
-        const message = 'Groq API key missing. Add it in Settings before retrying.'
-        await logWarn('Snip transcription blocked (missing key)', {
-          sessionId: session.id,
-          snipId: snip.id,
-        })
-        const updated = await manifestService.updateSnipTranscription(snip.id, { transcriptionError: message })
-        if (updateUi && updated) {
-          setSnipRecords((prev) => prev.map((record) => (record.id === updated.id ? updated : record)))
-        }
-        return { ok: false, error: message }
+      if (transcriptionBlockReason) {
+        return { ok: false, error: transcriptionBlockReason }
       }
+      const apiKey = settings?.groqApiKey?.trim() ?? ''
 
       if (updateUi) {
         setSnipTranscriptionState((prev) => ({ ...prev, [snip.id]: true }))
@@ -1550,6 +1650,7 @@ function App() {
     [
       refreshTranscriptionPreviewForSession,
       resolveSnipSlice,
+      transcriptionBlockReason,
       settings?.groqApiKey,
       isSnipAudioPurged,
       snipTranscriptionState,
@@ -1564,7 +1665,6 @@ function App() {
     queue.pendingIds.clear()
     queue.retryCounts.clear()
     queue.lastSuccessAt = 0
-    queue.lastMissingKeyWarnAt = 0
   }, [])
 
   const runLiveTranscriptionQueue = useCallback(
@@ -1576,6 +1676,12 @@ function App() {
       queue.active = true
       try {
         while (queue.pending.length > 0) {
+          if (!canTranscribe) {
+            queue.pending = []
+            queue.pendingIds.clear()
+            queue.retryCounts.clear()
+            break
+          }
           const entry = queue.pending.shift()
           if (!entry) {
             break
@@ -1617,7 +1723,7 @@ function App() {
         queue.active = false
       }
     },
-    [selectedRecording?.id, transcribeSnip],
+    [canTranscribe, selectedRecording?.id, transcribeSnip],
   )
 
   const enqueueLiveTranscriptions = useCallback(
@@ -1627,14 +1733,7 @@ function App() {
         resetLiveTranscriptionQueue(session.id)
       }
 
-      const apiKey = settings?.groqApiKey?.trim() ?? ''
-      if (!apiKey) {
-        if (Date.now() - queue.lastMissingKeyWarnAt > 60_000) {
-          queue.lastMissingKeyWarnAt = Date.now()
-          void logWarn('Live transcription blocked (missing key)', {
-            sessionId: session.id,
-          })
-        }
+      if (!canTranscribe) {
         return
       }
 
@@ -1665,7 +1764,7 @@ function App() {
         void runLiveTranscriptionQueue(session)
       }
     },
-    [isSnipAudioPurged, resetLiveTranscriptionQueue, runLiveTranscriptionQueue, settings?.groqApiKey],
+    [canTranscribe, isSnipAudioPurged, resetLiveTranscriptionQueue, runLiveTranscriptionQueue],
   )
 
   useEffect(() => {
@@ -1673,6 +1772,12 @@ function App() {
       resetLiveTranscriptionQueue(null)
     }
   }, [captureState.state, resetLiveTranscriptionQueue])
+
+  useEffect(() => {
+    if (!canTranscribe) {
+      resetLiveTranscriptionQueue(null)
+    }
+  }, [canTranscribe, resetLiveTranscriptionQueue])
 
   useEffect(() => {
     if (!captureState.sessionId || captureState.state !== 'recording') {
@@ -1738,13 +1843,25 @@ function App() {
       if (isSnipAudioPurged(snip)) {
         return
       }
+      if (!canTranscribe) {
+        if (transcriptionBlockReason) {
+          setErrorMessage(transcriptionBlockReason)
+        }
+        return
+      }
       await transcribeSnip({ session: selectedRecording, snip, updateUi: true, force: true })
     },
-    [isSnipAudioPurged, selectedRecording, transcribeSnip],
+    [canTranscribe, isSnipAudioPurged, selectedRecording, transcriptionBlockReason, transcribeSnip],
   )
 
   const handleRetryAllTranscriptions = useCallback(async () => {
     if (!selectedRecording || isBulkTranscribing) {
+      return
+    }
+    if (!canTranscribe) {
+      if (transcriptionBlockReason) {
+        setErrorMessage(transcriptionBlockReason)
+      }
       return
     }
     const sessionId = selectedRecording.id
@@ -1776,11 +1893,17 @@ function App() {
         return next
       })
     }
-  }, [isBulkTranscribing, selectSnipsForRetry, selectedRecording, transcribeSnip])
+  }, [canTranscribe, isBulkTranscribing, selectSnipsForRetry, selectedRecording, transcriptionBlockReason, transcribeSnip])
 
   const handleRetryTranscriptionsForSession = useCallback(
     async (sessionId: string) => {
       if (retryingSessionIds[sessionId]) {
+        return
+      }
+      if (!canTranscribe) {
+        if (transcriptionBlockReason) {
+          setErrorMessage(transcriptionBlockReason)
+        }
         return
       }
       setRetryingSessionIds((prev) => ({ ...prev, [sessionId]: true }))
@@ -1827,7 +1950,7 @@ function App() {
         })
       }
     },
-    [retryingSessionIds, selectSnipsForRetry, selectedRecording?.id, transcribeSnip],
+    [canTranscribe, retryingSessionIds, selectSnipsForRetry, selectedRecording?.id, transcriptionBlockReason, transcribeSnip],
   )
 
   const autoTranscribeSnipsForSession = useCallback(
@@ -1847,27 +1970,7 @@ function App() {
         if (snips.length === 0) {
           return
         }
-        const apiKey = settings?.groqApiKey?.trim() ?? ''
-        if (!apiKey) {
-          const message = 'Groq API key missing. Add it in Settings before retrying.'
-          await logWarn('Auto transcription blocked (missing key)', {
-            sessionId,
-            snipCount: snips.length,
-          })
-          const updatedSnips: SnipRecord[] = []
-          for (const snip of snips) {
-            if (getSnipTranscriptionText(snip)) continue
-            if (isSnipAudioPurged(snip)) continue
-            const updated = await manifestService.updateSnipTranscription(snip.id, { transcriptionError: message })
-            if (updated) {
-              updatedSnips.push(updated)
-            }
-          }
-          if (selectedRecording?.id === sessionId && updatedSnips.length > 0) {
-            setSnipRecords((prev) =>
-              prev.map((record) => updatedSnips.find((item) => item.id === record.id) ?? record),
-            )
-          }
+        if (!canTranscribe) {
           return
         }
 
@@ -1909,7 +2012,7 @@ function App() {
         })
       }
     },
-    [isSnipAudioPurged, refreshTranscriptionPreviewForSession, selectedRecording?.id, settings?.groqApiKey, transcribeSnip],
+    [canTranscribe, isSnipAudioPurged, refreshTranscriptionPreviewForSession, selectedRecording?.id, transcribeSnip],
   )
 
   const refreshAndClearErrors = useCallback(async () => {
@@ -1942,7 +2045,7 @@ function App() {
         chunkCount: 0,
         durationMs: 0,
         mimeType: null,
-        notes: 'Transcription pending…',
+        notes: isTranscriptionEnabled ? 'Transcription pending...' : 'Recording in progress.',
         timingStatus: 'unverified',
       })
       await captureController.start({
@@ -1974,7 +2077,7 @@ function App() {
       await loadSessions()
       setErrorMessage(error instanceof Error ? error.message : String(error))
     }
-  }, [captureState.state, loadSessions])
+  }, [captureState.state, isTranscriptionEnabled, loadSessions])
 
   const stopRecording = useCallback(async () => {
     if (captureState.state !== 'recording') return
@@ -3119,8 +3222,16 @@ function App() {
     await settingsStore.set({ developerMode: enabled })
   }
 
+  const handleTranscriptionModeChange = async (mode: RecorderSettings['transcriptionMode']) => {
+    await settingsStore.set({ transcriptionMode: mode })
+  }
+
   const handleGroqKeyChange = async (value: string) => {
     await settingsStore.set({ groqApiKey: value })
+  }
+
+  const handleDismissTranscriptionOnboarding = async () => {
+    await settingsStore.set({ transcriptionOnboardingDismissed: true })
   }
 
   const handleChunkPlayToggle = useCallback(
@@ -3428,7 +3539,7 @@ function App() {
     captureState.state === 'recording' ? Math.max(captureState.bytesBuffered, estimatedBytes) : captureState.bytesBuffered
   const isDetailRecordingActive =
     selectedRecording?.id === captureState.sessionId && captureState.state === 'recording'
-  const shouldShowLiveTranscription = isTranscriptionMounted && !selectedRecordingId
+  const shouldShowLiveTranscription = isTranscriptionMounted && !selectedRecordingId && canTranscribe
   const displayDurationMs =
     isDetailRecordingActive
       ? capturedAudioMs
@@ -3598,6 +3709,37 @@ function App() {
 
       <main className="content-grid">
         <aside className="controls-panel" aria-label="Capture controls">
+          {shouldShowTranscriptionOnboarding ? (
+            <div className="onboarding-card" role="status">
+              <div className="onboarding-header">
+                <h3>First time here? Transcription is optional.</h3>
+                <button type="button" onClick={() => void handleDismissTranscriptionOnboarding()}>
+                  Dismiss
+                </button>
+              </div>
+              <p>
+                Recording works out of the box. If you want automatic transcripts, add a Groq API key and enable
+                transcription.
+              </p>
+              <ol>
+                <li>Open Settings and switch transcription to Enabled.</li>
+                <li>Paste a Groq API key from your console.</li>
+                <li>Validate the key to start transcribing new snips.</li>
+              </ol>
+              <p className="onboarding-disclaimer">
+                Transcription runs on Groq's servers and may incur usage costs based on audio length. This app does not
+                estimate charges or provide billing support.
+              </p>
+              <div className="onboarding-actions">
+                <button type="button" onClick={() => setIsSettingsOpen(true)}>
+                  Open Settings
+                </button>
+                <a href={GROQ_KEY_URL} target="_blank" rel="noreferrer">
+                  Get Groq API key
+                </a>
+              </div>
+            </div>
+          ) : null}
           <div className="controls-card">
             <h2>Capture</h2>
             <button
@@ -3651,12 +3793,12 @@ function App() {
               const purgedSnips = transcriptionCounts?.purgedCount ?? 0
               const retryableSnips = transcriptionCounts?.retryableCount ?? Math.max(0, totalSnips - purgedSnips)
               const hasTranscript = transcribedCount > 0
-              const hasTranscriptionError = transcriptionErrorCount > 0
+              const hasTranscriptionError = canTranscribe && transcriptionErrorCount > 0
               const hasSnips = totalSnips > 0 || hasTranscriptionError
               const errorNotes = session.status === 'error' ? session.notes ?? 'Recording error.' : ''
               const isRetrying = Boolean(retryingSessionIds[session.id])
-              const isTranscribing = !isActiveRecording && Boolean(transcriptionInProgress[session.id] || isRetrying)
-              const canRetryTranscription = retryableSnips > 0
+              const isTranscribing = canTranscribe && !isActiveRecording && Boolean(transcriptionInProgress[session.id] || isRetrying)
+              const canRetryTranscription = canTranscribe && retryableSnips > 0
               const displayStatus: SessionDisplayStatus =
                 session.status === 'error'
                   ? 'error'
@@ -3696,7 +3838,11 @@ function App() {
                         ? hasTranscript
                           ? `Partially transcribed (${transcribedCount}/${totalSnips})`
                           : 'Transcription failed for all snips.'
-                        : 'Transcription pending...'
+                        : !canTranscribe
+                          ? isTranscriptionEnabled
+                            ? 'Recording complete. Transcription paused.'
+                            : 'Recording complete.'
+                          : 'Transcription pending...'
               return (
                 <li key={session.id}>
                   <article
@@ -3965,14 +4111,34 @@ function App() {
                     <button
                       type="button"
                       className="detail-transcription-retry"
-                      onClick={() => void handleRetryAllTranscriptions()}
-                      disabled={isBulkTranscribing || snipRecords.length === 0 || snipTranscriptionSummary.retryableCount === 0}
+                      onClick={() => {
+                        if (!canTranscribe) {
+                          setIsSettingsOpen(true)
+                          return
+                        }
+                        void handleRetryAllTranscriptions()
+                      }}
+                      disabled={
+                        isBulkTranscribing || (canTranscribe && (snipRecords.length === 0 || snipTranscriptionSummary.retryableCount === 0))
+                      }
                     >
-                      {isBulkTranscribing ? 'Retrying…' : 'Retry TX'}
+                      {!canTranscribe ? 'Open Settings' : isBulkTranscribing ? 'Retrying…' : 'Retry TX'}
                     </button>
                   </div>
+                  {!canTranscribe ? (
+                    <div className="detail-transcription-blocked" role="status">
+                      <p>{transcriptionBlockReason ?? 'Transcription is unavailable right now.'}</p>
+                      <button type="button" onClick={() => setIsSettingsOpen(true)}>
+                        Open Settings
+                      </button>
+                    </div>
+                  ) : null}
                   {snipRecords.length === 0 ? (
                     <p className="detail-transcription-placeholder">No snips recorded yet.</p>
+                  ) : !canTranscribe ? (
+                    <p className="detail-transcription-placeholder">
+                      Transcription is paused. Enable it in Settings to start sending snips to Groq.
+                    </p>
                   ) : snipTranscriptionSummary.transcribedCount === 0 ? (
                     <p className="detail-transcription-placeholder">
                       No snip transcriptions yet. Open the snip list to retry each segment.
@@ -3988,12 +4154,12 @@ function App() {
                       rows={Math.min(8, Math.max(3, Math.ceil(snipTranscriptionSummary.text.length / 90)))}
                     />
                   )}
-                  {snipRecords.length > 0 ? (
+                  {snipRecords.length > 0 && (canTranscribe || snipTranscriptionSummary.transcribedCount > 0) ? (
                     <p className="detail-transcription-meta">
                       Transcribed {snipTranscriptionSummary.transcribedCount} of {snipTranscriptionSummary.total} snips.
                     </p>
                   ) : null}
-                  {snipTranscriptionSummary.errorCount > 0 ? (
+                  {canTranscribe && snipTranscriptionSummary.errorCount > 0 ? (
                     <p className="detail-transcription-error" role="alert">
                       {snipTranscriptionSummary.errorCount} snip transcription error
                       {snipTranscriptionSummary.errorCount === 1 ? '' : 's'} recorded. See the snip list for details.
@@ -4615,19 +4781,29 @@ function App() {
                                 : `Play snip ${snipNumber}`
                             const transcribeLabel = isPurged
                               ? `Snip ${snipNumber} audio purged`
-                              : isTranscribing
-                                ? `Transcribing snip ${snipNumber}`
-                                : hasTranscript
-                                  ? `Retry transcription for snip ${snipNumber}`
-                                  : `Transcribe snip ${snipNumber}`
+                              : !canTranscribe
+                                ? `Transcription paused. Open Settings to enable snip ${snipNumber}.`
+                                : isTranscribing
+                                  ? `Transcribing snip ${snipNumber}`
+                                  : hasTranscript
+                                    ? `Retry transcription for snip ${snipNumber}`
+                                    : `Transcribe snip ${snipNumber}`
                             const statusLabel = isPurged
                               ? 'Audio purged'
-                              : isTranscribing && !isDetailRecordingActive
-                                ? 'Transcribing…'
-                                : hasTranscript
-                                  ? 'Transcribed'
-                                  : 'Pending'
-                            const statusClass = isPurged ? 'is-purged' : hasTranscript ? 'is-ready' : 'is-pending'
+                              : !canTranscribe
+                                ? 'Paused'
+                                : isTranscribing && !isDetailRecordingActive
+                                  ? 'Transcribing…'
+                                  : hasTranscript
+                                    ? 'Transcribed'
+                                    : 'Pending'
+                            const statusClass = isPurged
+                              ? 'is-purged'
+                              : hasTranscript
+                                ? 'is-ready'
+                                : !canTranscribe
+                                  ? 'is-paused'
+                                  : 'is-pending'
                             return (
                               <li key={snipKey} className="chunk-item">
                                 <button
@@ -4662,9 +4838,9 @@ function App() {
                                   className="snip-transcribe"
                                   onClick={() => void handleSnipTranscription(snip)}
                                   aria-label={transcribeLabel}
-                                  disabled={isTranscribing || isPurged}
+                                  disabled={isTranscribing || isPurged || !canTranscribe}
                                 >
-                                  {hasTranscript ? 'Retry' : 'Tx'}
+                                  {!canTranscribe ? 'Off' : hasTranscript ? 'Retry' : 'Tx'}
                                 </button>
                                 {snipTranscript ? (
                                   <textarea
@@ -4713,42 +4889,102 @@ function App() {
             }}
           >
             <div className="settings-dialog" onClick={(event) => event.stopPropagation()}>
-            <header className="settings-header">
-              <h2 id="settings-title">Settings</h2>
-              <button type="button" className="settings-close" onClick={() => setIsSettingsOpen(false)}>
-                Close
-              </button>
-            </header>
-            <div className="settings-body">
-              <label className="settings-field">
-                <span>Groq API key</span>
-                <input
-                  type="text"
-                  value={settings?.groqApiKey ?? ''}
-                  onChange={(event) => void handleGroqKeyChange(event.target.value)}
-                  placeholder="sk-…"
-                  autoComplete="off"
-                />
-              </label>
-              <label className="settings-field settings-checkbox">
-                <input
-                  type="checkbox"
-                  checked={developerMode}
-                  onChange={(event) => void handleDeveloperToggle(event.target.checked)}
-                />
-                <span>Enable developer mode</span>
-              </label>
-              <label className="settings-field">
-                <span>Storage cap (MB)</span>
-                <input
-                  type="number"
-                  min={1}
-                  value={Math.round(storageLimitBytes / MB)}
-                  onChange={(event) => void handleStorageLimitChange(event.target.value)}
-                />
-              </label>
+              <header className="settings-header">
+                <h2 id="settings-title">Settings</h2>
+                <button type="button" className="settings-close" onClick={() => setIsSettingsOpen(false)}>
+                  Close
+                </button>
+              </header>
+              <div className="settings-body">
+                <section className="settings-section" aria-labelledby="settings-transcription-title">
+                  <div className="settings-section-header">
+                    <h3 id="settings-transcription-title">Transcription</h3>
+                    <span className={`settings-pill ${transcriptionStatusClass}`}>{transcriptionStatusLabel}</span>
+                  </div>
+                  <p className="settings-hint">
+                    Transcription is optional. Recordings work without a key, and you can enable it any time.
+                  </p>
+                  <div className="settings-mode-toggle" role="group" aria-label="Transcription mode">
+                    <button
+                      type="button"
+                      className={transcriptionMode === 'enabled' ? 'is-selected' : ''}
+                      onClick={() => void handleTranscriptionModeChange('enabled')}
+                    >
+                      Enabled
+                    </button>
+                    <button
+                      type="button"
+                      className={transcriptionMode === 'disabled' ? 'is-selected' : ''}
+                      onClick={() => void handleTranscriptionModeChange('disabled')}
+                    >
+                      Disabled
+                    </button>
+                  </div>
+                  <label className="settings-field">
+                    <span>Groq API key</span>
+                    <input
+                      type="text"
+                      value={settings?.groqApiKey ?? ''}
+                      onChange={(event) => void handleGroqKeyChange(event.target.value)}
+                      placeholder="sk-…"
+                      autoComplete="off"
+                    />
+                  </label>
+                  <div className="settings-validation">
+                    <span className={`settings-validation-status ${transcriptionKeyStatusClass}`}>
+                      Key status: {transcriptionKeyStatusLabel}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void runGroqKeyValidation()}
+                      disabled={!hasGroqKey || transcriptionKeyStatus === 'validating'}
+                    >
+                      {transcriptionKeyStatus === 'validating'
+                        ? 'Validating...'
+                        : transcriptionKeyStatus === 'invalid'
+                          ? 'Retry validation'
+                          : 'Validate key'}
+                    </button>
+                  </div>
+                  {transcriptionKeyError ? (
+                    <p className="settings-error" role="alert">
+                      {transcriptionKeyError}
+                    </p>
+                  ) : null}
+                  <p className="settings-disclaimer">
+                    Need a key?{' '}
+                    <a href={GROQ_KEY_URL} target="_blank" rel="noreferrer">
+                      Create one in Groq Console
+                    </a>
+                    . Usage may incur costs based on audio length. Check{' '}
+                    <a href={GROQ_PRICING_URL} target="_blank" rel="noreferrer">
+                      Groq pricing
+                    </a>
+                    . This app does not estimate charges.
+                  </p>
+                </section>
+                <section className="settings-section" aria-labelledby="settings-app-title">
+                  <h3 id="settings-app-title">App</h3>
+                  <label className="settings-field settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={developerMode}
+                      onChange={(event) => void handleDeveloperToggle(event.target.checked)}
+                    />
+                    <span>Enable developer mode</span>
+                  </label>
+                  <label className="settings-field">
+                    <span>Storage cap (MB)</span>
+                    <input
+                      type="number"
+                      min={1}
+                      value={Math.round(storageLimitBytes / MB)}
+                      onChange={(event) => void handleStorageLimitChange(event.target.value)}
+                    />
+                  </label>
+                </section>
+              </div>
             </div>
-          </div>
         </div>
       ) : null}
 

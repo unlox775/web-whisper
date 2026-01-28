@@ -1,0 +1,5 @@
+See if you can complete this roadmap item:
+
+Transcription onboarding and mode handling
+
+Make it really nice for first time people using the app

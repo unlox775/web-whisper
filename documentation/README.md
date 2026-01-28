@@ -27,13 +27,12 @@ This folder contains the living documentation for Web Whisper. It is kept curren
 | Chunk persistence | Ready | Durable local storage with retention enforcement. |
 | Recording playback | Ready | Full session playback and chunk/snip playback. |
 | Analysis + snip segmentation | In progress | Heuristics tuned iteratively from volume profiles. |
-| Groq transcription | In progress | Snip-based transcription with API key required. |
+| Groq transcription | Ready | Mode handling, key validation, and onboarding copy in place. |
 | Developer diagnostics | Ready | IndexedDB tables, logs, and doctor tests. |
 | Telemetry + uploads | Not implemented | No uploader or telemetry pipeline yet. |
 | Spec + prompt logging | Ready | `documentation/spec/` is the canonical log. |
 
 ## Current Focus
-- Clarify transcription onboarding, key validation, and disabled-mode UX.
 - Add clipboard-first transcription UX for completed sessions.
 - Run a cross-browser compatibility pass and document blockers.
 
@@ -41,6 +40,6 @@ Known issues live in `documentation/knownissues.md`.
 
 ## Upcoming Milestones
 1. iOS native wrapper for background recording reliability.
-2. Full-session audio download and transcription onboarding polish.
+2. Full-session audio download and clipboard-first transcription UX.
 3. Clipboard-first transcription UX for faster copy.
 4. Cross-browser test matrix with targeted fixes.
