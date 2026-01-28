@@ -29,6 +29,7 @@ export interface ChunkRecord {
   createdAt: number
   verifiedAudioMsec: number | null
   timingStatus?: ChunkTimingStatus
+  audioPurgedAt?: number | null
 }
 
 export interface StoredChunk extends ChunkRecord {
@@ -66,6 +67,7 @@ export type SnipRecord = {
   updatedAt: number
   transcription?: SnipTranscription | null
   transcriptionError?: string | null
+  audioPurgedAt?: number | null
 }
 
 export type SnipSeed = Pick<SnipRecord, 'index' | 'startMs' | 'endMs' | 'durationMs' | 'breakReason' | 'boundaryIndex'>
@@ -79,6 +81,16 @@ export interface SessionTimingVerificationResult {
   baseStartMs: number | null
   verifiedChunkCount: number
   session?: SessionRecord | null
+}
+
+export interface StorageRetentionResult {
+  limitBytes: number
+  beforeBytes: number
+  afterBytes: number
+  purgedChunkIds: string[]
+  purgedSnipIds: string[]
+  updatedSessionIds: string[]
+  ranAt: number
 }
 
 type StoredChunkVolumeFrame = number | { normalized?: number; rms?: number }
@@ -148,6 +160,7 @@ const normalizeSnipRecord = (record: SnipRecord): SnipRecord => {
   const startMs = Number.isFinite(record.startMs) ? record.startMs : 0
   const endMs = Number.isFinite(record.endMs) ? record.endMs : startMs
   const durationMs = Number.isFinite(record.durationMs) ? record.durationMs : Math.max(0, endMs - startMs)
+  const audioPurgedAt = typeof record.audioPurgedAt === 'number' ? record.audioPurgedAt : null
   const transcription = record.transcription
     ? {
         ...record.transcription,
@@ -166,6 +179,7 @@ const normalizeSnipRecord = (record: SnipRecord): SnipRecord => {
     boundaryIndex: typeof record.boundaryIndex === 'number' ? record.boundaryIndex : null,
     transcription: transcription ?? null,
     transcriptionError: record.transcriptionError ?? null,
+    audioPurgedAt,
   }
 }
 
@@ -280,6 +294,7 @@ export interface ManifestService {
     deleteSession(sessionId: string): Promise<void>
     purgeLegacyMp4Sessions(): Promise<{ deletedSessions: number }>
     storageTotals(): Promise<{ totalBytes: number }>
+    applyRetentionPolicy(options: { limitBytes: number; now?: number }): Promise<StorageRetentionResult>
     verifySessionChunkTimings(sessionId: string): Promise<SessionTimingVerificationResult>
     reconcileDanglingSessions(): Promise<void>
   getChunksForInspection(): Promise<Array<Record<string, unknown>>>
@@ -516,6 +531,7 @@ class IndexedDBManifestService implements ManifestService {
         updatedAt: now,
         transcription: null,
         transcriptionError: null,
+        audioPurgedAt: null,
       }
       await store.put(record)
       existingByIndex.set(record.index, record)
@@ -591,6 +607,245 @@ class IndexedDBManifestService implements ManifestService {
       cursor = await cursor.continue()
     }
     return { totalBytes }
+  }
+
+  async applyRetentionPolicy(options: { limitBytes: number; now?: number }): Promise<StorageRetentionResult> {
+    const now = typeof options.now === 'number' ? options.now : Date.now()
+    const db = await getDB()
+    const tx = db.transaction(['chunks', 'snips', 'sessions'], 'readwrite')
+    const chunkStore = tx.objectStore('chunks')
+    const snipStore = tx.objectStore('snips')
+    const sessionStore = tx.objectStore('sessions')
+
+    const [chunksRaw, snipsRaw, sessionsRaw] = await Promise.all([
+      chunkStore.getAll(),
+      snipStore.getAll(),
+      sessionStore.getAll(),
+    ])
+
+    const chunks = chunksRaw.map((chunk) => ({
+      ...chunk,
+      timingStatus: chunk.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+    }))
+    const snips = snipsRaw.map((record) => normalizeSnipRecord(record))
+    const sessions = sessionsRaw.map((session) => ({
+      ...session,
+      timingStatus: session.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+    }))
+
+    const beforeBytes = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+    let totalBytes = beforeBytes
+
+    const limitBytes = Number.isFinite(options.limitBytes) ? Math.max(0, options.limitBytes) : beforeBytes
+    if (totalBytes <= limitBytes) {
+      await tx.done
+      return {
+        limitBytes,
+        beforeBytes,
+        afterBytes: totalBytes,
+        purgedChunkIds: [],
+        purgedSnipIds: [],
+        updatedSessionIds: [],
+        ranAt: now,
+      }
+    }
+
+    const sessionById = new Map(sessions.map((session) => [session.id, session]))
+    const sessionTotals = new Map<string, number>()
+    chunks.forEach((chunk) => {
+      sessionTotals.set(chunk.sessionId, (sessionTotals.get(chunk.sessionId) ?? 0) + chunk.byteLength)
+    })
+
+    const snipsBySession = new Map<string, SnipRecord[]>()
+    snips.forEach((snip) => {
+      const existing = snipsBySession.get(snip.sessionId)
+      if (existing) {
+        existing.push(snip)
+      } else {
+        snipsBySession.set(snip.sessionId, [snip])
+      }
+    })
+    snipsBySession.forEach((items) => items.sort((a, b) => a.startMs - b.startMs))
+
+    const ABSOLUTE_THRESHOLD_MS = 1_000_000_000_000
+    const earliestChunkStartBySession = new Map<string, number>()
+    chunks.forEach((chunk) => {
+      const current = earliestChunkStartBySession.get(chunk.sessionId)
+      if (current === undefined || chunk.startMs < current) {
+        earliestChunkStartBySession.set(chunk.sessionId, chunk.startMs)
+      }
+    })
+    const snipAbsoluteBySession = new Map<string, boolean>()
+    snipsBySession.forEach((items, sessionId) => {
+      snipAbsoluteBySession.set(
+        sessionId,
+        items.some((snip) => snip.startMs > ABSOLUTE_THRESHOLD_MS || snip.endMs > ABSOLUTE_THRESHOLD_MS),
+      )
+    })
+    const sessionTimingById = new Map<
+      string,
+      { baseStartMs: number; baseIsAbsolute: boolean; snipIsAbsolute: boolean }
+    >()
+    sessions.forEach((session) => {
+      const baseCandidate =
+        Number.isFinite(session.startedAt) ? Math.round(session.startedAt) : (earliestChunkStartBySession.get(session.id) ?? 0)
+      const baseStartMs = Number.isFinite(baseCandidate) ? baseCandidate : 0
+      sessionTimingById.set(session.id, {
+        baseStartMs,
+        baseIsAbsolute: baseStartMs > ABSOLUTE_THRESHOLD_MS,
+        snipIsAbsolute: snipAbsoluteBySession.get(session.id) ?? false,
+      })
+    })
+
+    const COVERAGE_EPSILON_MS = 4
+    const isHeaderChunk = (chunk: StoredChunk, session: SessionRecord | null): boolean => {
+      const mimeType = chunk.blob.type || session?.mimeType || ''
+      if (!/mp4|m4a/i.test(mimeType)) {
+        return false
+      }
+      const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
+      return chunk.seq === 0 && (durationMs <= 10 || chunk.byteLength < 4096)
+    }
+    const normalizeChunkRange = (
+      chunk: StoredChunk,
+      timing: { baseStartMs: number; baseIsAbsolute: boolean; snipIsAbsolute: boolean },
+    ) => {
+      const { baseStartMs, baseIsAbsolute, snipIsAbsolute } = timing
+      const chunkIsAbsolute = baseIsAbsolute && chunk.startMs > ABSOLUTE_THRESHOLD_MS
+      const startMs = snipIsAbsolute
+        ? chunkIsAbsolute
+          ? chunk.startMs
+          : baseIsAbsolute
+            ? baseStartMs + chunk.startMs
+            : chunk.startMs
+        : chunkIsAbsolute
+          ? chunk.startMs - baseStartMs
+          : chunk.startMs
+      const endMs = snipIsAbsolute
+        ? chunkIsAbsolute
+          ? chunk.endMs
+          : baseIsAbsolute
+            ? baseStartMs + chunk.endMs
+            : chunk.endMs
+        : chunkIsAbsolute
+          ? chunk.endMs - baseStartMs
+          : chunk.endMs
+      const safeStart = Number.isFinite(startMs) ? startMs : 0
+      const safeEnd = Number.isFinite(endMs) ? endMs : safeStart
+      return {
+        startMs: snipIsAbsolute ? safeStart : Math.max(0, safeStart),
+        endMs: snipIsAbsolute ? safeEnd : Math.max(Math.max(0, safeStart), safeEnd),
+      }
+    }
+    const getOverlappingSnips = (
+      snipsForSession: SnipRecord[] | undefined,
+      chunkStartMs: number,
+      chunkEndMs: number,
+    ): SnipRecord[] => {
+      if (!snipsForSession || snipsForSession.length === 0) return []
+      const overlapStart = chunkStartMs + COVERAGE_EPSILON_MS
+      const overlapEnd = chunkEndMs - COVERAGE_EPSILON_MS
+      if (overlapEnd <= overlapStart) {
+        return []
+      }
+      const overlaps: SnipRecord[] = []
+      for (const snip of snipsForSession) {
+        if (snip.endMs <= overlapStart) {
+          continue
+        }
+        if (snip.startMs >= overlapEnd) {
+          break
+        }
+        overlaps.push(snip)
+      }
+      return overlaps
+    }
+
+    const eligible: Array<{ chunk: StoredChunk; snipIds: string[]; session: SessionRecord | null }> = []
+    for (const chunk of chunks) {
+      if (chunk.byteLength <= 0 || chunk.blob.size <= 0) continue
+      const session = sessionById.get(chunk.sessionId) ?? null
+      if (isHeaderChunk(chunk, session)) continue
+      const snipsForSession = snipsBySession.get(chunk.sessionId)
+      const timing = sessionTimingById.get(chunk.sessionId) ?? {
+        baseStartMs: 0,
+        baseIsAbsolute: false,
+        snipIsAbsolute: false,
+      }
+      const normalized = normalizeChunkRange(chunk, timing)
+      const overlaps = getOverlappingSnips(snipsForSession, normalized.startMs, normalized.endMs)
+      if (overlaps.length === 0) continue
+      if (!overlaps.every((snip) => snip.transcription && !snip.transcriptionError)) {
+        continue
+      }
+      eligible.push({ chunk, snipIds: overlaps.map((snip) => snip.id), session })
+    }
+
+    eligible.sort((a, b) => {
+      const aKey = a.chunk.createdAt ?? a.chunk.startMs
+      const bKey = b.chunk.createdAt ?? b.chunk.startMs
+      if (aKey !== bKey) return aKey - bKey
+      return a.chunk.seq - b.chunk.seq
+    })
+
+    const purgedChunkIds: string[] = []
+    const purgedSnipIds = new Set<string>()
+    const updatedSessionIds = new Set<string>()
+
+    for (const entry of eligible) {
+      if (totalBytes <= limitBytes) break
+      const chunk = entry.chunk
+      const removedBytes = chunk.byteLength
+      if (removedBytes <= 0) continue
+      const mimeType = chunk.blob.type || entry.session?.mimeType || ''
+      const updatedChunk: StoredChunk = {
+        ...chunk,
+        blob: new Blob([], { type: mimeType }),
+        byteLength: 0,
+        audioPurgedAt: now,
+      }
+      await chunkStore.put(updatedChunk)
+      purgedChunkIds.push(chunk.id)
+      totalBytes = Math.max(0, totalBytes - removedBytes)
+      sessionTotals.set(chunk.sessionId, Math.max(0, (sessionTotals.get(chunk.sessionId) ?? 0) - removedBytes))
+      updatedSessionIds.add(chunk.sessionId)
+      entry.snipIds.forEach((snipId) => purgedSnipIds.add(snipId))
+    }
+
+    for (const sessionId of updatedSessionIds) {
+      const session = sessionById.get(sessionId)
+      if (!session) continue
+      const nextTotal = Math.max(0, sessionTotals.get(sessionId) ?? 0)
+      await sessionStore.put({
+        ...session,
+        totalBytes: nextTotal,
+        updatedAt: now,
+        timingStatus: session.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+      })
+    }
+
+    for (const snipId of purgedSnipIds) {
+      const existing = await snipStore.get(snipId)
+      if (!existing) continue
+      const normalized = normalizeSnipRecord(existing)
+      if (normalized.audioPurgedAt) continue
+      await snipStore.put({
+        ...normalized,
+        audioPurgedAt: now,
+        updatedAt: now,
+      })
+    }
+
+    await tx.done
+    return {
+      limitBytes,
+      beforeBytes,
+      afterBytes: totalBytes,
+      purgedChunkIds,
+      purgedSnipIds: Array.from(purgedSnipIds),
+      updatedSessionIds: Array.from(updatedSessionIds),
+      ranAt: now,
+    }
   }
 
   /**
