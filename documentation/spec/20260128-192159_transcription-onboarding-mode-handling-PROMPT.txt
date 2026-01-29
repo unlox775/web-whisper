@@ -1,0 +1,25 @@
+See if you can complete this roadmap item:
+
+Transcription onboarding and mode handling
+
+Make it really nice for first time people using the app
+
+Ok, I want to make it much more clear how insanely awesome the setup is: (1) Groq account is free no-credit card required (2) it is really easy to set up (give them the really short set up cheat sheet instructions (3) This dictation model is SO Inexpensive, they could use it all day intensely (I do and can vouch) and it will still be so little that … (4) Groq’s pay-as-you-go free tier monthly usage means that the will likely NEVeR be charged money, ever. 
+
+Yes, this is using one of the most amazing AI models a Crazy amount of value, for free
+
+And I want it to be clear and seem easy to set up
+
+We need to be more clear that Groq is a different service, Not my service, but the messaging is getting really close!
+
+One adjustment: I used it all day intensely and I have never come Close to being charged
+
+I want to make the “it’s east to set up opens a popup (with Go to Groq/ok buttons )explaining the steps to set up Groq, log into console and etc to make the API key copy it, etc. search online to make sure our Groq UI instructions are correct.
+
+Ok the enabled / disabled mode I did Not want to be a UI control, just a status. If you click on “enable” it should pop up a similar message to the dismissed-new-first-time dialogue. There should Not be a separate step to enabling transcription besides connecting a Groq API key (and it should auto save and test their value once pasted)
+
+Probably don’t need the gray text under the yellow in this view
+
+logic goof, now it is a different gray error
+
+Seems we still have a duplicate open settings button, keep the yellow

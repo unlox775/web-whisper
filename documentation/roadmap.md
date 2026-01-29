@@ -31,6 +31,7 @@ Acceptance criteria:
   "transcription failed") and remain playable.
 - Getting-started guidance explains how to obtain a Groq key and what to expect about
   costs, with a disclaimer.
+Status: Done (spec: [20260128-192159_transcription-onboarding-mode-handling.md](spec/20260128-192159_transcription-onboarding-mode-handling.md))
 
 ## 3) Full-session audio download
 Task: Add a download action for the complete session audio.
@@ -76,3 +77,4 @@ Acceptance criteria:
 
 ## Completed
 - Storage retention and automatic deletion (spec: [20260125-071411_storage-retention-policy-de1c.md](spec/20260125-071411_storage-retention-policy-de1c.md))
+- Transcription onboarding and mode handling (spec: [20260128-192159_transcription-onboarding-mode-handling.md](spec/20260128-192159_transcription-onboarding-mode-handling.md))

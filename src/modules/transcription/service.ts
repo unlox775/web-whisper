@@ -37,6 +37,12 @@ export interface TranscriptionService {
   transcribeAudio(request: TranscriptionAudioRequest): Promise<TranscriptionAudioResult>
 }
 
+export type GroqKeyValidationResult = {
+  ok: boolean
+  message?: string
+  status?: number
+}
+
 type GroqResponseWord = {
   word?: string
   text?: string
@@ -59,6 +65,7 @@ type GroqTranscriptionResponse = {
 }
 
 const GROQ_TRANSCRIPTION_URL = 'https://api.groq.com/openai/v1/audio/transcriptions'
+const GROQ_MODELS_URL = 'https://api.groq.com/openai/v1/models'
 const DEFAULT_GROQ_MODEL = 'whisper-large-v3-turbo'
 
 const normalizeSegment = (startSeconds: number | undefined, text: string | undefined): TranscriptionSegment | null => {
@@ -96,6 +103,32 @@ const extractSegments = (payload: GroqTranscriptionResponse): TranscriptionSegme
   }
 
   return segments
+}
+
+export const validateGroqApiKey = async (apiKey: string): Promise<GroqKeyValidationResult> => {
+  const trimmed = apiKey.trim()
+  if (!trimmed) {
+    return { ok: false, message: 'Groq API key missing.' }
+  }
+  const response = await fetch(GROQ_MODELS_URL, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${trimmed}`,
+    },
+  })
+  if (response.ok) {
+    return { ok: true, status: response.status }
+  }
+  let message = `Groq key validation failed (${response.status})`
+  try {
+    const payload = (await response.json()) as { error?: { message?: string } }
+    if (payload?.error?.message) {
+      message = payload.error.message
+    }
+  } catch {
+    // Ignore JSON parsing errors, keep fallback message.
+  }
+  return { ok: false, status: response.status, message }
 }
 
 class GroqTranscriptionService implements TranscriptionService {
