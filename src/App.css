@@ -422,6 +422,16 @@ body {
   gap: 0.25rem;
 }
 
+.onboarding-highlight {
+  margin: 0;
+  padding: 0.4rem 0.55rem;
+  border-radius: 0.6rem;
+  border: 1px solid rgba(94, 234, 212, 0.25);
+  background: rgba(94, 234, 212, 0.12);
+  color: #5eead4;
+  font-size: 0.82rem;
+}
+
 .onboarding-disclaimer {
   margin: 0;
   color: #94a3b8;
@@ -1721,6 +1731,15 @@ body {
   font-size: 0.78rem;
   color: #94a3b8;
   line-height: 1.4;
+}
+
+.settings-cheatsheet {
+  margin: 0;
+  padding-left: 1.2rem;
+  display: grid;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: #cbd5f5;
 }
 
 .settings-mode-toggle {

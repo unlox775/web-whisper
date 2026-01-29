@@ -3,3 +3,9 @@ See if you can complete this roadmap item:
 Transcription onboarding and mode handling
 
 Make it really nice for first time people using the app
+
+Ok, I want to make it much more clear how insanely awesome the setup is: (1) Groq account is free no-credit card required (2) it is really easy to set up (give them the really short set up cheat sheet instructions (3) This dictation model is SO Inexpensive, they could use it all day intensely (I do and can vouch) and it will still be so little that … (4) Groq’s pay-as-you-go free tier monthly usage means that the will likely NEVeR be charged money, ever. 
+
+Yes, this is using one of the most amazing AI models a Crazy amount of value, for free
+
+And I want it to be clear and seem easy to set up

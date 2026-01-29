@@ -3712,23 +3712,23 @@ function App() {
           {shouldShowTranscriptionOnboarding ? (
             <div className="onboarding-card" role="status">
               <div className="onboarding-header">
-                <h3>First time here? Transcription is optional.</h3>
+                <h3>Transcription setup is insanely easy.</h3>
                 <button type="button" onClick={() => void handleDismissTranscriptionOnboarding()}>
                   Dismiss
                 </button>
               </div>
-              <p>
-                Recording works out of the box. If you want automatic transcripts, add a Groq API key and enable
-                transcription.
+              <p>Groq accounts are free, no credit card required. Recording works out of the box.</p>
+              <p className="onboarding-highlight">
+                This uses one of the most amazing AI models. It is a crazy amount of value for free.
               </p>
               <ol>
-                <li>Open Settings and switch transcription to Enabled.</li>
-                <li>Paste a Groq API key from your console.</li>
-                <li>Validate the key to start transcribing new snips.</li>
+                <li>Create a free Groq account and copy your API key.</li>
+                <li>Open Settings and switch Transcription to Enabled.</li>
+                <li>Paste the key and click Validate.</li>
               </ol>
               <p className="onboarding-disclaimer">
-                Transcription runs on Groq's servers and may incur usage costs based on audio length. This app does not
-                estimate charges or provide billing support.
+                Whisper on Groq is SO inexpensive. I use it all day intensely and it is still tiny. Groq's pay-as-you-go
+                free tier means you will likely never be charged.
               </p>
               <div className="onboarding-actions">
                 <button type="button" onClick={() => setIsSettingsOpen(true)}>
@@ -4902,8 +4902,13 @@ function App() {
                     <span className={`settings-pill ${transcriptionStatusClass}`}>{transcriptionStatusLabel}</span>
                   </div>
                   <p className="settings-hint">
-                    Transcription is optional. Recordings work without a key, and you can enable it any time.
+                    Free account, no credit card required. Setup takes about a minute, and you can enable it any time.
                   </p>
+                  <ol className="settings-cheatsheet">
+                    <li>Create a free Groq account and copy the API key.</li>
+                    <li>Switch Transcription to Enabled.</li>
+                    <li>Paste the key and click Validate.</li>
+                  </ol>
                   <div className="settings-mode-toggle" role="group" aria-label="Transcription mode">
                     <button
                       type="button"
@@ -4956,11 +4961,12 @@ function App() {
                     <a href={GROQ_KEY_URL} target="_blank" rel="noreferrer">
                       Create one in Groq Console
                     </a>
-                    . Usage may incur costs based on audio length. Check{' '}
+                    . Whisper on Groq is SO inexpensive. I use it all day and it stays tiny. Groq's pay-as-you-go free
+                    tier means you will likely never be charged. See{' '}
                     <a href={GROQ_PRICING_URL} target="_blank" rel="noreferrer">
                       Groq pricing
                     </a>
-                    . This app does not estimate charges.
+                    .
                   </p>
                 </section>
                 <section className="settings-section" aria-labelledby="settings-app-title">

@@ -26,7 +26,7 @@
 - Added transcription mode + onboarding fields to settings storage.
 - Added Groq API key validation helper and UI status display.
 - Gated transcription flows when disabled/invalid to avoid false failures.
-- Added onboarding callout and settings guidance for first-time users.
+- Added onboarding callout and settings guidance for first-time users, plus a short setup cheat sheet.
 - Updated documentation status and roadmap references.
 
 ### 🚧 In progress / placeholders
@@ -39,7 +39,7 @@
 ## Summary of edits (what/where/why)
 - `src/modules/settings/store.ts`: persist transcription mode/onboarding flags and migrate legacy settings.
 - `src/modules/transcription/service.ts`: add Groq API key validation helper.
-- `src/App.tsx`: add onboarding card, mode-aware transcription gating, and validation UI.
+- `src/App.tsx`: add onboarding card, setup cheat sheet, mode-aware gating, and validation UI.
 - `src/App.css`: style onboarding, settings sections, and paused/blocked states.
 - `README.md`, `documentation/README.md`, `documentation/roadmap.md`: refresh onboarding guidance and status.
 
