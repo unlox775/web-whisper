@@ -17,7 +17,7 @@ web-whisper is a Progressive Web App (PWA) that captures long-form audio directl
    - The pay-as-you-go free tier means you will likely never be charged, but check Groq pricing if you want the details.
    - If you skip this step or leave transcription disabled, the app records audio but does not transcribe.
 2. **Open the PWA:** visit the URL above, or install it as a home-screen app.
-3. **Configure settings:** tap “Settings” to enable or disable transcription, paste your Groq API key, validate it, set a storage cap, and toggle developer mode.
+3. **Configure settings:** tap “Settings” to paste your Groq API key (it auto-checks and enables transcription), set a storage cap, and toggle developer mode.
 4. **Record:** tap “Start recording.” The app captures PCM, encodes MP3 chunks every ~4 seconds, and persists them to IndexedDB immediately.
 5. **Playback:** tap a session card, open the detail drawer, and hit play. Developer mode exposes chunk and snip playback, storage inspection, logs, and diagnostics.
 

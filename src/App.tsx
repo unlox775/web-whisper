@@ -414,18 +414,15 @@ function App() {
   const lastRetentionSessionIdRef = useRef<string | null>(null)
   const lastRetentionChunkCountRef = useRef(0)
   const lastGroqKeyRef = useRef<string | null>(null)
+  const groqValidationTimerRef = useRef<number | null>(null)
 
   const developerMode = settings?.developerMode ?? false
   const storageLimitBytes = settings?.storageLimitBytes ?? DEFAULT_STORAGE_LIMIT_BYTES
-  const transcriptionMode = settings?.transcriptionMode ?? 'disabled'
-  const isTranscriptionEnabled = transcriptionMode === 'enabled'
   const hasGroqKey = Boolean(settings?.groqApiKey?.trim())
+  const isTranscriptionEnabled = hasGroqKey && transcriptionKeyStatus === 'valid'
   const transcriptionBlockReason = useMemo(() => {
-    if (!isTranscriptionEnabled) {
-      return 'Transcription is disabled. Enable it in Settings to start.'
-    }
     if (!hasGroqKey) {
-      return 'Groq API key missing. Add it in Settings to enable transcription.'
+      return 'Groq API key missing. Paste it in Settings to enable transcription.'
     }
     if (transcriptionKeyStatus === 'invalid') {
       return transcriptionKeyError ?? 'Groq API key validation failed. Retry validation in Settings.'
@@ -434,24 +431,20 @@ function App() {
       return 'Validating Groq API key...'
     }
     if (transcriptionKeyStatus === 'unchecked') {
-      return 'Groq API key not validated yet. Validate it in Settings.'
+      return 'Groq API key pending validation...'
     }
     return null
-  }, [hasGroqKey, isTranscriptionEnabled, transcriptionKeyError, transcriptionKeyStatus])
+  }, [hasGroqKey, transcriptionKeyError, transcriptionKeyStatus])
   const canTranscribe = transcriptionBlockReason === null
   const shouldShowTranscriptionOnboarding = Boolean(settings && !settings.transcriptionOnboardingDismissed && !hasGroqKey)
-  const transcriptionStatusLabel = !isTranscriptionEnabled
-    ? 'Disabled'
-    : canTranscribe
-      ? 'Enabled'
+  const transcriptionStatusLabel = isTranscriptionEnabled
+    ? 'Enabled'
+    : transcriptionKeyStatus === 'validating' || transcriptionKeyStatus === 'unchecked'
+      ? 'Checking key'
       : transcriptionKeyStatus === 'invalid'
-        ? 'Enabled (invalid key)'
-        : transcriptionKeyStatus === 'validating'
-          ? 'Enabled (validating)'
-          : !hasGroqKey
-            ? 'Enabled (missing key)'
-            : 'Enabled (needs validation)'
-  const transcriptionStatusClass = !isTranscriptionEnabled ? 'is-muted' : canTranscribe ? 'is-good' : 'is-warn'
+        ? 'Key invalid'
+        : 'Disabled'
+  const transcriptionStatusClass = isTranscriptionEnabled ? 'is-good' : hasGroqKey ? 'is-warn' : 'is-muted'
   const transcriptionKeyStatusLabel = !hasGroqKey
     ? 'Missing'
     : transcriptionKeyStatus === 'valid'
@@ -460,7 +453,7 @@ function App() {
         ? 'Validating'
         : transcriptionKeyStatus === 'invalid'
           ? 'Invalid'
-          : 'Not checked'
+          : 'Pending'
   const transcriptionKeyStatusClass =
     transcriptionKeyStatus === 'valid'
       ? 'is-good'
@@ -501,6 +494,10 @@ function App() {
     const apiKey = settings?.groqApiKey?.trim() ?? ''
     if (!apiKey) {
       lastGroqKeyRef.current = null
+      if (groqValidationTimerRef.current) {
+        window.clearTimeout(groqValidationTimerRef.current)
+        groqValidationTimerRef.current = null
+      }
       setTranscriptionKeyStatus('missing')
       setTranscriptionKeyError(null)
       return
@@ -513,14 +510,23 @@ function App() {
   }, [settings?.groqApiKey])
 
   useEffect(() => {
-    if (!isTranscriptionEnabled || !hasGroqKey) {
+    if (!hasGroqKey || transcriptionKeyStatus !== 'unchecked') {
       return
     }
-    if (transcriptionKeyStatus !== 'unchecked') {
-      return
+    if (groqValidationTimerRef.current) {
+      window.clearTimeout(groqValidationTimerRef.current)
     }
-    void runGroqKeyValidation()
-  }, [hasGroqKey, isTranscriptionEnabled, runGroqKeyValidation, transcriptionKeyStatus])
+    groqValidationTimerRef.current = window.setTimeout(() => {
+      groqValidationTimerRef.current = null
+      void runGroqKeyValidation()
+    }, 600)
+    return () => {
+      if (groqValidationTimerRef.current) {
+        window.clearTimeout(groqValidationTimerRef.current)
+        groqValidationTimerRef.current = null
+      }
+    }
+  }, [hasGroqKey, runGroqKeyValidation, transcriptionKeyStatus])
   const liveTranscriptionLines = useMemo(() => {
     const texts = liveSnipRecords.map((snip) => getSnipTranscriptionText(snip)).filter((text) => text.length > 0)
     if (texts.length === 0) {
@@ -2046,7 +2052,7 @@ function App() {
         chunkCount: 0,
         durationMs: 0,
         mimeType: null,
-        notes: isTranscriptionEnabled ? 'Transcription pending...' : 'Recording in progress.',
+        notes: canTranscribe ? 'Transcription pending...' : 'Recording in progress.',
         timingStatus: 'unverified',
       })
       await captureController.start({
@@ -2078,7 +2084,7 @@ function App() {
       await loadSessions()
       setErrorMessage(error instanceof Error ? error.message : String(error))
     }
-  }, [captureState.state, isTranscriptionEnabled, loadSessions])
+  }, [canTranscribe, captureState.state, loadSessions])
 
   const stopRecording = useCallback(async () => {
     if (captureState.state !== 'recording') return
@@ -3223,10 +3229,6 @@ function App() {
     await settingsStore.set({ developerMode: enabled })
   }
 
-  const handleTranscriptionModeChange = async (mode: RecorderSettings['transcriptionMode']) => {
-    await settingsStore.set({ transcriptionMode: mode })
-  }
-
   const handleGroqKeyChange = async (value: string) => {
     await settingsStore.set({ groqApiKey: value })
   }
@@ -3736,7 +3738,7 @@ function App() {
                 <li>Create a free Groq account (no credit card required).</li>
                 <li>Open the Groq console and go to the API Keys page.</li>
                 <li>Create a new API key and copy it.</li>
-                <li>Back in Settings, set Transcription to Enabled, paste the key, and click Validate.</li>
+                <li>Back in Settings, paste the key. We auto-check it and turn on transcription.</li>
               </ol>
             </div>
             <div className="groq-setup-actions">
@@ -3773,8 +3775,8 @@ function App() {
               </p>
               <ol>
                 <li>Create a free Groq account and copy your API key.</li>
-                <li>Open Settings and switch Transcription to Enabled.</li>
-                <li>Paste the key and click Validate.</li>
+                <li>Open Settings and paste the key.</li>
+                <li>We auto-check it and turn on transcription.</li>
               </ol>
               <p className="onboarding-disclaimer">
                 Transcription is powered by Groq's servers (again: a separate service). Whisper on Groq is SO
@@ -3890,8 +3892,8 @@ function App() {
                           ? `Partially transcribed (${transcribedCount}/${totalSnips})`
                           : 'Transcription failed for all snips.'
                         : !canTranscribe
-                          ? isTranscriptionEnabled
-                            ? 'Recording complete. Transcription paused.'
+                          ? hasGroqKey
+                            ? 'Recording complete. Waiting for a valid Groq key.'
                             : 'Recording complete.'
                           : 'Transcription pending...'
               return (
@@ -4950,36 +4952,27 @@ function App() {
                 <section className="settings-section" aria-labelledby="settings-transcription-title">
                   <div className="settings-section-header">
                     <h3 id="settings-transcription-title">Transcription</h3>
-                    <span className={`settings-pill ${transcriptionStatusClass}`}>{transcriptionStatusLabel}</span>
+                    <div className="settings-status">
+                      <span className={`settings-pill ${transcriptionStatusClass}`}>{transcriptionStatusLabel}</span>
+                      {!isTranscriptionEnabled ? (
+                        <button type="button" className="settings-inline" onClick={() => setGroqSetupOpen(true)}>
+                          Enable
+                        </button>
+                      ) : null}
+                    </div>
                   </div>
                   <p className="settings-hint">
                     Groq is a separate service (not this app). Their free account takes about a minute to set up, and
-                    you can enable it any time.{' '}
+                    this app auto-checks your key after you paste it.{' '}
                     <button type="button" className="link-button" onClick={() => setGroqSetupOpen(true)}>
                       It's easy to set up.
                     </button>
                   </p>
                   <ol className="settings-cheatsheet">
                     <li>Create a free Groq account and copy the API key.</li>
-                    <li>Switch Transcription to Enabled.</li>
-                    <li>Paste the key and click Validate.</li>
+                    <li>Paste the key here (we auto-check it).</li>
+                    <li>Transcription turns on as soon as the key validates.</li>
                   </ol>
-                  <div className="settings-mode-toggle" role="group" aria-label="Transcription mode">
-                    <button
-                      type="button"
-                      className={transcriptionMode === 'enabled' ? 'is-selected' : ''}
-                      onClick={() => void handleTranscriptionModeChange('enabled')}
-                    >
-                      Enabled
-                    </button>
-                    <button
-                      type="button"
-                      className={transcriptionMode === 'disabled' ? 'is-selected' : ''}
-                      onClick={() => void handleTranscriptionModeChange('disabled')}
-                    >
-                      Disabled
-                    </button>
-                  </div>
                   <label className="settings-field">
                     <span>Groq API key</span>
                     <input
@@ -5000,10 +4993,10 @@ function App() {
                       disabled={!hasGroqKey || transcriptionKeyStatus === 'validating'}
                     >
                       {transcriptionKeyStatus === 'validating'
-                        ? 'Validating...'
+                        ? 'Checking...'
                         : transcriptionKeyStatus === 'invalid'
-                          ? 'Retry validation'
-                          : 'Validate key'}
+                          ? 'Recheck key'
+                          : 'Recheck key'}
                     </button>
                   </div>
                   {transcriptionKeyError ? (

@@ -15,3 +15,5 @@ We need to be more clear that Groq is a different service, Not my service, but t
 One adjustment: I used it all day intensely and I have never come Close to being charged
 
 I want to make the “it’s east to set up opens a popup (with Go to Groq/ok buttons )explaining the steps to set up Groq, log into console and etc to make the API key copy it, etc. search online to make sure our Groq UI instructions are correct.
+
+Ok the enabled / disabled mode I did Not want to be a UI control, just a status. If you click on “enable” it should pop up a similar message to the dismissed-new-first-time dialogue. There should Not be a separate step to enabling transcription besides connecting a Groq API key (and it should auto save and test their value once pasted)

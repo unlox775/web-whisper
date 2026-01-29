@@ -1,5 +1,3 @@
-export type TranscriptionMode = 'enabled' | 'disabled'
-
 export interface RecorderSettings {
   pauseSensitivity: number
   minPauseMs: number
@@ -8,7 +6,6 @@ export interface RecorderSettings {
   overlapMs: number
   targetBitrate: number
   groqApiKey?: string
-  transcriptionMode: TranscriptionMode
   transcriptionOnboardingDismissed: boolean
   developerMode: boolean
   storageLimitBytes: number
@@ -29,7 +26,6 @@ const defaultSettings: RecorderSettings = {
   overlapMs: 800,
   targetBitrate: 64000,
   groqApiKey: '',
-  transcriptionMode: 'disabled',
   transcriptionOnboardingDismissed: false,
   developerMode: false,
   storageLimitBytes: 200 * MB,
@@ -37,16 +33,9 @@ const defaultSettings: RecorderSettings = {
 
 const STORAGE_KEY = 'durable-recorder-settings'
 
-const isTranscriptionMode = (value: unknown): value is TranscriptionMode => value === 'enabled' || value === 'disabled'
-
 function normalizeSettings(parsed: Partial<RecorderSettings> | null): RecorderSettings {
   const merged: RecorderSettings = { ...defaultSettings, ...parsed }
-  const hasMode = parsed && isTranscriptionMode(parsed.transcriptionMode)
   const hasOnboardingDismissed = parsed && typeof parsed.transcriptionOnboardingDismissed === 'boolean'
-  if (!hasMode) {
-    const hasKey = typeof merged.groqApiKey === 'string' && merged.groqApiKey.trim().length > 0
-    merged.transcriptionMode = hasKey ? 'enabled' : 'disabled'
-  }
   if (!hasOnboardingDismissed) {
     merged.transcriptionOnboardingDismissed = false
   }
