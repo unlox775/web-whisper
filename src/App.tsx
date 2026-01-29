@@ -157,6 +157,8 @@ const RETENTION_PASS_INTERVAL_MS = 120_000
 const AUDIO_PURGED_NOTICE = 'Audio was purged to stay under the storage cap. Transcription retries are disabled.'
 const GROQ_KEY_URL = 'https://console.groq.com/keys'
 const GROQ_PRICING_URL = 'https://groq.com/pricing'
+const STARTING_CANCEL_HINT_MS = 3000
+const STARTING_CUE_TIMESTAMPS_MS = [3000, 6000, 9000, 12000]
 
 const formatClock = (timestamp: number) =>
   new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(new Date(timestamp))
@@ -379,6 +381,8 @@ function App() {
   const [snipTranscriptionState, setSnipTranscriptionState] = useState<Record<string, boolean>>({})
   const [isBulkTranscribing, setIsBulkTranscribing] = useState(false)
   const [noAudioAlertActive, setNoAudioAlertActive] = useState(false)
+  const [startingElapsedMs, setStartingElapsedMs] = useState<number | null>(null)
+  const [startingFlashLevel, setStartingFlashLevel] = useState(0)
   const [transcriptionKeyStatus, setTranscriptionKeyStatus] = useState<TranscriptionKeyStatus>('missing')
   const [transcriptionKeyError, setTranscriptionKeyError] = useState<string | null>(null)
 
@@ -395,6 +399,8 @@ function App() {
   const liveTranscriptionStreamRef = useRef<HTMLDivElement | null>(null)
   const lastUserInteractionRef = useRef<{ type: string; target: string; timestamp: number } | null>(null)
   const recordStartAttemptRef = useRef<number | null>(null)
+  const startingCueIndexRef = useRef(-1)
+  const startingFlashTimeoutRef = useRef<number | null>(null)
   const doctorRunIdRef = useRef(0)
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
@@ -1383,6 +1389,57 @@ function App() {
     event.currentTarget.select()
   }, [])
 
+  const playBeepPattern = useCallback(
+    ({
+      count = 1,
+      durationMs = 120,
+      gapMs = 120,
+      gain = 0.05,
+      frequency = 880,
+    }: {
+      count?: number
+      durationMs?: number
+      gapMs?: number
+      gain?: number
+      frequency?: number
+    }) => {
+      const AudioContextCtor =
+        window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      if (typeof AudioContextCtor !== 'function') {
+        return
+      }
+      const context = new AudioContextCtor()
+      const now = context.currentTime
+      const totalMs = Math.max(0, count * durationMs + Math.max(0, count - 1) * gapMs)
+      for (let i = 0; i < count; i += 1) {
+        const oscillator = context.createOscillator()
+        const gainNode = context.createGain()
+        gainNode.gain.value = gain
+        oscillator.type = 'sine'
+        oscillator.frequency.value = frequency
+        oscillator.connect(gainNode)
+        gainNode.connect(context.destination)
+        const startAt = now + ((durationMs + gapMs) * i) / 1000
+        const stopAt = startAt + durationMs / 1000
+        oscillator.start(startAt)
+        oscillator.stop(stopAt)
+      }
+      window.setTimeout(() => {
+        void context.close().catch(() => undefined)
+      }, totalMs + 120)
+    },
+    [],
+  )
+
+  const playStartingCue = useCallback(
+    (level: number) => {
+      const safeLevel = Math.min(4, Math.max(1, level))
+      const gain = 0.03 + safeLevel * 0.01
+      playBeepPattern({ count: 3, durationMs: 90, gapMs: 110, gain, frequency: 880 })
+    },
+    [playBeepPattern],
+  )
+
   const playAlertBeep = useCallback(async () => {
     const AudioContextCtor =
       window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
@@ -1431,6 +1488,53 @@ function App() {
     setNoAudioAlertActive(true)
     window.setTimeout(() => setNoAudioAlertActive(false), 1200)
   }, [])
+
+  const triggerStartingFlash = useCallback((level: number) => {
+    if (startingFlashTimeoutRef.current !== null) {
+      window.clearTimeout(startingFlashTimeoutRef.current)
+    }
+    setStartingFlashLevel(level)
+    startingFlashTimeoutRef.current = window.setTimeout(() => {
+      setStartingFlashLevel(0)
+    }, 480)
+  }, [])
+
+  useEffect(() => {
+    const isStartPending = captureState.state === 'recording' && captureState.capturedMs <= 0
+    if (!isStartPending) {
+      setStartingElapsedMs(null)
+      startingCueIndexRef.current = -1
+      if (startingFlashTimeoutRef.current !== null) {
+        window.clearTimeout(startingFlashTimeoutRef.current)
+        startingFlashTimeoutRef.current = null
+      }
+      setStartingFlashLevel(0)
+      return
+    }
+    const startAt = recordStartAttemptRef.current ?? captureState.startedAt ?? Date.now()
+    const tick = () => {
+      setStartingElapsedMs(Math.max(0, Date.now() - startAt))
+    }
+    tick()
+    const interval = window.setInterval(tick, 250)
+    return () => window.clearInterval(interval)
+  }, [captureState.capturedMs, captureState.startedAt, captureState.state])
+
+  useEffect(() => {
+    const isStartPending = captureState.state === 'recording' && captureState.capturedMs <= 0
+    if (!isStartPending || startingElapsedMs === null) {
+      return
+    }
+    while (
+      startingCueIndexRef.current + 1 < STARTING_CUE_TIMESTAMPS_MS.length &&
+      startingElapsedMs >= STARTING_CUE_TIMESTAMPS_MS[startingCueIndexRef.current + 1]
+    ) {
+      startingCueIndexRef.current += 1
+      const level = startingCueIndexRef.current + 1
+      playStartingCue(level)
+      triggerStartingFlash(level)
+    }
+  }, [captureState.capturedMs, captureState.state, playStartingCue, startingElapsedMs, triggerStartingFlash])
 
   useEffect(() => {
     const handleVisibilityChange = () => {
@@ -2116,6 +2220,17 @@ function App() {
       await startRecording()
     }
   }
+
+  const handleCancelStartingRecording = useCallback(
+    async (source: 'controls' | 'list' | 'detail') => {
+      if (captureState.state !== 'recording' || captureState.capturedMs > 0) {
+        return
+      }
+      void logInfo('Recorder start cancelled', { sessionId: captureState.sessionId, source })
+      await stopRecording()
+    },
+    [captureState.capturedMs, captureState.sessionId, captureState.state, stopRecording],
+  )
 
   useEffect(() => {
     if (captureState.state !== 'recording' || !captureState.startedAt) {
@@ -3532,6 +3647,9 @@ function App() {
 
   const bufferLabel = `${formatDataSize(bufferTotals.totalBytes)} / ${formatDataSize(bufferTotals.limitBytes)}`
   const hasAudioFlow = captureState.state === 'recording' && captureState.capturedMs > 0
+  const isStartPending = captureState.state === 'recording' && !hasAudioFlow
+  const isStartWarmup = captureState.state === 'starting' || isStartPending
+  const shouldShowStartingCancel = isStartPending && (startingElapsedMs ?? 0) >= STARTING_CANCEL_HINT_MS
   const capturedAudioMs = Math.max(0, captureState.capturedMs)
   const capturedAudioLabel = `${(capturedAudioMs / 1000).toFixed(1)}s`
   const estimatedBytes =
@@ -3671,6 +3789,9 @@ function App() {
 
   return (
     <div className="app-shell">
+      {startingFlashLevel > 0 ? (
+        <div className={`starting-flash level-${startingFlashLevel}`} aria-hidden="true" />
+      ) : null}
       {noAudioAlertActive ? <div className="no-audio-flash" aria-hidden="true" /> : null}
       <header className="app-header">
         <div className="brand">
@@ -3797,30 +3918,38 @@ function App() {
             <h2>Capture</h2>
             <button
               className={`record-toggle ${
-                captureState.state === 'recording'
-                  ? hasAudioFlow
+                isStartWarmup
+                  ? 'record-toggle-starting'
+                  : captureState.state === 'recording'
                     ? 'record-toggle-stop'
-                    : 'record-toggle-starting'
-                  : 'record-toggle-start'
+                    : 'record-toggle-start'
               }`}
               type="button"
               onClick={handleRecordToggle}
-              aria-pressed={captureState.state === 'recording'}
-              disabled={captureState.state === 'recording' && !hasAudioFlow}
+              aria-pressed={captureState.state === 'recording' || captureState.state === 'starting'}
+              disabled={isStartWarmup}
             >
-              {captureState.state === 'recording'
-                ? hasAudioFlow
-                  ? 'Stop recording'
-                  : 'Starting…'
-                : 'Start recording'}
+              {isStartWarmup ? 'Starting…' : captureState.state === 'recording' ? 'Stop recording' : 'Start recording'}
             </button>
             <p className="controls-copy">
-              {captureState.state === 'recording'
-                ? hasAudioFlow
+              {isStartWarmup
+                ? 'Starting recorder…'
+                : captureState.state === 'recording'
                   ? `Recording — ${formatTimecode(Math.floor(capturedAudioMs / 1000))} elapsed`
-                  : 'Starting recorder…'
-                : 'Recorder idle — tap start to begin a durable session.'}
+                  : 'Recorder idle — tap start to begin a durable session.'}
             </p>
+            {shouldShowStartingCancel ? (
+              <p className="controls-starting-cancel" role="status">
+                Not starting?{' '}
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => void handleCancelStartingRecording('controls')}
+                >
+                  Cancel start
+                </button>
+              </p>
+            ) : null}
           </div>
         </aside>
         {developerMode && captureState.state === 'recording' ? (
@@ -3867,7 +3996,9 @@ function App() {
               const statusMeta = STATUS_META[displayStatus]
               const hasAudio =
                 session.chunkCount > 0 && session.totalBytes > 0 && (session.durationMs ?? 0) > 0
-              const shouldShowListDelete = !hasAudio || session.status === 'error'
+              const isStartingSession = isActiveRecording && !hasAudioFlow
+              const shouldShowListCancel = isStartingSession
+              const shouldShowListDelete = !isActiveRecording && (!hasAudio || session.status === 'error')
               const metadataLabel = `${formatSessionDateTime(session.startedAt)} · ${formatCompactDataSize(session.totalBytes)}`
               const isHighlighted = session.id === highlightedSessionId
               const cardClasses = ['session-card']
@@ -3939,7 +4070,20 @@ function App() {
                           {isRetrying ? 'Retrying…' : 'Retry TX'}
                         </button>
                       ) : null}
-                      {shouldShowListDelete ? (
+                      {shouldShowListCancel ? (
+                        <button
+                          type="button"
+                          className="session-cancel"
+                          onClick={(event) => {
+                            event.stopPropagation()
+                            void handleCancelStartingRecording('list')
+                          }}
+                          aria-label={`Cancel starting ${session.title}`}
+                          title="Cancel start"
+                        >
+                          ✕
+                        </button>
+                      ) : shouldShowListDelete ? (
                         <button
                           type="button"
                           className="session-delete"
@@ -3947,13 +4091,8 @@ function App() {
                             event.stopPropagation()
                             void handleDeleteSession(session)
                           }}
-                          disabled={session.id === captureState.sessionId && captureState.state === 'recording'}
                           aria-label={`Delete ${session.title}`}
-                          title={
-                            session.id === captureState.sessionId && captureState.state === 'recording'
-                              ? 'Stop the active recording before deleting it.'
-                              : 'Delete recording'
-                          }
+                          title="Delete recording"
                         >
                           🗑
                         </button>
@@ -4049,20 +4188,27 @@ function App() {
                     🐞
                   </button>
                 ) : null}
-                  <button
-                    className="detail-delete"
-                    type="button"
-                    onClick={() => void handleDeleteRecording()}
-                    aria-label="Delete recording"
-                    disabled={selectedRecording.id === captureState.sessionId && captureState.state === 'recording'}
-                    title={
-                      selectedRecording.id === captureState.sessionId && captureState.state === 'recording'
-                        ? 'Stop the active recording before deleting it.'
-                        : 'Delete recording'
-                    }
-                  >
-                    🗑
-                  </button>
+                  {isDetailRecordingActive && isStartPending ? (
+                    <button
+                      className="detail-cancel"
+                      type="button"
+                      onClick={() => void handleCancelStartingRecording('detail')}
+                      aria-label="Cancel starting recording"
+                      title="Cancel start"
+                    >
+                      ✕
+                    </button>
+                  ) : !isDetailRecordingActive ? (
+                    <button
+                      className="detail-delete"
+                      type="button"
+                      onClick={() => void handleDeleteRecording()}
+                      aria-label="Delete recording"
+                      title="Delete recording"
+                    >
+                      🗑
+                    </button>
+                  ) : null}
                 <button className="detail-close" type="button" onClick={handleCloseDetail}>
                   Close
                 </button>
