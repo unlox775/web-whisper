@@ -4188,11 +4188,11 @@ function App() {
                   ) : null}
                   {snipRecords.length === 0 ? (
                     <p className="detail-transcription-placeholder">No snips recorded yet.</p>
-                  ) : snipTranscriptionSummary.transcribedCount === 0 ? (
+                  ) : canTranscribe && snipTranscriptionSummary.transcribedCount === 0 ? (
                     <p className="detail-transcription-placeholder">
                       No snip transcriptions yet. Open the snip list to retry each segment.
                     </p>
-                  ) : (
+                  ) : snipTranscriptionSummary.transcribedCount > 0 ? (
                     <textarea
                       ref={transcriptionTextRef}
                       className="detail-transcription-text"
@@ -4202,7 +4202,7 @@ function App() {
                       aria-label="Session transcription text"
                       rows={Math.min(8, Math.max(3, Math.ceil(snipTranscriptionSummary.text.length / 90)))}
                     />
-                  )}
+                  ) : null}
                   {snipRecords.length > 0 && (canTranscribe || snipTranscriptionSummary.transcribedCount > 0) ? (
                     <p className="detail-transcription-meta">
                       Transcribed {snipTranscriptionSummary.transcribedCount} of {snipTranscriptionSummary.total} snips.

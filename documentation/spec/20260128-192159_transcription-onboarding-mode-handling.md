@@ -31,6 +31,7 @@
 - Added Groq setup popup with quick steps and direct link.
 - Removed manual mode toggle; enabling now happens automatically on key paste and validation.
 - Removed redundant gray helper text under the transcription warning.
+- Suppressed the fallback "no snip transcriptions yet" message when transcription is blocked.
 - Updated documentation status and roadmap references.
 
 ### 🚧 In progress / placeholders
@@ -50,6 +51,7 @@
 - `src/App.tsx`, `src/App.css`: add Groq setup popup with Go to Groq/OK actions.
 - `src/App.tsx`, `src/modules/settings/store.ts`: remove manual mode toggle and auto-validate Groq key on paste.
 - `src/App.tsx`: simplify transcription empty-state copy when blocked.
+- `src/App.tsx`: hide empty-state placeholder when transcription is blocked.
 
 ## Self-evaluation
 - The onboarding guidance is clearer and transcription respects explicit enabled/disabled modes.
