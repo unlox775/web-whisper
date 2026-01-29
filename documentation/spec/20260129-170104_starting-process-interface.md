@@ -33,7 +33,7 @@
 - None.
 
 ### ⏭️ Next actions / dependencies
-- Commit and push changes.
+- None.
 
 ## Summary of edits (what/where/why)
 - `src/App.tsx`: add starting timers/cues, cancel handling, and start-state UI affordances.
@@ -41,4 +41,4 @@
 - `src/App.css`: style cancel hints/icons and add starting flash overlay keyframes.
 
 ## Self-evaluation
-- Acceptance criteria met for early cancel, progressive cues, and icon wiring; build artifacts updated.
+- Acceptance criteria met for early cancel, progressive cues, and icon wiring; changes committed and pushed.
