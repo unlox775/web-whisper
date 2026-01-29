@@ -12,7 +12,7 @@ web-whisper is a Progressive Web App (PWA) that captures long-form audio directl
 ## How to Use
 
 1. **Get a Groq API key (optional for recording, required for transcription):**
-   - Create a free Groq account (no credit card required): https://console.groq.com/
+   - Groq is a separate service from this app. Create a free Groq account (no credit card required): https://console.groq.com/
    - Generate an API token. Groq's Whisper model is SO inexpensive that heavy daily use still stays tiny for me.
    - The pay-as-you-go free tier means you will likely never be charged, but check Groq pricing if you want the details.
    - If you skip this step or leave transcription disabled, the app records audio but does not transcribe.

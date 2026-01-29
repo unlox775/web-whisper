@@ -27,6 +27,7 @@
 - Added Groq API key validation helper and UI status display.
 - Gated transcription flows when disabled/invalid to avoid false failures.
 - Added onboarding callout and settings guidance for first-time users, plus a short setup cheat sheet.
+- Clarified that Groq is a separate service in onboarding and settings copy.
 - Updated documentation status and roadmap references.
 
 ### 🚧 In progress / placeholders
@@ -42,6 +43,7 @@
 - `src/App.tsx`: add onboarding card, setup cheat sheet, mode-aware gating, and validation UI.
 - `src/App.css`: style onboarding, settings sections, and paused/blocked states.
 - `README.md`, `documentation/README.md`, `documentation/roadmap.md`: refresh onboarding guidance and status.
+- `README.md`, `src/App.tsx`: clarify Groq is a separate service.
 
 ## Self-evaluation
 - The onboarding guidance is clearer and transcription respects explicit enabled/disabled modes.

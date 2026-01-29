@@ -9,3 +9,5 @@ Ok, I want to make it much more clear how insanely awesome the setup is: (1) Gro
 Yes, this is using one of the most amazing AI models a Crazy amount of value, for free
 
 And I want it to be clear and seem easy to set up
+
+We need to be more clear that Groq is a different service, Not my service, but the messaging is getting really close!

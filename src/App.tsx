@@ -3717,7 +3717,10 @@ function App() {
                   Dismiss
                 </button>
               </div>
-              <p>Groq accounts are free, no credit card required. Recording works out of the box.</p>
+              <p>
+                Groq is a separate service (not this app), and their accounts are free with no credit card required.
+                Recording works out of the box.
+              </p>
               <p className="onboarding-highlight">
                 This uses one of the most amazing AI models. It is a crazy amount of value for free.
               </p>
@@ -3727,8 +3730,9 @@ function App() {
                 <li>Paste the key and click Validate.</li>
               </ol>
               <p className="onboarding-disclaimer">
-                Whisper on Groq is SO inexpensive. I use it all day intensely and it is still tiny. Groq's pay-as-you-go
-                free tier means you will likely never be charged.
+                Transcription is powered by Groq's servers (again: a separate service). Whisper on Groq is SO
+                inexpensive. I use it all day intensely and it is still tiny. Groq's pay-as-you-go free tier means you
+                will likely never be charged.
               </p>
               <div className="onboarding-actions">
                 <button type="button" onClick={() => setIsSettingsOpen(true)}>
@@ -4902,7 +4906,8 @@ function App() {
                     <span className={`settings-pill ${transcriptionStatusClass}`}>{transcriptionStatusLabel}</span>
                   </div>
                   <p className="settings-hint">
-                    Free account, no credit card required. Setup takes about a minute, and you can enable it any time.
+                    Groq is a separate service (not this app). Their free account takes about a minute to set up, and
+                    you can enable it any time.
                   </p>
                   <ol className="settings-cheatsheet">
                     <li>Create a free Groq account and copy the API key.</li>
@@ -4961,8 +4966,9 @@ function App() {
                     <a href={GROQ_KEY_URL} target="_blank" rel="noreferrer">
                       Create one in Groq Console
                     </a>
-                    . Whisper on Groq is SO inexpensive. I use it all day and it stays tiny. Groq's pay-as-you-go free
-                    tier means you will likely never be charged. See{' '}
+                    . Groq is a separate service and handles billing directly. Whisper on Groq is SO inexpensive. I use
+                    it all day and it stays tiny. Groq's pay-as-you-go free tier means you will likely never be charged.
+                    See{' '}
                     <a href={GROQ_PRICING_URL} target="_blank" rel="noreferrer">
                       Groq pricing
                     </a>
