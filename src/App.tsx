@@ -3731,8 +3731,8 @@ function App() {
               </ol>
               <p className="onboarding-disclaimer">
                 Transcription is powered by Groq's servers (again: a separate service). Whisper on Groq is SO
-                inexpensive. I use it all day intensely and it is still tiny. Groq's pay-as-you-go free tier means you
-                will likely never be charged.
+                inexpensive. I used it all day intensely and I have never come close to being charged. Groq's
+                pay-as-you-go free tier means you will likely never be charged.
               </p>
               <div className="onboarding-actions">
                 <button type="button" onClick={() => setIsSettingsOpen(true)}>
@@ -4966,9 +4966,9 @@ function App() {
                     <a href={GROQ_KEY_URL} target="_blank" rel="noreferrer">
                       Create one in Groq Console
                     </a>
-                    . Groq is a separate service and handles billing directly. Whisper on Groq is SO inexpensive. I use
-                    it all day and it stays tiny. Groq's pay-as-you-go free tier means you will likely never be charged.
-                    See{' '}
+                    . Groq is a separate service and handles billing directly. Whisper on Groq is SO inexpensive. I
+                    used it all day intensely and I have never come close to being charged. Groq's pay-as-you-go free
+                    tier means you will likely never be charged. See{' '}
                     <a href={GROQ_PRICING_URL} target="_blank" rel="noreferrer">
                       Groq pricing
                     </a>
