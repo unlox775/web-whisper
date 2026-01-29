@@ -4188,10 +4188,6 @@ function App() {
                   ) : null}
                   {snipRecords.length === 0 ? (
                     <p className="detail-transcription-placeholder">No snips recorded yet.</p>
-                  ) : !canTranscribe ? (
-                    <p className="detail-transcription-placeholder">
-                      Transcription is paused. Enable it in Settings to start sending snips to Groq.
-                    </p>
                   ) : snipTranscriptionSummary.transcribedCount === 0 ? (
                     <p className="detail-transcription-placeholder">
                       No snip transcriptions yet. Open the snip list to retry each segment.
