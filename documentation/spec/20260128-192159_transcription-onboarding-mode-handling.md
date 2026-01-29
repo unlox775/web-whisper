@@ -28,6 +28,7 @@
 - Gated transcription flows when disabled/invalid to avoid false failures.
 - Added onboarding callout and settings guidance for first-time users, plus a short setup cheat sheet.
 - Clarified that Groq is a separate service in onboarding and settings copy.
+- Added Groq setup popup with quick steps and direct link.
 - Updated documentation status and roadmap references.
 
 ### 🚧 In progress / placeholders
@@ -44,6 +45,7 @@
 - `src/App.css`: style onboarding, settings sections, and paused/blocked states.
 - `README.md`, `documentation/README.md`, `documentation/roadmap.md`: refresh onboarding guidance and status.
 - `README.md`, `src/App.tsx`: clarify Groq is a separate service.
+- `src/App.tsx`, `src/App.css`: add Groq setup popup with Go to Groq/OK actions.
 
 ## Self-evaluation
 - The onboarding guidance is clearer and transcription respects explicit enabled/disabled modes.

@@ -337,6 +337,7 @@ function App() {
   const [playbackVolume, setPlaybackVolume] = useState(1)
   const [isVolumeSliderOpen, setVolumeSliderOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isGroqSetupOpen, setGroqSetupOpen] = useState(false)
   const [isDeveloperOverlayOpen, setDeveloperOverlayOpen] = useState(false)
   const [developerOverlayLoading, setDeveloperOverlayLoading] = useState(false)
   const [developerTables, setDeveloperTables] = useState<DeveloperTable[]>([])
@@ -3707,6 +3708,49 @@ function App() {
         </div>
       ) : null}
 
+      {isGroqSetupOpen ? (
+        <div
+          className="groq-setup-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="groq-setup-title"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) {
+              setGroqSetupOpen(false)
+            }
+          }}
+        >
+          <div className="groq-setup-dialog" onClick={(event) => event.stopPropagation()}>
+            <header className="groq-setup-header">
+              <h2 id="groq-setup-title">Groq setup (quick steps)</h2>
+              <button type="button" className="groq-setup-close" onClick={() => setGroqSetupOpen(false)}>
+                Close
+              </button>
+            </header>
+            <div className="groq-setup-body">
+              <p>
+                Groq is a separate service from this app. You will create the API key in your Groq console and paste it
+                here.
+              </p>
+              <ol>
+                <li>Create a free Groq account (no credit card required).</li>
+                <li>Open the Groq console and go to the API Keys page.</li>
+                <li>Create a new API key and copy it.</li>
+                <li>Back in Settings, set Transcription to Enabled, paste the key, and click Validate.</li>
+              </ol>
+            </div>
+            <div className="groq-setup-actions">
+              <a href={GROQ_KEY_URL} target="_blank" rel="noreferrer">
+                Go to Groq
+              </a>
+              <button type="button" onClick={() => setGroqSetupOpen(false)}>
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <main className="content-grid">
         <aside className="controls-panel" aria-label="Capture controls">
           {shouldShowTranscriptionOnboarding ? (
@@ -3719,7 +3763,10 @@ function App() {
               </div>
               <p>
                 Groq is a separate service (not this app), and their accounts are free with no credit card required.
-                Recording works out of the box.
+                Recording works out of the box.{' '}
+                <button type="button" className="link-button" onClick={() => setGroqSetupOpen(true)}>
+                  It's easy to set up.
+                </button>
               </p>
               <p className="onboarding-highlight">
                 This uses one of the most amazing AI models. It is a crazy amount of value for free.
@@ -4907,7 +4954,10 @@ function App() {
                   </div>
                   <p className="settings-hint">
                     Groq is a separate service (not this app). Their free account takes about a minute to set up, and
-                    you can enable it any time.
+                    you can enable it any time.{' '}
+                    <button type="button" className="link-button" onClick={() => setGroqSetupOpen(true)}>
+                      It's easy to set up.
+                    </button>
                   </p>
                   <ol className="settings-cheatsheet">
                     <li>Create a free Groq account and copy the API key.</li>
