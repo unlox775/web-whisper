@@ -21,3 +21,5 @@ Ok the enabled / disabled mode I did Not want to be a UI control, just a status.
 Probably don’t need the gray text under the yellow in this view
 
 logic goof, now it is a different gray error
+
+Seems we still have a duplicate open settings button, keep the yellow

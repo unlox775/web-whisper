@@ -4160,24 +4160,18 @@ function App() {
                   ) : null}
                 <div className="detail-transcription">
                   <h3>Transcription</h3>
-                  <div className="detail-transcription-actions">
-                    <button
-                      type="button"
-                      className="detail-transcription-retry"
-                      onClick={() => {
-                        if (!canTranscribe) {
-                          setIsSettingsOpen(true)
-                          return
-                        }
-                        void handleRetryAllTranscriptions()
-                      }}
-                      disabled={
-                        isBulkTranscribing || (canTranscribe && (snipRecords.length === 0 || snipTranscriptionSummary.retryableCount === 0))
-                      }
-                    >
-                      {!canTranscribe ? 'Open Settings' : isBulkTranscribing ? 'Retrying…' : 'Retry TX'}
-                    </button>
-                  </div>
+                  {canTranscribe ? (
+                    <div className="detail-transcription-actions">
+                      <button
+                        type="button"
+                        className="detail-transcription-retry"
+                        onClick={() => void handleRetryAllTranscriptions()}
+                        disabled={isBulkTranscribing || snipRecords.length === 0 || snipTranscriptionSummary.retryableCount === 0}
+                      >
+                        {isBulkTranscribing ? 'Retrying…' : 'Retry TX'}
+                      </button>
+                    </div>
+                  ) : null}
                   {!canTranscribe ? (
                     <div className="detail-transcription-blocked" role="status">
                       <p>{transcriptionBlockReason ?? 'Transcription is unavailable right now.'}</p>
