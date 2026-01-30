@@ -16,7 +16,7 @@
 - [x] Replace starting trash actions with cancel and hide during recording.
 - [x] Replace delete confirm prompt with in-app modal.
 - [x] Avoid showing delete icons for purged-but-transcribed sessions.
-- [ ] Run npm install + npm run build, commit artifacts, and push.
+- [x] Run npm install + npm run build, commit artifacts, and push.
 
 ## Acceptance criteria
 - Starting state shows an early cancel affordance after a short delay.
@@ -34,12 +34,13 @@
 - Added styling for cancel controls and starting flash overlays.
 - Added an in-app delete confirmation dialog for list/detail deletes.
 - Hid delete icons for sessions that only lost audio due to retention.
+- Ran npm install + npm run build (updated docs build artifacts).
 
 ### 🚧 In progress / placeholders
-- Run npm install + npm run build, commit build artifacts, and push.
+- None.
 
 ### ⏭️ Next actions / dependencies
-- Commit and push changes.
+- None.
 
 ## Summary of edits (what/where/why)
 - `src/App.tsx`: add starting timers/cues, cancel handling, and start-state UI affordances.
@@ -49,4 +50,4 @@
 - `src/App.css`: add delete confirm overlay styles.
 
 ## Self-evaluation
-- Acceptance criteria met for delete fixes and purge gating; build/commit/push pending.
+- Acceptance criteria met for delete fixes and purge gating; changes committed and pushed.
