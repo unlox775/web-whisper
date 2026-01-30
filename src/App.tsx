@@ -383,6 +383,11 @@ function App() {
   const [noAudioAlertActive, setNoAudioAlertActive] = useState(false)
   const [startingElapsedMs, setStartingElapsedMs] = useState<number | null>(null)
   const [startingFlashLevel, setStartingFlashLevel] = useState(0)
+  const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<{
+    session: SessionRecord
+    source: 'list' | 'detail'
+  } | null>(null)
+  const [deleteConfirmBusy, setDeleteConfirmBusy] = useState(false)
   const [transcriptionKeyStatus, setTranscriptionKeyStatus] = useState<TranscriptionKeyStatus>('missing')
   const [transcriptionKeyError, setTranscriptionKeyError] = useState<string | null>(null)
 
@@ -401,6 +406,7 @@ function App() {
   const recordStartAttemptRef = useRef<number | null>(null)
   const startingCueIndexRef = useRef(-1)
   const startingFlashTimeoutRef = useRef<number | null>(null)
+  const deleteConfirmMetaRef = useRef<{ startedAt: number; contextBefore: ReturnType<typeof buildDeleteConfirmContext> } | null>(null)
   const doctorRunIdRef = useRef(0)
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
@@ -2455,111 +2461,71 @@ function App() {
     }
   }, [])
 
-  const handleDeleteRecording = async () => {
-    if (!selectedRecording) return
-    const sessionId = selectedRecording.id
-    void logInfo('Delete recording requested', { sessionId, source: 'detail' })
-    if (selectedRecording.id === captureState.sessionId && captureState.state === 'recording') {
-      setErrorMessage('Stop the active recording before deleting it.')
-      await logWarn('Delete blocked for active recording', { sessionId, source: 'detail' })
-      return
-    }
-    const confirmStart = Date.now()
-    const confirmContextBefore = buildDeleteConfirmContext()
-    void logInfo('Delete confirmation opened', { sessionId, source: 'detail', ...confirmContextBefore })
-    const confirmed = window.confirm('Delete this recording? This cannot be undone.')
-    const confirmDurationMs = Math.max(0, Date.now() - confirmStart)
-    const confirmContextAfter = buildDeleteConfirmContext()
-    void logInfo('Delete confirmation resolved', {
-      sessionId,
-      source: 'detail',
-      confirmed,
-      confirmDurationMs,
-      before: confirmContextBefore,
-      after: confirmContextAfter,
-    })
-    if (!confirmed) {
-      void logInfo('Delete recording cancelled', { sessionId, source: 'detail' })
-      return
-    }
-    void logInfo('Delete recording confirmed', { sessionId, source: 'detail' })
-    try {
-      await manifestService.init()
-    } catch (error) {
-      console.error('[UI] Failed to init manifest for delete', error)
-      await logError('Delete init failed', {
-        sessionId: selectedRecording.id,
-        error: error instanceof Error ? error.message : String(error),
-      })
-      return
-    }
-    try {
-      await manifestService.deleteSession(sessionId)
-      const remaining = await manifestService.getSession(sessionId)
-      if (remaining) {
-        await logWarn('Delete verification failed', { sessionId, source: 'detail' })
-      }
-      await logInfo('Recording deleted', { sessionId, source: 'detail' })
-      await handleCloseDetail()
-      await loadSessions()
-    } catch (error) {
-      console.error('[UI] Failed to delete recording', error)
-      setErrorMessage(error instanceof Error ? error.message : String(error))
-      await logError('Recording delete failed', {
-        sessionId,
-        source: 'detail',
-        error: error instanceof Error ? error.message : String(error),
-      })
-    }
-  }
-
-  const handleDeleteSession = useCallback(
-    async (session: SessionRecord) => {
+  const requestDeleteSession = useCallback(
+    async (session: SessionRecord, source: 'list' | 'detail') => {
       const sessionId = session.id
-      void logInfo('Delete recording requested', { sessionId, source: 'list' })
-      if (session.id === captureState.sessionId && captureState.state === 'recording') {
+      void logInfo('Delete recording requested', { sessionId, source })
+      if (sessionId === captureState.sessionId && captureState.state === 'recording') {
         setErrorMessage('Stop the active recording before deleting it.')
-        await logWarn('Delete blocked for active recording', { sessionId, source: 'list' })
+        await logWarn('Delete blocked for active recording', { sessionId, source })
         return
       }
       const confirmStart = Date.now()
       const confirmContextBefore = buildDeleteConfirmContext()
-      void logInfo('Delete confirmation opened', { sessionId, source: 'list', ...confirmContextBefore })
-      const confirmed = window.confirm('Delete this recording? This cannot be undone.')
-      const confirmDurationMs = Math.max(0, Date.now() - confirmStart)
+      deleteConfirmMetaRef.current = { startedAt: confirmStart, contextBefore: confirmContextBefore }
+      setDeleteConfirmBusy(false)
+      setDeleteConfirmTarget({ session, source })
+      void logInfo('Delete confirmation opened', { sessionId, source, ...confirmContextBefore })
+    },
+    [buildDeleteConfirmContext, captureState.sessionId, captureState.state],
+  )
+
+  const resolveDeleteConfirm = useCallback(
+    async (confirmed: boolean) => {
+      const target = deleteConfirmTarget
+      if (!target) return
+      const sessionId = target.session.id
+      const confirmMeta = deleteConfirmMetaRef.current
       const confirmContextAfter = buildDeleteConfirmContext()
+      const confirmDurationMs = Math.max(0, Date.now() - (confirmMeta?.startedAt ?? Date.now()))
       void logInfo('Delete confirmation resolved', {
         sessionId,
-        source: 'list',
+        source: target.source,
         confirmed,
         confirmDurationMs,
-        before: confirmContextBefore,
+        before: confirmMeta?.contextBefore ?? null,
         after: confirmContextAfter,
       })
       if (!confirmed) {
-        void logInfo('Delete recording cancelled', { sessionId, source: 'list' })
+        void logInfo('Delete recording cancelled', { sessionId, source: target.source })
+        deleteConfirmMetaRef.current = null
+        setDeleteConfirmTarget(null)
         return
       }
-      void logInfo('Delete recording confirmed', { sessionId, source: 'list' })
+      void logInfo('Delete recording confirmed', { sessionId, source: target.source })
+      setDeleteConfirmBusy(true)
       try {
         await manifestService.init()
       } catch (error) {
         console.error('[UI] Failed to init manifest for delete', error)
         await logError('Delete init failed', {
           sessionId,
-          source: 'list',
+          source: target.source,
           error: error instanceof Error ? error.message : String(error),
         })
+        setDeleteConfirmBusy(false)
+        deleteConfirmMetaRef.current = null
+        setDeleteConfirmTarget(null)
         return
       }
       try {
         await manifestService.deleteSession(sessionId)
         const remaining = await manifestService.getSession(sessionId)
         if (remaining) {
-          await logWarn('Delete verification failed', { sessionId, source: 'list' })
+          await logWarn('Delete verification failed', { sessionId, source: target.source })
         }
-        await logInfo('Recording deleted', { sessionId, source: 'list' })
-        if (selectedRecording?.id === sessionId) {
+        await logInfo('Recording deleted', { sessionId, source: target.source })
+        if (target.source === 'detail' || selectedRecording?.id === sessionId) {
           await handleCloseDetail()
         }
         await loadSessions()
@@ -2568,12 +2534,16 @@ function App() {
         setErrorMessage(error instanceof Error ? error.message : String(error))
         await logError('Recording delete failed', {
           sessionId,
-          source: 'list',
+          source: target.source,
           error: error instanceof Error ? error.message : String(error),
         })
+      } finally {
+        setDeleteConfirmBusy(false)
+        deleteConfirmMetaRef.current = null
+        setDeleteConfirmTarget(null)
       }
     },
-    [buildDeleteConfirmContext, captureState.sessionId, captureState.state, handleCloseDetail, loadSessions, selectedRecording?.id],
+    [buildDeleteConfirmContext, deleteConfirmTarget, handleCloseDetail, loadSessions, selectedRecording?.id],
   )
 
   const formatPercent = (count: number, total: number) =>
@@ -3831,6 +3801,45 @@ function App() {
         </div>
       ) : null}
 
+      {deleteConfirmTarget ? (
+        <div
+          className="delete-confirm-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-confirm-title"
+          onClick={(event) => {
+            if (deleteConfirmBusy) return
+            if (event.target === event.currentTarget) {
+              void resolveDeleteConfirm(false)
+            }
+          }}
+        >
+          <div className="delete-confirm-dialog" onClick={(event) => event.stopPropagation()}>
+            <header className="delete-confirm-header">
+              <h2 id="delete-confirm-title">Delete recording?</h2>
+            </header>
+            <div className="delete-confirm-body">
+              <p>
+                Delete <strong>{deleteConfirmTarget.session.title}</strong>? This cannot be undone.
+              </p>
+            </div>
+            <div className="delete-confirm-actions">
+              <button type="button" onClick={() => void resolveDeleteConfirm(false)} disabled={deleteConfirmBusy}>
+                Keep
+              </button>
+              <button
+                type="button"
+                className="delete-confirm-danger"
+                onClick={() => void resolveDeleteConfirm(true)}
+                disabled={deleteConfirmBusy}
+              >
+                {deleteConfirmBusy ? 'Deleting…' : 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {isGroqSetupOpen ? (
         <div
           className="groq-setup-overlay"
@@ -3998,7 +4007,7 @@ function App() {
                 session.chunkCount > 0 && session.totalBytes > 0 && (session.durationMs ?? 0) > 0
               const isStartingSession = isActiveRecording && !hasAudioFlow
               const shouldShowListCancel = isStartingSession
-              const shouldShowListDelete = !isActiveRecording && (!hasAudio || session.status === 'error')
+              const shouldShowListDelete = !isActiveRecording && (session.status === 'error' || (!hasAudio && !hasSnips))
               const metadataLabel = `${formatSessionDateTime(session.startedAt)} · ${formatCompactDataSize(session.totalBytes)}`
               const isHighlighted = session.id === highlightedSessionId
               const cardClasses = ['session-card']
@@ -4089,7 +4098,7 @@ function App() {
                           className="session-delete"
                           onClick={(event) => {
                             event.stopPropagation()
-                            void handleDeleteSession(session)
+                            void requestDeleteSession(session, 'list')
                           }}
                           aria-label={`Delete ${session.title}`}
                           title="Delete recording"
@@ -4202,7 +4211,7 @@ function App() {
                     <button
                       className="detail-delete"
                       type="button"
-                      onClick={() => void handleDeleteRecording()}
+                      onClick={() => void requestDeleteSession(selectedRecording, 'detail')}
                       aria-label="Delete recording"
                       title="Delete recording"
                     >

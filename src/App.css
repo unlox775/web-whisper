@@ -1921,6 +1921,65 @@ body {
   text-decoration: none;
 }
 
+.delete-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.72);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  backdrop-filter: blur(4px);
+  z-index: 45;
+}
+
+.delete-confirm-dialog {
+  width: min(420px, 92vw);
+  border-radius: 1rem;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  display: grid;
+  gap: 0.9rem;
+  padding: 1.1rem;
+  color: #e2e8f0;
+}
+
+.delete-confirm-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.delete-confirm-body p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #cbd5f5;
+}
+
+.delete-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
+.delete-confirm-actions button {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.6);
+  color: #cbd5f5;
+  padding: 0.35rem 0.9rem;
+  font-weight: 600;
+}
+
+.delete-confirm-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.delete-confirm-danger {
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.2);
+  color: #fecaca;
+}
+
 .groq-setup-overlay {
   position: fixed;
   inset: 0;
