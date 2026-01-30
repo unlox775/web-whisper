@@ -316,6 +316,17 @@ body {
   cursor: pointer;
 }
 
+.session-cancel {
+  align-self: flex-start;
+  border-radius: 999px;
+  border: 1px solid rgba(250, 204, 21, 0.4);
+  background: rgba(250, 204, 21, 0.12);
+  color: #fde68a;
+  padding: 0.2rem 0.45rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
 .session-delete:disabled {
   border-color: rgba(148, 163, 184, 0.35);
   background: rgba(148, 163, 184, 0.12);
@@ -541,6 +552,16 @@ body {
   color: rgba(226, 232, 240, 0.75);
 }
 
+.controls-starting-cancel {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  color: rgba(226, 232, 240, 0.7);
+}
+
+.controls-starting-cancel .link-button {
+  color: #facc15;
+}
+
 .transcription-panel {
   position: fixed;
   left: 50%;
@@ -745,11 +766,59 @@ body {
   font-size: 1rem;
 }
 
+.detail-cancel {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(250, 204, 21, 0.5);
+  background: rgba(250, 204, 21, 0.12);
+  color: #fde68a;
+  padding: 0.35rem 0.7rem;
+  font-size: 1rem;
+}
+
 .detail-delete:disabled {
   border-color: rgba(148, 163, 184, 0.35);
   background: rgba(148, 163, 184, 0.12);
   color: #94a3b8;
   cursor: not-allowed;
+}
+
+.starting-flash {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9998;
+  animation: starting-flash 0.4s ease-in-out 0s 1;
+}
+
+.starting-flash.level-1 {
+  background: rgba(56, 189, 248, 0.12);
+}
+
+.starting-flash.level-2 {
+  background: rgba(56, 189, 248, 0.18);
+}
+
+.starting-flash.level-3 {
+  background: rgba(56, 189, 248, 0.24);
+}
+
+.starting-flash.level-4 {
+  background: rgba(56, 189, 248, 0.3);
+}
+
+@keyframes starting-flash {
+  0% {
+    opacity: 0;
+  }
+  25% {
+    opacity: 1;
+  }
+  60% {
+    opacity: 0.35;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 .no-audio-flash {
@@ -1850,6 +1919,65 @@ body {
 .settings-disclaimer a {
   color: #5eead4;
   text-decoration: none;
+}
+
+.delete-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.72);
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  backdrop-filter: blur(4px);
+  z-index: 45;
+}
+
+.delete-confirm-dialog {
+  width: min(420px, 92vw);
+  border-radius: 1rem;
+  background: rgba(15, 23, 42, 0.96);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  display: grid;
+  gap: 0.9rem;
+  padding: 1.1rem;
+  color: #e2e8f0;
+}
+
+.delete-confirm-header h2 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.delete-confirm-body p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #cbd5f5;
+}
+
+.delete-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
+.delete-confirm-actions button {
+  border-radius: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  background: rgba(15, 23, 42, 0.6);
+  color: #cbd5f5;
+  padding: 0.35rem 0.9rem;
+  font-weight: 600;
+}
+
+.delete-confirm-actions button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.delete-confirm-danger {
+  border-color: rgba(248, 113, 113, 0.5);
+  background: rgba(248, 113, 113, 0.2);
+  color: #fecaca;
 }
 
 .groq-setup-overlay {
