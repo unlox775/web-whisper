@@ -39,6 +39,7 @@ Goals: Allow users to export recordings without relying on snips or developer mo
 Acceptance criteria:
 - A visible download button exists on the session detail view.
 - The downloaded file contains the entire session audio and plays end to end.
+Status: Done (spec: [20260213-055318_system-functionality-0739.md](spec/20260213-055318_system-functionality-0739.md))
 
 ## 4) Cross-browser compatibility pass
 Task: Run a structured compatibility sweep across iOS Safari, iOS Chrome, Android

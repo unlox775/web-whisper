@@ -9,7 +9,7 @@ import {
   type StoredChunk,
 } from '../storage/manifest'
 
-export type RecordingSliceKind = 'chunk' | 'snip'
+export type RecordingSliceKind = 'chunk' | 'snip' | 'session'
 
 export interface RecordingAudioSlice {
   kind: RecordingSliceKind
@@ -271,6 +271,7 @@ export class RecordingSlicesApi {
         : null
     const playableChunks = chunks
       .filter((chunk) => !headerChunk || chunk.id !== headerChunk.id)
+      .filter((chunk) => !chunk.audioPurgedAt && chunk.byteLength > 0 && chunk.blob.size > 0)
       .sort((a, b) => a.seq - b.seq)
     const baseStartMsCandidate =
       headerChunk?.startMs ??
@@ -422,6 +423,35 @@ export class RecordingSlicesApi {
       mimeType: blob.type,
       blob,
       suggestedFilename: `${iso}_snip-${Math.round(sliced.startMs)}-${Math.round(sliced.endMs)}.wav`,
+    }
+  }
+
+  async getSessionAudio(session: SessionRecord): Promise<RecordingAudioSlice> {
+    await this.#ensureInit()
+    const { playable } = await this.#getChunkIndex(session)
+    if (playable.length === 0) {
+      throw new Error('No playable audio available for download.')
+    }
+    const derivedEndMs = playable.reduce((max, chunk) => Math.max(max, chunk.endOffsetMs), 0)
+    const declaredDurationMs = Math.max(0, session.durationMs ?? 0)
+    const endMs = declaredDurationMs > 0 ? declaredDurationMs : derivedEndMs
+
+    const sliced = await this.#decodeRangeToMonoSamples(session, 0, endMs)
+    if (sliced.sampleRate <= 0 || sliced.samples.length === 0) {
+      throw new Error('No audio samples decoded for download.')
+    }
+    const blob = encodeWavPcm16Mono(sliced.samples, sliced.sampleRate)
+    const iso = new Date(session.startedAt ?? Date.now()).toISOString().replace(/[:.]/g, '-')
+
+    return {
+      kind: 'session',
+      sessionId: session.id,
+      startMs: sliced.startMs,
+      endMs: sliced.endMs,
+      durationMs: sliced.durationMs,
+      mimeType: blob.type,
+      blob,
+      suggestedFilename: `${iso}_session.wav`,
     }
   }
 
