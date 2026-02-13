@@ -12,8 +12,8 @@
 ## Todos
 - [x] Identify target scope for “system-functionality-0739” (issues/PRs/CI failures/docs).
 - [x] Implement a full-session audio download action (WAV) on the session detail view.
-- [ ] Run `npm install` then `npm run build`, commit build artifacts, and push.
-- [ ] Update this spec + `documentation/roadmap.md` / `documentation/README.md` as needed.
+- [x] Run `npm install` then `npm run build`, commit build artifacts, and push.
+- [x] Update this spec + `documentation/roadmap.md` / `documentation/README.md` as needed.
 
 ## Acceptance criteria
 - A clearly scoped fix/feature is delivered on `cursor/system-functionality-0739`.
@@ -26,12 +26,13 @@
 - Created a spec/prompt log pair for this branch and appended the latest user prompt.
 - Added a full-session download button to the session detail view.
 - Implemented a session download helper that decodes stored chunks and exports a WAV file.
+- Ran `npm install` + `npm run build`, committed updated `docs/` artifacts, and pushed to origin.
 
 ### 🚧 In progress / placeholders
-- Run build, commit build artifacts, and push.
+- None.
 
 ### ⏭️ Next actions / dependencies
-- Run `npm install` and `npm run build`, then commit and push.
+- None.
 
 ## Summary of edits (what/where/why)
 - `documentation/spec/20260213-055318_system-functionality-0739.md`: initialize branch-specific spec/log.
@@ -42,5 +43,5 @@
 
 ## Self-evaluation
 - Prompt logging completed before any product code changes.
-- Full-session download shipped behind a single visible detail-view action; build/push pending.
+- Full-session download shipped behind a single visible detail-view action; build/push completed.
 
