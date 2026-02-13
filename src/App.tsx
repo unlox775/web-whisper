@@ -388,6 +388,8 @@ function App() {
     source: 'list' | 'detail'
   } | null>(null)
   const [deleteConfirmBusy, setDeleteConfirmBusy] = useState(false)
+  const [sessionDownloadBusy, setSessionDownloadBusy] = useState(false)
+  const [sessionDownloadError, setSessionDownloadError] = useState<string | null>(null)
   const [transcriptionKeyStatus, setTranscriptionKeyStatus] = useState<TranscriptionKeyStatus>('missing')
   const [transcriptionKeyError, setTranscriptionKeyError] = useState<string | null>(null)
 
@@ -555,6 +557,11 @@ function App() {
     (chunk: StoredChunk) => Boolean(chunk.audioPurgedAt) || chunk.byteLength <= 0 || chunk.blob.size <= 0,
     [],
   )
+
+  useEffect(() => {
+    setSessionDownloadBusy(false)
+    setSessionDownloadError(null)
+  }, [selectedRecordingId])
 
   const updateTranscriptionPreviewForSession = useCallback((sessionId: string, snips: SnipRecord[]) => {
     const preview = buildTranscriptionPreview(snips)
@@ -1389,6 +1396,43 @@ function App() {
       },
       [ensureChunkPlaybackUrl, selectedRecording?.mimeType, selectedRecording?.startedAt],
     )
+
+  const handleSessionDownload = useCallback(async () => {
+    if (!selectedRecording) {
+      return
+    }
+    if (sessionDownloadBusy) {
+      return
+    }
+    setSessionDownloadError(null)
+    setSessionDownloadBusy(true)
+    try {
+      const slice = await recordingSlicesApi.getSessionAudio(selectedRecording)
+      const url = URL.createObjectURL(slice.blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = slice.suggestedFilename || 'session.wav'
+      link.rel = 'noopener'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      window.setTimeout(() => URL.revokeObjectURL(url), 15_000)
+      void logInfo('Session download requested', {
+        sessionId: selectedRecording.id,
+        byteLength: slice.blob.size,
+        durationMs: slice.durationMs,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setSessionDownloadError(message)
+      void logError('Session download failed', {
+        sessionId: selectedRecording.id,
+        error: message,
+      })
+    } finally {
+      setSessionDownloadBusy(false)
+    }
+  }, [selectedRecording, sessionDownloadBusy])
 
   const handleSelectTextArea = useCallback((event: React.MouseEvent<HTMLTextAreaElement>) => {
     event.currentTarget.focus()
@@ -4197,6 +4241,24 @@ function App() {
                     🐞
                   </button>
                 ) : null}
+                  <button
+                    className="detail-download"
+                    type="button"
+                    onClick={() => void handleSessionDownload()}
+                    aria-label="Download full session audio"
+                    title={
+                      isDetailRecordingActive
+                        ? 'Finish recording before downloading'
+                        : sessionDownloadBusy
+                          ? 'Preparing download…'
+                          : hasPlayableAudio
+                            ? 'Download full session audio (WAV)'
+                            : 'No audio available to download'
+                    }
+                    disabled={isDetailRecordingActive || sessionDownloadBusy || !hasPlayableAudio}
+                  >
+                    {sessionDownloadBusy ? '…' : '⬇'}
+                  </button>
                   {isDetailRecordingActive && isStartPending ? (
                     <button
                       className="detail-cancel"
@@ -4240,6 +4302,11 @@ function App() {
                   </p>
                 ) : null}
               </div>
+              {sessionDownloadError ? (
+                <p className="detail-transcription-placeholder" role="alert">
+                  Download failed: {sessionDownloadError}
+                </p>
+              ) : null}
               <div className="playback-controls">
                 <button
                   className={`playback-button${hasPlayableAudio ? '' : ' is-disabled'}`}
