@@ -13,6 +13,7 @@
 		504EC3081FED79650016851F /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 504EC3071FED79650016851F /* AppDelegate.swift */; };
 		9A7D0F1D2B3A4D5E6F708192 /* WWRecorderPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A7D0F1C2B3A4D5E6F708192 /* WWRecorderPlugin.swift */; };
 		9A7D0F1F2B3A4D5E6F708192 /* MainViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A7D0F1E2B3A4D5E6F708192 /* MainViewController.swift */; };
+		9A7D0F212B3A4D5E6F708192 /* WWRecorder.m in Sources */ = {isa = PBXBuildFile; fileRef = 9A7D0F202B3A4D5E6F708192 /* WWRecorder.m */; };
 		504EC30D1FED79650016851F /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30B1FED79650016851F /* Main.storyboard */; };
 		504EC30F1FED79650016851F /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30E1FED79650016851F /* Assets.xcassets */; };
 		504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC3101FED79650016851F /* LaunchScreen.storyboard */; };
@@ -26,6 +27,7 @@
 		504EC3071FED79650016851F /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		9A7D0F1C2B3A4D5E6F708192 /* WWRecorderPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WWRecorderPlugin.swift; sourceTree = "<group>"; };
 		9A7D0F1E2B3A4D5E6F708192 /* MainViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewController.swift; sourceTree = "<group>"; };
+		9A7D0F202B3A4D5E6F708192 /* WWRecorder.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = WWRecorder.m; sourceTree = "<group>"; };
 		504EC30C1FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/Main.storyboard; sourceTree = "<group>"; };
 		504EC30E1FED79650016851F /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		504EC3111FED79650016851F /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
@@ -70,6 +72,7 @@
 				504EC3071FED79650016851F /* AppDelegate.swift */,
 				9A7D0F1E2B3A4D5E6F708192 /* MainViewController.swift */,
 				9A7D0F1C2B3A4D5E6F708192 /* WWRecorderPlugin.swift */,
+				9A7D0F202B3A4D5E6F708192 /* WWRecorder.m */,
 				504EC30B1FED79650016851F /* Main.storyboard */,
 				504EC30E1FED79650016851F /* Assets.xcassets */,
 				504EC3101FED79650016851F /* LaunchScreen.storyboard */,
@@ -164,6 +167,7 @@
 				504EC3081FED79650016851F /* AppDelegate.swift in Sources */,
 				9A7D0F1F2B3A4D5E6F708192 /* MainViewController.swift in Sources */,
 				9A7D0F1D2B3A4D5E6F708192 /* WWRecorderPlugin.swift in Sources */,
+				9A7D0F212B3A4D5E6F708192 /* WWRecorder.m in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

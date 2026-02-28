@@ -33,9 +33,7 @@ export const isNativeIos = (): boolean => Capacitor.isNativePlatform() && Capaci
 
 export const isNativeIosRecorderAvailable = (): boolean => {
   if (!isNativeIos()) return false
-  const plugins = (Capacitor as unknown as { Plugins?: Record<string, unknown> }).Plugins
-  if (!plugins) return false
-  return typeof plugins.WWRecorder !== 'undefined'
+  return Capacitor.isPluginAvailable('WWRecorder')
 }
 
 export const NativeIosRecorder = registerPlugin<NativeIosRecorderPlugin>('WWRecorder')

@@ -49,6 +49,7 @@ Out of scope (for now):
 - 2026-02-27: Added a tucked-away "About" panel in Developer Console linking iOS/Android contribution info; fixed lint configuration and TypeScript-eslint issues so CI lint passes.
 - 2026-02-27: Began implementing dual-mode recorder: web uses existing WebAudio MP3 chunking; iOS (Capacitor) will use a Swift-native background recorder bridged to JS.
 - 2026-02-28: Added debug visibility for native engine selection (UI indicator + logs) and improved background/foreground diagnostics to verify iOS native recorder continues while JS is suspended.
+- 2026-02-28: Fixed iOS plugin registration: added `CAP_PLUGIN` bridge (`WWRecorder.m`) and switched JS availability detection to `Capacitor.isPluginAvailable`, preventing false “native mode” when the plugin isn’t actually implemented.
 
 ## Self-evaluation (fill in at end)
 
