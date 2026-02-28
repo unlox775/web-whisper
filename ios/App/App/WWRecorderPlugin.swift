@@ -168,19 +168,31 @@ public class WWRecorder: CAPPlugin {
             call.reject("Missing sessionId")
             return
         }
+        if let activeSessionId = self.sessionId, activeSessionId != requestedSessionId {
+            call.resolve([
+                "chunk": NSNull(),
+            ])
+            return
+        }
         if pending.isEmpty {
-            call.resolve(nil)
+            call.resolve([
+                "chunk": NSNull(),
+            ])
             return
         }
         let first = pending.removeFirst()
         guard let filePath = first["filePath"] as? String else {
-            call.resolve(nil)
+            call.resolve([
+                "chunk": NSNull(),
+            ])
             return
         }
         let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
         let fileUrl = documents.appendingPathComponent(filePath, isDirectory: false)
         guard let data = try? Data(contentsOf: fileUrl) else {
-            call.resolve(nil)
+            call.resolve([
+                "chunk": NSNull(),
+            ])
             return
         }
         let base64 = data.base64EncodedString()
@@ -188,7 +200,9 @@ public class WWRecorder: CAPPlugin {
         try? FileManager.default.removeItem(at: fileUrl)
         var payload = first
         payload["dataBase64"] = base64
-        call.resolve(payload)
+        call.resolve([
+            "chunk": payload,
+        ])
     }
 }
 

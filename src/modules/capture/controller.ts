@@ -717,7 +717,7 @@ class NativeIosCaptureController implements CaptureController {
   async #drainPendingChunks(sessionId: string): Promise<void> {
     // Pull chunks one-by-one from native and append into IndexedDB.
     while (true) {
-      const next = await NativeIosRecorder.consumeChunk({ sessionId })
+      const { chunk: next } = await NativeIosRecorder.consumeChunk({ sessionId })
       if (!next) return
       const bytes = decodeBase64ToBytes(next.dataBase64)
       const blob = new Blob([bytes as unknown as BlobPart], { type: M4A_MIME })

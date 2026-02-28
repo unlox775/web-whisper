@@ -263,3 +263,5 @@ ERROR
 
 
 That was kind of a step backwards. I waited for a whole 30 seconds. Not only did it not give me the warning, there's no audio actually flowing, it did tell me audio, you know, that there's four or five seconds of audio. It doesn't usually, I don't remember what it usually did, but I didn't think so. It definitely showed zero segments. But it also didn't create the recording. I'm not sure what that means, But anyway, I've given you the raw outputs of all the log entries. What is going on? What did we fix next?
+
+Err

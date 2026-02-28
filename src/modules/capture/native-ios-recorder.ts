@@ -36,7 +36,7 @@ export interface NativeIosRecorderPlugin {
   start(options: NativeRecorderStartOptions): Promise<NativeRecorderStartResult>
   status(): Promise<NativeRecorderStatusResult>
   stop(): Promise<NativeRecorderStopResult>
-  consumeChunk(options: { sessionId: string }): Promise<NativeRecorderChunkResult | null>
+  consumeChunk(options: { sessionId: string }): Promise<{ chunk: NativeRecorderChunkResult | null }>
 }
 
 export const isNativeIos = (): boolean => Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'ios'
