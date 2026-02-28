@@ -17,10 +17,13 @@ export type NativeRecorderStatusResult = {
   capturedMs: number
   filePath: string | null
   pendingChunks?: number
+  totalFramesCaptured?: number
 }
 
 export type NativeRecorderStopResult = {
   capturedMs: number
+  totalFramesCaptured?: number
+  sampleRate?: number
 }
 
 export type NativeRecorderChunkResult = {

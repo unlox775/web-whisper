@@ -645,15 +645,18 @@ class NativeIosCaptureController implements CaptureController {
           captureState: this.#state.state,
           engine: this.#state.engine,
         })
-        if (isActive) {
-          void NativeIosRecorder.status()
-            .then((status) => logInfo(`Native recorder status on foreground: recording=${status.isRecording} capturedMs=${status.capturedMs}`, status))
-            .catch((error) =>
-              logWarn('Native recorder status check failed', {
-                error: error instanceof Error ? error.message : String(error),
-              }),
-            )
-        }
+        void NativeIosRecorder.status()
+          .then((status) =>
+            logInfo(
+              `Native recorder status on ${isActive ? 'foreground' : 'background'}: recording=${status.isRecording} capturedMs=${status.capturedMs} pending=${status.pendingChunks ?? 0}`,
+              status,
+            ),
+          )
+          .catch((error) =>
+            logWarn('Native recorder status check failed', {
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          )
       }).catch(() => undefined)
     }
 
@@ -792,6 +795,8 @@ class NativeIosCaptureController implements CaptureController {
       await logInfo('Native iOS recorder stopped', {
         sessionId,
         capturedMs: stopped.capturedMs,
+        totalFramesCaptured: stopped.totalFramesCaptured,
+        sampleRate: stopped.sampleRate,
       })
 
       // Drain any remaining chunks now that recording has stopped.
@@ -813,6 +818,14 @@ class NativeIosCaptureController implements CaptureController {
       const durationMs =
         chunkMetadata.length > 0 ? chunkMetadata[chunkMetadata.length - 1].endMs - chunkMetadata[0].startMs : 0
       const totalBytes = chunkMetadata.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+      if (typeof stopped.capturedMs === 'number' && Math.abs(stopped.capturedMs - durationMs) > 1250) {
+        await logWarn('Native capture duration differs from imported chunk duration', {
+          sessionId,
+          nativeCapturedMs: stopped.capturedMs,
+          importedDurationMs: durationMs,
+          chunkCount: chunkMetadata.length,
+        })
+      }
 
       await manifestService.updateSession(sessionId, {
         status,
