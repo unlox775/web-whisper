@@ -2259,7 +2259,9 @@ function App() {
       if (current.state !== 'recording') {
         return
       }
-      if (current.chunksRecorded > 0) {
+      const hasAudio =
+        current.engine === 'ios-native' ? current.capturedMs > 0 : current.chunksRecorded > 0
+      if (hasAudio) {
         return
       }
       const diagnostics =
@@ -2267,6 +2269,8 @@ function App() {
       void logWarn('No audio captured after timeout; stopping recording', {
         sessionId: current.sessionId,
         timeoutMs: 15000,
+        engine: current.engine,
+        capturedMs: current.capturedMs,
         error: current.error ?? null,
         diagnostics,
       })
@@ -2278,6 +2282,8 @@ function App() {
         captureState: {
           state: current.state,
           chunksRecorded: current.chunksRecorded,
+          capturedMs: current.capturedMs,
+          engine: current.engine,
           error: current.error ?? null,
         },
         diagnostics,

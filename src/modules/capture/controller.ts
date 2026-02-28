@@ -719,13 +719,44 @@ class NativeIosCaptureController implements CaptureController {
     let sessionNotes: string | undefined
     try {
       const stopped = await NativeIosRecorder.stop()
+      await logInfo('Native iOS recorder stopped', {
+        sessionId,
+        filePath: stopped.filePath,
+        capturedMs: stopped.capturedMs,
+        bytes: stopped.bytes,
+      })
       this.#filePath = stopped.filePath
       const capturedMs = stopped.capturedMs
 
-      const contents = await Filesystem.readFile({
-        path: stopped.filePath,
-        directory: Directory.Documents,
-      })
+      const basename = stopped.filePath.split('/').pop() ?? stopped.filePath
+      const candidatePaths = Array.from(
+        new Set([stopped.filePath, basename, `WebWhisperRecordings/${basename}`].filter(Boolean)),
+      )
+
+      let contents: { data: string | Blob } | null = null
+      for (const candidate of candidatePaths) {
+        try {
+          await logInfo('Reading native recording file', {
+            sessionId,
+            directory: 'Documents',
+            path: candidate,
+          })
+          contents = await Filesystem.readFile({
+            path: candidate,
+            directory: Directory.Documents,
+          })
+          break
+        } catch (error) {
+          await logWarn('Native recording read attempt failed', {
+            sessionId,
+            path: candidate,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+      if (!contents) {
+        throw new Error(`Native recording file could not be read (tried: ${candidatePaths.join(', ')})`)
+      }
 
       const blob =
         typeof contents.data === 'string'
@@ -785,10 +816,7 @@ class NativeIosCaptureController implements CaptureController {
           notes: `Native recording failed: ${sessionNotes}`,
         })
       }
-      await logError('Native iOS recording stop/import failed', {
-        sessionId,
-        error: sessionNotes,
-      })
+      await logError(`Native iOS recording stop/import failed: ${sessionNotes}`, { sessionId })
       this.#setState({ state: 'error', error: sessionNotes })
     } finally {
       this.#filePath = null

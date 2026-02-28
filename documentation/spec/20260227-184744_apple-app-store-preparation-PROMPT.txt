@@ -11,3 +11,119 @@ Alright, if we're getting any audio. This stream is pretty cool. Is it really ac
 
 
 Task number one, you need to show me something visual on the actual app in the phone that shows that it really is different. And second, I don't know, it didn't work when you switched to another thing. Let's do the easier, simple thing right now to make sure that I can actually see something. I don't know how I can tell if it really has switched to WWRecorder plugin instead. No idea. Debugging. There's a built-in debugging thing in this app that I can just go look at logs. That's the best place to start outputting differences here inside of the actual app. I can turn on debugger mode and I can go look at the actual log. Give me that. I can export the log and send it to you.
+
+Still failed.
+
+Web Whisper — Doctor Report (compact)
+
+Session: ba11d465-9af4-42e2-af58-dd19d86f949d
+
+StartedAt: 2026-02-28T18:37:02.071Z
+
+DurationMs: 13397  (=13.4s)
+
+Mime: audio/mpeg  Chunks: 4  Timing: verified
+
+Recent logs (last 30):
+
+- 2026-02-28T18:37:01.524Z info Recorder start requested
+
+- 2026-02-28T18:37:01.525Z info Wake lock acquired for recording
+
+- 2026-02-28T18:37:01.531Z info Requesting microphone stream
+
+- 2026-02-28T18:37:01.538Z info Wake lock released after recording
+
+- 2026-02-28T18:37:02.032Z info Microphone stream acquired
+
+- 2026-02-28T18:37:02.072Z info PCM capture started
+
+- 2026-02-28T18:37:02.113Z info Recorder started
+
+- 2026-02-28T18:37:02.116Z info Wake lock acquired for recording
+
+- 2026-02-28T18:37:06.293Z debug PCM chunk encoded
+
+- 2026-02-28T18:37:06.305Z info Chunk persisted
+
+- 2026-02-28T18:37:06.317Z debug Chunk volume profile stored
+
+- 2026-02-28T18:37:06.510Z info Wake lock request deferred until page is visible
+
+- 2026-02-28T18:37:06.510Z warn Wake lock released unexpectedly; retrying
+
+- 2026-02-28T18:37:13.864Z info Wake lock acquired for recording
+
+- 2026-02-28T18:37:17.832Z debug PCM chunk encoded
+
+- 2026-02-28T18:37:17.839Z info Chunk persisted
+
+- 2026-02-28T18:37:17.847Z debug Chunk volume profile stored
+
+- 2026-02-28T18:37:21.880Z debug PCM chunk encoded
+
+- 2026-02-28T18:37:21.887Z info Chunk persisted
+
+- 2026-02-28T18:37:21.895Z debug Chunk volume profile stored
+
+- 2026-02-28T18:37:23.181Z info Recorder stop requested
+
+- 2026-02-28T18:37:23.246Z debug PCM chunk encoded
+
+- 2026-02-28T18:37:23.248Z info Wake lock released after recording
+
+- 2026-02-28T18:37:23.253Z info Chunk persisted
+
+- 2026-02-28T18:37:23.260Z info Session timing reconciled
+
+- 2026-02-28T18:37:23.260Z debug Chunk volume profile stored
+
+- 2026-02-28T18:37:23.261Z info Recorder stopped
+
+- 2026-02-28T18:37:27.670Z info Snip transcription started
+
+- 2026-02-28T18:37:28.609Z info Snip transcription completed
+
+- 2026-02-28T18:38:20.619Z info Playback source prepared
+
+I was not pulling down your new changes, but now I did. And now I'm seeing this error.
+
+Still didn't work, and I DID pull the code changes
+
+Web Whisper — Doctor Report (compact)
+
+Session: ba11d465-9af4-42e2-af58-dd19d86f949d
+
+StartedAt: 2026-02-28T18:37:02.071Z
+
+DurationMs: 13536  (=13.5s)
+
+Mime: audio/mpeg  Chunks: 4  Timing: verified
+
+Recent logs (last 30):
+
+- 2026-02-28T19:10:20.641Z info Logger initialised
+
+- 2026-02-28T19:10:22.325Z info Recorder start requested
+
+- 2026-02-28T19:10:22.326Z info Wake lock acquired for recording
+
+- 2026-02-28T19:10:22.331Z info Capture engine selected: ios-native
+
+- 2026-02-28T19:10:22.340Z info Wake lock released after recording
+
+- 2026-02-28T19:10:22.562Z info Recorder started
+
+- 2026-02-28T19:10:22.565Z info Wake lock acquired for recording
+
+- 2026-02-28T19:10:37.567Z info No global errors captured during recording start window
+
+- 2026-02-28T19:10:37.567Z warn No audio captured after timeout; stopping recording
+
+- 2026-02-28T19:10:37.579Z info Recorder stop requested
+
+- 2026-02-28T19:10:37.599Z info Wake lock released after recording
+
+- 2026-02-28T19:10:37.826Z info Recorder stopped
+
+- 2026-02-28T19:10:37.826Z error Native iOS recording stop/import failed
