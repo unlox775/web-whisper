@@ -43,6 +43,7 @@ Out of scope (for now):
 
 - 2026-02-27: Created this spec and prompt log for the branch.
 - 2026-02-27: Appended follow-up prompt about visible progress; continuing with roadmap/CI/build work next.
+- 2026-02-27: Updated scope: deliver an installable iOS app project (TestFlight-ready) in-repo, with signing/build docs and CI for web.
 
 ## Self-evaluation (fill in at end)
 
