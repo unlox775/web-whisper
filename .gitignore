@@ -15,3 +15,4 @@ ios/App/App/public/
 .capacitor/
 .capacitor.config.json
 .DS_Store
+ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/
