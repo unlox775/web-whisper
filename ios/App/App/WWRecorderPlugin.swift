@@ -4,13 +4,18 @@ import Capacitor
 
 @objc(WWRecorder)
 public class WWRecorder: CAPPlugin {
-    private var recorder: AVAudioRecorder?
+    private var audioEngine: AVAudioEngine?
     private var startedAtMs: Int64?
     private var sessionId: String?
     private var chunkDurationMs: Int64 = 4000
     private var chunkSeq: Int = 0
-    private var chunkStartedAtMs: Int64?
-    private var rotationTimer: DispatchSourceTimer?
+    private var sampleRate: Double = 44100
+    private var framesPerChunk: Int = 0
+    private var totalFramesCaptured: Int64 = 0
+    private var currentChunkFrames: Int = 0
+    private var currentChunkStartMs: Int64?
+    private var currentChunkFileHandle: FileHandle?
+    private var currentChunkPath: String?
     private var pending: [[String: Any]] = []
 
     private func recordingsDirUrl() -> URL {
@@ -19,7 +24,7 @@ public class WWRecorder: CAPPlugin {
     }
 
     private func chunkFileUrl(sessionId: String, seq: Int) -> URL {
-        let filename = String(format: "%@-chunk-%05d.m4a", sessionId, seq)
+        let filename = String(format: "%@-chunk-%05d.pcm", sessionId, seq)
         return recordingsDirUrl().appendingPathComponent(filename, isDirectory: false)
     }
 
@@ -27,7 +32,7 @@ public class WWRecorder: CAPPlugin {
         return Int64(Date().timeIntervalSince1970 * 1000.0)
     }
 
-    private func startChunkRecorder(sessionId: String, targetBitrate: Int) throws {
+    private func startNewChunkFile(sessionId: String) throws {
         let dir = recordingsDirUrl()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
@@ -35,55 +40,54 @@ public class WWRecorder: CAPPlugin {
         if FileManager.default.fileExists(atPath: fileUrl.path) {
             try FileManager.default.removeItem(at: fileUrl)
         }
-
-        let settings: [String: Any] = [
-            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-            AVSampleRateKey: 44100,
-            AVNumberOfChannelsKey: 1,
-            AVEncoderBitRateKey: targetBitrate,
-            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-        ]
-
-        let recorder = try AVAudioRecorder(url: fileUrl, settings: settings)
-        recorder.isMeteringEnabled = true
-        recorder.prepareToRecord()
-        recorder.record()
-        self.recorder = recorder
-        self.chunkStartedAtMs = nowMs()
+        FileManager.default.createFile(atPath: fileUrl.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: fileUrl)
+        self.currentChunkFileHandle = handle
+        self.currentChunkPath = "WebWhisperRecordings/\(fileUrl.lastPathComponent)"
+        self.currentChunkFrames = 0
+        self.currentChunkStartMs = startedAtMs.map { $0 + Int64(Double(totalFramesCaptured) / sampleRate * 1000.0) }
     }
 
-    private func finalizeActiveChunk() {
-        guard let recorder = recorder, let sessionId = sessionId, let chunkStartedAtMs = chunkStartedAtMs else {
+    private func finalizeChunkIfNeeded(force: Bool) {
+        guard let sessionId = sessionId, let startMs = currentChunkStartMs, let filePath = currentChunkPath else {
             return
         }
-        let seq = chunkSeq
-        let capturedMs = Int64(recorder.currentTime * 1000.0)
-        recorder.stop()
-        self.recorder = nil
+        if !force && currentChunkFrames < framesPerChunk {
+            return
+        }
+        do {
+            try currentChunkFileHandle?.close()
+        } catch {
+            // best-effort
+        }
+        currentChunkFileHandle = nil
 
-        let startMs = chunkStartedAtMs
-        let endMs = startMs + capturedMs
-        let fileUrl = chunkFileUrl(sessionId: sessionId, seq: seq)
+        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+        let fileUrl = documents.appendingPathComponent(filePath, isDirectory: false)
         let attrs = try? FileManager.default.attributesOfItem(atPath: fileUrl.path)
         let bytes = (attrs?[FileAttributeKey.size] as? NSNumber)?.intValue ?? 0
 
+        let endMs = startedAtMs.map { $0 + Int64(Double(totalFramesCaptured) / sampleRate * 1000.0) } ?? (startMs)
         if bytes > 0 && endMs > startMs {
             pending.append([
                 "sessionId": sessionId,
-                "seq": seq,
+                "seq": chunkSeq,
                 "startMs": startMs,
                 "endMs": endMs,
                 "bytes": bytes,
-                "filePath": "WebWhisperRecordings/\(fileUrl.lastPathComponent)",
+                "filePath": filePath,
+                "format": "pcm16le",
+                "sampleRate": Int(sampleRate),
             ])
         }
 
         chunkSeq += 1
-        self.chunkStartedAtMs = nil
+        currentChunkStartMs = nil
+        currentChunkPath = nil
     }
 
     @objc func start(_ call: CAPPluginCall) {
-        if let recorder = recorder, recorder.isRecording {
+        if let engine = audioEngine, engine.isRunning {
             call.reject("Recorder already running")
             return
         }
@@ -93,7 +97,6 @@ public class WWRecorder: CAPPlugin {
             return
         }
 
-        let targetBitrate = call.getInt("targetBitrate") ?? 64000
         let chunkDurationMs = call.getInt("chunkDurationMs") ?? 4000
 
         do {
@@ -106,25 +109,68 @@ public class WWRecorder: CAPPlugin {
             self.chunkDurationMs = Int64(chunkDurationMs)
             self.chunkSeq = 0
             self.pending = []
+            self.totalFramesCaptured = 0
 
-            try startChunkRecorder(sessionId: sessionId, targetBitrate: targetBitrate)
+            let engine = AVAudioEngine()
+            let input = engine.inputNode
+            let format = input.inputFormat(forBus: 0)
+            self.sampleRate = format.sampleRate
+            self.framesPerChunk = Int((Double(chunkDurationMs) / 1000.0) * sampleRate)
+            try startNewChunkFile(sessionId: sessionId)
 
-            rotationTimer?.cancel()
-            let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-            timer.schedule(deadline: .now() + .milliseconds(chunkDurationMs), repeating: .milliseconds(chunkDurationMs))
-            timer.setEventHandler { [weak self] in
+            input.removeTap(onBus: 0)
+            input.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] buffer, _ in
                 guard let self = self else { return }
-                // Rotate chunk in the background-safe native layer.
-                self.finalizeActiveChunk()
-                guard let sessionId = self.sessionId else { return }
-                do {
-                    try self.startChunkRecorder(sessionId: sessionId, targetBitrate: targetBitrate)
-                } catch {
-                    // If restart fails, leave pending chunks; status/stop will reflect isRecording=false.
+                let frames = Int(buffer.frameLength)
+                if frames <= 0 { return }
+
+                guard let channel = buffer.floatChannelData?[0] else { return }
+                var idx = 0
+                while idx < frames {
+                    guard let handle = self.currentChunkFileHandle else { return }
+                    let remainingInChunk = max(0, self.framesPerChunk - self.currentChunkFrames)
+                    let take = min(remainingInChunk, frames - idx)
+                    if take <= 0 {
+                        self.finalizeChunkIfNeeded(force: true)
+                        do {
+                            try self.startNewChunkFile(sessionId: sessionId)
+                        } catch {
+                            return
+                        }
+                        continue
+                    }
+
+                    var out = Data(count: take * 2)
+                    out.withUnsafeMutableBytes { (raw: UnsafeMutableRawBufferPointer) in
+                        guard let ptr = raw.baseAddress?.assumingMemoryBound(to: Int16.self) else { return }
+                        for i in 0..<take {
+                            let s = max(-1.0, min(1.0, channel[idx + i]))
+                            let v: Int16 = s < 0 ? Int16(s * 32768.0) : Int16(s * 32767.0)
+                            ptr[i] = v.littleEndian
+                        }
+                    }
+                    do {
+                        try handle.write(contentsOf: out)
+                    } catch {
+                        return
+                    }
+
+                    idx += take
+                    self.currentChunkFrames += take
+                    self.totalFramesCaptured += Int64(take)
+                    if self.currentChunkFrames >= self.framesPerChunk {
+                        self.finalizeChunkIfNeeded(force: true)
+                        do {
+                            try self.startNewChunkFile(sessionId: sessionId)
+                        } catch {
+                            return
+                        }
+                    }
                 }
             }
-            rotationTimer = timer
-            timer.resume()
+
+            try engine.start()
+            self.audioEngine = engine
 
             call.resolve([
                 "startedAtMs": self.startedAtMs ?? 0,
@@ -136,8 +182,8 @@ public class WWRecorder: CAPPlugin {
     }
 
     @objc func status(_ call: CAPPluginCall) {
-        let isRecording = recorder?.isRecording ?? false
-        let capturedMs: Int64 = isRecording ? Int64((recorder?.currentTime ?? 0) * 1000.0) : 0
+        let isRecording = audioEngine?.isRunning ?? false
+        let capturedMs: Int64 = Int64(Double(totalFramesCaptured) / sampleRate * 1000.0)
         call.resolve([
             "isRecording": isRecording,
             "startedAtMs": startedAtMs as Any,
@@ -148,9 +194,10 @@ public class WWRecorder: CAPPlugin {
     }
 
     @objc func stop(_ call: CAPPluginCall) {
-        rotationTimer?.cancel()
-        rotationTimer = nil
-        finalizeActiveChunk()
+        audioEngine?.inputNode.removeTap(onBus: 0)
+        audioEngine?.stop()
+        audioEngine = nil
+        finalizeChunkIfNeeded(force: true)
 
         do {
             try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
@@ -159,7 +206,7 @@ public class WWRecorder: CAPPlugin {
         }
 
         call.resolve([
-            "capturedMs": Int64(max(0, (nowMs() - (startedAtMs ?? nowMs())))),
+            "capturedMs": Int64(Double(totalFramesCaptured) / sampleRate * 1000.0),
         ])
     }
 

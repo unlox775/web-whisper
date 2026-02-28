@@ -87,7 +87,6 @@ const AUDIO_CONSTRAINTS: MediaStreamConstraints = {
 }
 
 const MP3_MIME = 'audio/mpeg'
-const M4A_MIME = 'audio/mp4'
 const NO_AUDIO_TIMEOUT_MS = 9_000
 
 const describeTrack = (track: MediaStreamTrack) => ({
@@ -618,6 +617,7 @@ class NativeIosCaptureController implements CaptureController {
   #filePath: string | null = null
   #activeSessionId: string | null = null
   #hasAppStateListener = false
+  #targetKbps = 64
 
   get state(): CaptureStateSnapshot {
     return this.#state
@@ -659,11 +659,15 @@ class NativeIosCaptureController implements CaptureController {
 
     await logInfo('Capture engine selected: ios-native', { sessionId: options.sessionId })
 
+    // Ensure MP3 encoder is available for native PCM->MP3 chunk ingestion.
+    await ensureMp3EncoderLoaded()
+
     const startResult = await NativeIosRecorder.start({
       sessionId: options.sessionId,
       targetBitrate: options.targetBitrate,
       chunkDurationMs: options.chunkDurationMs,
     })
+    this.#targetKbps = Math.max(8, Math.round(options.targetBitrate / 1000))
 
     this.#filePath = startResult.filePath
     this.#activeSessionId = options.sessionId
@@ -671,7 +675,7 @@ class NativeIosCaptureController implements CaptureController {
     await manifestService.updateSession(options.sessionId, {
       startedAt,
       updatedAt: startedAt,
-      mimeType: M4A_MIME,
+      mimeType: MP3_MIME,
       status: 'recording',
       notes: 'Recording in progress (native iOS engine).',
     })
@@ -682,7 +686,7 @@ class NativeIosCaptureController implements CaptureController {
       startedAt,
       lastChunkAt: startedAt,
       capturedMs: 0,
-      mimeType: M4A_MIME,
+      mimeType: MP3_MIME,
       bytesBuffered: 0,
       chunksRecorded: 0,
     })
@@ -719,8 +723,22 @@ class NativeIosCaptureController implements CaptureController {
     while (true) {
       const { chunk: next } = await NativeIosRecorder.consumeChunk({ sessionId })
       if (!next) return
+      if (next.format !== 'pcm16le') {
+        throw new Error(`Unsupported native chunk format: ${String((next as { format?: unknown }).format)}`)
+      }
       const bytes = decodeBase64ToBytes(next.dataBase64)
-      const blob = new Blob([bytes as unknown as BlobPart], { type: M4A_MIME })
+      const pcmBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      const samples = new Int16Array(pcmBuffer)
+
+      const Mp3Encoder = getMp3EncoderCtor()
+      const encoder = new Mp3Encoder(1, next.sampleRate, this.#targetKbps)
+      const encoded = encoder.encodeBuffer(samples)
+      const flushed = encoder.flush()
+      const parts: BlobPart[] = []
+      if (encoded.length > 0) parts.push(new Uint8Array(encoded))
+      if (flushed.length > 0) parts.push(new Uint8Array(flushed))
+      const blob = new Blob(parts, { type: MP3_MIME })
+
       await manifestService.appendChunk(
         {
           id: `${sessionId}-chunk-${next.seq}`,
@@ -737,6 +755,22 @@ class NativeIosCaptureController implements CaptureController {
         bytesBuffered: this.#state.bytesBuffered + blob.size,
         lastChunkAt: next.endMs,
       })
+      try {
+        const profile = await computeChunkVolumeProfile(blob, {
+          chunkId: `${sessionId}-chunk-${next.seq}`,
+          sessionId,
+          seq: next.seq,
+          chunkStartMs: next.startMs,
+          chunkEndMs: next.endMs,
+        })
+        await manifestService.storeChunkVolumeProfile(profile)
+      } catch (error) {
+        await logWarn('Native chunk volume profile failed', {
+          sessionId,
+          seq: next.seq,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
     }
   }
 
@@ -786,7 +820,7 @@ class NativeIosCaptureController implements CaptureController {
         durationMs,
         totalBytes,
         chunkCount: chunkMetadata.length,
-        mimeType: M4A_MIME,
+        mimeType: MP3_MIME,
         notes: status === 'ready' ? 'Recording complete (native iOS engine).' : sessionNotes,
       })
 

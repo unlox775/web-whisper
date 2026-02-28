@@ -30,6 +30,8 @@ export type NativeRecorderChunkResult = {
   endMs: number
   bytes: number
   dataBase64: string
+  format: 'pcm16le'
+  sampleRate: number
 }
 
 export interface NativeIosRecorderPlugin {
