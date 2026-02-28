@@ -3,7 +3,7 @@ import { computeChunkVolumeProfile } from '../storage/chunk-volume'
 import { manifestService, type SessionRecord, type SessionStatus } from '../storage/manifest'
 import { logDebug, logError, logInfo, logWarn } from '../logging/logger'
 import { Filesystem, Directory } from '@capacitor/filesystem'
-import { isNativeIos, NativeIosRecorder } from './native-ios-recorder'
+import { isNativeIosRecorderAvailable, NativeIosRecorder } from './native-ios-recorder'
 import { App as CapacitorApp } from '@capacitor/app'
 
 export type RecorderState = 'idle' | 'starting' | 'recording' | 'stopping' | 'error'
@@ -834,4 +834,6 @@ class NativeIosCaptureController implements CaptureController {
   }
 }
 
-export const captureController: CaptureController = isNativeIos() ? new NativeIosCaptureController() : new PcmMp3CaptureController()
+export const captureController: CaptureController = isNativeIosRecorderAvailable()
+  ? new NativeIosCaptureController()
+  : new PcmMp3CaptureController()

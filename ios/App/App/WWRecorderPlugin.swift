@@ -2,8 +2,8 @@ import Foundation
 import AVFoundation
 import Capacitor
 
-@objc(WWRecorderPlugin)
-public class WWRecorderPlugin: CAPPlugin {
+@objc(WWRecorder)
+public class WWRecorder: CAPPlugin {
     private var recorder: AVAudioRecorder?
     private var startedAtMs: Int64?
     private var filePath: String?
