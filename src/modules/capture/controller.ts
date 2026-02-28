@@ -482,6 +482,7 @@ class PcmMp3CaptureController implements CaptureController {
 
   attachAnalysisPort(_port: MessagePort): void {
     // PCM path doesn't use an external analysis port yet.
+    void _port
   }
 
   #cleanup() {
@@ -489,19 +490,25 @@ class PcmMp3CaptureController implements CaptureController {
       this.#processor.onaudioprocess = null
       try {
         this.#processor.disconnect()
-      } catch {}
+      } catch (error) {
+        void error
+      }
       this.#processor = null
     }
     if (this.#source) {
       try {
         this.#source.disconnect()
-      } catch {}
+      } catch (error) {
+        void error
+      }
       this.#source = null
     }
     if (this.#muteGain) {
       try {
         this.#muteGain.disconnect()
-      } catch {}
+      } catch (error) {
+        void error
+      }
       this.#muteGain = null
     }
     if (this.#audioContext) {

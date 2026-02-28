@@ -95,8 +95,10 @@ export interface StorageRetentionResult {
 
 type StoredChunkVolumeFrame = number | { normalized?: number; rms?: number }
 
-const sanitizeVolumeRecord = (record: any): ChunkVolumeProfileRecord => {
-  const rawFrames: StoredChunkVolumeFrame[] = Array.isArray(record.frames) ? record.frames : []
+const sanitizeVolumeRecord = (record: unknown): ChunkVolumeProfileRecord => {
+  const rawRecord = record && typeof record === 'object' ? (record as Record<string, unknown>) : {}
+  const rawFramesValue = rawRecord.frames
+  const rawFrames: StoredChunkVolumeFrame[] = Array.isArray(rawFramesValue) ? (rawFramesValue as StoredChunkVolumeFrame[]) : []
   const normalizedFrames: number[] =
     rawFrames.length > 0 && typeof rawFrames[0] === 'number'
       ? (rawFrames as number[])
@@ -113,46 +115,46 @@ const sanitizeVolumeRecord = (record: any): ChunkVolumeProfileRecord => {
         })
 
   const frameDurationMs =
-    typeof record.frameDurationMs === 'number' && record.frameDurationMs > 0
-      ? record.frameDurationMs
+    typeof rawRecord.frameDurationMs === 'number' && rawRecord.frameDurationMs > 0
+      ? rawRecord.frameDurationMs
       : 50
   const durationMs =
-    typeof record.durationMs === 'number' && record.durationMs > 0
-      ? record.durationMs
+    typeof rawRecord.durationMs === 'number' && rawRecord.durationMs > 0
+      ? rawRecord.durationMs
       : normalizedFrames.length * frameDurationMs
 
   const maxNormalized =
-    typeof record.maxNormalized === 'number'
-      ? record.maxNormalized
+    typeof rawRecord.maxNormalized === 'number'
+      ? rawRecord.maxNormalized
       : normalizedFrames.length > 0
         ? Math.max(...normalizedFrames)
         : 0
   const averageNormalized =
-    typeof record.averageNormalized === 'number'
-      ? record.averageNormalized
+    typeof rawRecord.averageNormalized === 'number'
+      ? rawRecord.averageNormalized
       : normalizedFrames.length > 0
         ? normalizedFrames.reduce((sum, value) => sum + value, 0) / normalizedFrames.length
         : 0
 
   return {
-    chunkId: record.chunkId,
-    sessionId: record.sessionId,
-    seq: record.seq ?? 0,
-    chunkStartMs: record.chunkStartMs ?? 0,
+    chunkId: typeof rawRecord.chunkId === 'string' ? rawRecord.chunkId : '',
+    sessionId: typeof rawRecord.sessionId === 'string' ? rawRecord.sessionId : '',
+    seq: typeof rawRecord.seq === 'number' ? rawRecord.seq : 0,
+    chunkStartMs: typeof rawRecord.chunkStartMs === 'number' ? rawRecord.chunkStartMs : 0,
     chunkEndMs:
-      typeof record.chunkEndMs === 'number'
-        ? record.chunkEndMs
-        : (record.chunkStartMs ?? 0) + durationMs,
+      typeof rawRecord.chunkEndMs === 'number'
+        ? rawRecord.chunkEndMs
+        : (typeof rawRecord.chunkStartMs === 'number' ? rawRecord.chunkStartMs : 0) + durationMs,
     durationMs,
-    sampleRate: record.sampleRate ?? 0,
+    sampleRate: typeof rawRecord.sampleRate === 'number' ? rawRecord.sampleRate : 0,
     frameDurationMs,
     frames: normalizedFrames,
     maxNormalized,
     averageNormalized,
-    scalingFactor: record.scalingFactor ?? 1,
-    id: record.id ?? record.chunkId,
-    createdAt: record.createdAt ?? Date.now(),
-    updatedAt: record.updatedAt ?? Date.now(),
+    scalingFactor: typeof rawRecord.scalingFactor === 'number' ? rawRecord.scalingFactor : 1,
+    id: typeof rawRecord.id === 'string' ? rawRecord.id : typeof rawRecord.chunkId === 'string' ? rawRecord.chunkId : '',
+    createdAt: typeof rawRecord.createdAt === 'number' ? rawRecord.createdAt : Date.now(),
+    updatedAt: typeof rawRecord.updatedAt === 'number' ? rawRecord.updatedAt : Date.now(),
   }
 }
 
@@ -399,10 +401,14 @@ class IndexedDBManifestService implements ManifestService {
     const index = db.transaction('chunks').store.index('by-session')
     const chunks = await index.getAll(sessionId)
     return chunks
-      .map(({ blob: _blob, timingStatus, ...rest }) => ({
-        ...rest,
-        timingStatus: timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
-      }))
+      .map((chunk) => {
+        const { blob, timingStatus, ...rest } = chunk
+        void blob
+        return {
+          ...rest,
+          timingStatus: timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+        }
+      })
       .sort((a, b) => a.seq - b.seq)
   }
 

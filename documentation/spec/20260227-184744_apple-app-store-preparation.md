@@ -46,6 +46,7 @@ Out of scope (for now):
 - 2026-02-27: Updated scope: deliver an installable iOS app project (TestFlight-ready) in-repo, with signing/build docs and CI for web.
 - 2026-02-27: Added GitHub Actions CI (lint/test/build) and expanded the App Store roadmap checklist.
 - 2026-02-27: Added Capacitor iOS wrapper project under `ios/` plus build/TestFlight documentation.
+- 2026-02-27: Added a tucked-away "About" panel in Developer Console linking iOS/Android contribution info; fixed lint configuration and TypeScript-eslint issues so CI lint passes.
 
 ## Self-evaluation (fill in at end)
 

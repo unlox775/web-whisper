@@ -14,7 +14,8 @@ export async function ensureMp3EncoderLoaded(): Promise<void> {
   if (typeof window === 'undefined') {
     throw new Error('MP3 encoder can only load in a browser.')
   }
-  if ((window as any).lamejs?.Mp3Encoder) {
+  const globalWindow = window as unknown as Window & { lamejs?: LameGlobal }
+  if (globalWindow.lamejs?.Mp3Encoder) {
     return
   }
   if (mp3LoadPromise) {
@@ -28,7 +29,7 @@ export async function ensureMp3EncoderLoaded(): Promise<void> {
     script.onerror = () => reject(new Error('Failed to load MP3 encoder script.'))
     document.head.appendChild(script)
   }).then(() => {
-    if (!((window as any).lamejs?.Mp3Encoder)) {
+    if (!(globalWindow.lamejs?.Mp3Encoder)) {
       throw new Error('MP3 encoder loaded but window.lamejs.Mp3Encoder is missing.')
     }
   })
@@ -36,7 +37,8 @@ export async function ensureMp3EncoderLoaded(): Promise<void> {
 }
 
 export function getMp3EncoderCtor(): LameGlobal['Mp3Encoder'] {
-  const ctor = (window as any).lamejs?.Mp3Encoder as LameGlobal['Mp3Encoder'] | undefined
+  const globalWindow = window as unknown as Window & { lamejs?: LameGlobal }
+  const ctor = globalWindow.lamejs?.Mp3Encoder
   if (!ctor) {
     throw new Error('MP3 encoder is not loaded yet.')
   }
