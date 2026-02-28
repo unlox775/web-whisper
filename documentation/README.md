@@ -15,6 +15,7 @@ This folder contains the living documentation for Web Whisper. It is kept curren
 - `lessonslearned.md` - retrospective and timeline.
 - `ai-usage.md` - how to use AI with Web Whisper.
 - `roadmap.md` - final polish roadmap and acceptance criteria.
+- `ios-app-store.md` - iOS wrapper build + TestFlight steps.
 - `knownissues.md` - known bugs and platform limitations.
 - `contributor-roadmap.md` - optional community contributions.
 
