@@ -3,6 +3,7 @@ import { Capacitor, registerPlugin } from '@capacitor/core'
 export type NativeRecorderStartOptions = {
   sessionId: string
   targetBitrate: number
+  chunkDurationMs: number
 }
 
 export type NativeRecorderStartResult = {
@@ -15,19 +16,27 @@ export type NativeRecorderStatusResult = {
   startedAtMs: number | null
   capturedMs: number
   filePath: string | null
+  pendingChunks?: number
 }
 
 export type NativeRecorderStopResult = {
-  filePath: string
   capturedMs: number
+}
+
+export type NativeRecorderChunkResult = {
+  sessionId: string
+  seq: number
+  startMs: number
+  endMs: number
   bytes: number
-  dataBase64?: string | null
+  dataBase64: string
 }
 
 export interface NativeIosRecorderPlugin {
   start(options: NativeRecorderStartOptions): Promise<NativeRecorderStartResult>
   status(): Promise<NativeRecorderStatusResult>
   stop(): Promise<NativeRecorderStopResult>
+  consumeChunk(options: { sessionId: string }): Promise<NativeRecorderChunkResult | null>
 }
 
 export const isNativeIos = (): boolean => Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'ios'
