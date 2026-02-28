@@ -89,19 +89,27 @@ public class WWRecorder: CAPPlugin {
         }
 
         let fileBytes: Int64
+        let base64Data: String?
         if let filePath = self.filePath {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
             let fileUrl = documents.appendingPathComponent(filePath, isDirectory: false)
             let attrs = try? FileManager.default.attributesOfItem(atPath: fileUrl.path)
             fileBytes = (attrs?[FileAttributeKey.size] as? NSNumber)?.int64Value ?? 0
+            if let fileData = try? Data(contentsOf: fileUrl) {
+                base64Data = fileData.base64EncodedString()
+            } else {
+                base64Data = nil
+            }
         } else {
             fileBytes = 0
+            base64Data = nil
         }
 
         call.resolve([
             "filePath": self.filePath ?? "",
             "capturedMs": capturedMs,
             "bytes": fileBytes,
+            "dataBase64": base64Data as Any,
         ])
     }
 }

@@ -21,6 +21,7 @@ export type NativeRecorderStopResult = {
   filePath: string
   capturedMs: number
   bytes: number
+  dataBase64?: string | null
 }
 
 export interface NativeIosRecorderPlugin {

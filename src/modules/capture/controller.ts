@@ -2,7 +2,6 @@ import { ensureMp3EncoderLoaded, getMp3EncoderCtor } from './mp3-encoder'
 import { computeChunkVolumeProfile } from '../storage/chunk-volume'
 import { manifestService, type SessionRecord, type SessionStatus } from '../storage/manifest'
 import { logDebug, logError, logInfo, logWarn } from '../logging/logger'
-import { Filesystem, Directory } from '@capacitor/filesystem'
 import { isNativeIosRecorderAvailable, NativeIosRecorder } from './native-ios-recorder'
 import { App as CapacitorApp } from '@capacitor/app'
 
@@ -728,43 +727,12 @@ class NativeIosCaptureController implements CaptureController {
       this.#filePath = stopped.filePath
       const capturedMs = stopped.capturedMs
 
-      const basename = stopped.filePath.split('/').pop() ?? stopped.filePath
-      const candidatePaths = Array.from(
-        new Set([stopped.filePath, basename, `WebWhisperRecordings/${basename}`].filter(Boolean)),
-      )
-
-      let contents: { data: string | Blob } | null = null
-      for (const candidate of candidatePaths) {
-        try {
-          await logInfo('Reading native recording file', {
-            sessionId,
-            directory: 'Documents',
-            path: candidate,
-          })
-          contents = await Filesystem.readFile({
-            path: candidate,
-            directory: Directory.Documents,
-          })
-          break
-        } catch (error) {
-          await logWarn('Native recording read attempt failed', {
-            sessionId,
-            path: candidate,
-            error: error instanceof Error ? error.message : String(error),
-          })
-        }
+      const base64 = stopped.dataBase64
+      if (!base64) {
+        throw new Error('Native recorder did not return audio data (dataBase64 missing)')
       }
-      if (!contents) {
-        throw new Error(`Native recording file could not be read (tried: ${candidatePaths.join(', ')})`)
-      }
-
-      const blob =
-        typeof contents.data === 'string'
-          ? (() => {
-              const bytes = decodeBase64ToBytes(contents.data)
-              return new Blob([bytes as unknown as BlobPart], { type: M4A_MIME })
-            })()
-          : new Blob([contents.data], { type: M4A_MIME })
+      const bytes = decodeBase64ToBytes(base64)
+      const blob = new Blob([bytes as unknown as BlobPart], { type: M4A_MIME })
 
       if (!sessionId) {
         throw new Error('Missing session id for native recording')
@@ -800,8 +768,6 @@ class NativeIosCaptureController implements CaptureController {
         notes: status === 'ready' ? 'Recording complete (native iOS engine).' : sessionNotes,
       })
 
-      // Best-effort cleanup of the native file now that we have it in IndexedDB.
-      void Filesystem.deleteFile({ path: stopped.filePath, directory: Directory.Documents }).catch(() => undefined)
       await logInfo('Native iOS recording imported', {
         sessionId,
         capturedMs,

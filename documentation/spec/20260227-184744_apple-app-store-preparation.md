@@ -50,6 +50,7 @@ Out of scope (for now):
 - 2026-02-27: Began implementing dual-mode recorder: web uses existing WebAudio MP3 chunking; iOS (Capacitor) will use a Swift-native background recorder bridged to JS.
 - 2026-02-28: Added debug visibility for native engine selection (UI indicator + logs) and improved background/foreground diagnostics to verify iOS native recorder continues while JS is suspended.
 - 2026-02-28: Fixed iOS plugin registration: added `CAP_PLUGIN` bridge (`WWRecorder.m`) and switched JS availability detection to `Capacitor.isPluginAvailable`, preventing false “native mode” when the plugin isn’t actually implemented.
+- 2026-02-28: Diagnosed native recorder working but import failing because `@capacitor/filesystem` is not implemented at runtime; next change will import audio via base64 returned from the native recorder to avoid Filesystem entirely.
 
 ## Self-evaluation (fill in at end)
 
