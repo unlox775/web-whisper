@@ -662,6 +662,7 @@ class NativeIosCaptureController implements CaptureController {
     const startResult = await NativeIosRecorder.start({
       sessionId: options.sessionId,
       targetBitrate: options.targetBitrate,
+      chunkDurationMs: options.chunkDurationMs,
     })
 
     this.#filePath = startResult.filePath
@@ -687,12 +688,7 @@ class NativeIosCaptureController implements CaptureController {
     })
 
     this.#pollId = window.setInterval(() => {
-      void NativeIosRecorder.status()
-        .then((status) => {
-          if (!this.#sessionIdMatches(status)) return
-          this.#setState({ capturedMs: status.capturedMs })
-        })
-        .catch(() => undefined)
+      void this.#pollNativeStatusAndDrain().catch(() => undefined)
     }, 750)
   }
 
@@ -701,6 +697,47 @@ class NativeIosCaptureController implements CaptureController {
     if (!status.isRecording) return false
     if (this.#filePath && status.filePath && this.#filePath !== status.filePath) return false
     return Boolean(this.#activeSessionId)
+  }
+
+  #drainInFlight: Promise<void> | null = null
+
+  async #pollNativeStatusAndDrain(): Promise<void> {
+    const status = await NativeIosRecorder.status()
+    if (!this.#sessionIdMatches(status)) return
+    this.#setState({ capturedMs: status.capturedMs })
+    const pending = typeof status.pendingChunks === 'number' ? status.pendingChunks : 0
+    if (pending <= 0 || !this.#activeSessionId) return
+    if (this.#drainInFlight) return
+    this.#drainInFlight = this.#drainPendingChunks(this.#activeSessionId).finally(() => {
+      this.#drainInFlight = null
+    })
+    await this.#drainInFlight
+  }
+
+  async #drainPendingChunks(sessionId: string): Promise<void> {
+    // Pull chunks one-by-one from native and append into IndexedDB.
+    while (true) {
+      const next = await NativeIosRecorder.consumeChunk({ sessionId })
+      if (!next) return
+      const bytes = decodeBase64ToBytes(next.dataBase64)
+      const blob = new Blob([bytes as unknown as BlobPart], { type: M4A_MIME })
+      await manifestService.appendChunk(
+        {
+          id: `${sessionId}-chunk-${next.seq}`,
+          sessionId,
+          seq: next.seq,
+          startMs: next.startMs,
+          endMs: next.endMs,
+          verifiedAudioMsec: null,
+        },
+        blob,
+      )
+      this.#setState({
+        chunksRecorded: this.#state.chunksRecorded + 1,
+        bytesBuffered: this.#state.bytesBuffered + blob.size,
+        lastChunkAt: next.endMs,
+      })
+    }
   }
 
   async stop(): Promise<void> {
@@ -714,64 +751,50 @@ class NativeIosCaptureController implements CaptureController {
     }
 
     const sessionId = this.#state.sessionId
-    const startedAt = this.#state.startedAt ?? Date.now()
+    void (this.#state.startedAt ?? Date.now())
     let sessionNotes: string | undefined
     try {
       const stopped = await NativeIosRecorder.stop()
       await logInfo('Native iOS recorder stopped', {
         sessionId,
-        filePath: stopped.filePath,
         capturedMs: stopped.capturedMs,
-        bytes: stopped.bytes,
       })
-      this.#filePath = stopped.filePath
-      const capturedMs = stopped.capturedMs
 
-      const base64 = stopped.dataBase64
-      if (!base64) {
-        throw new Error('Native recorder did not return audio data (dataBase64 missing)')
+      // Drain any remaining chunks now that recording has stopped.
+      if (sessionId) {
+        await this.#drainPendingChunks(sessionId)
       }
-      const bytes = decodeBase64ToBytes(base64)
-      const blob = new Blob([bytes as unknown as BlobPart], { type: M4A_MIME })
 
       if (!sessionId) {
         throw new Error('Missing session id for native recording')
       }
 
-      const chunkId = `${sessionId}-chunk-0`
-      const chunkStartMs = startedAt
-      const chunkEndMs = startedAt + capturedMs
-      await manifestService.appendChunk(
-        {
-          id: chunkId,
-          sessionId,
-          seq: 0,
-          startMs: chunkStartMs,
-          endMs: chunkEndMs,
-          verifiedAudioMsec: null,
-        },
-        blob,
-      )
-
-      const status: SessionStatus = blob.size > 0 && capturedMs > 0 ? 'ready' : 'error'
+      const chunkMetadata = await manifestService.getChunkMetadata(sessionId)
+      const hasPlayableChunk = chunkMetadata.some((chunk) => chunk.byteLength > 0 && chunk.endMs > chunk.startMs)
+      const status: SessionStatus = hasPlayableChunk ? 'ready' : 'error'
       if (status === 'error') {
         sessionNotes = 'Error: no audio captured (native recorder).'
       }
 
+      const durationMs =
+        chunkMetadata.length > 0 ? chunkMetadata[chunkMetadata.length - 1].endMs - chunkMetadata[0].startMs : 0
+      const totalBytes = chunkMetadata.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+
       await manifestService.updateSession(sessionId, {
         status,
         updatedAt: Date.now(),
-        durationMs: capturedMs,
-        totalBytes: blob.size,
-        chunkCount: 1,
+        durationMs,
+        totalBytes,
+        chunkCount: chunkMetadata.length,
         mimeType: M4A_MIME,
         notes: status === 'ready' ? 'Recording complete (native iOS engine).' : sessionNotes,
       })
 
       await logInfo('Native iOS recording imported', {
         sessionId,
-        capturedMs,
-        bytes: blob.size,
+        durationMs,
+        bytes: totalBytes,
+        chunkCount: chunkMetadata.length,
       })
     } catch (error) {
       sessionNotes = error instanceof Error ? error.message : String(error)
