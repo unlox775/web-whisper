@@ -4,6 +4,7 @@ import { manifestService, type SessionRecord, type SessionStatus } from '../stor
 import { logDebug, logError, logInfo, logWarn } from '../logging/logger'
 import { Filesystem, Directory } from '@capacitor/filesystem'
 import { isNativeIos, NativeIosRecorder } from './native-ios-recorder'
+import { App as CapacitorApp } from '@capacitor/app'
 
 export type RecorderState = 'idle' | 'starting' | 'recording' | 'stopping' | 'error'
 
@@ -17,6 +18,7 @@ export interface CaptureStartOptions {
 export interface CaptureStateSnapshot {
   sessionId: string | null
   state: RecorderState
+  engine: 'web' | 'ios-native'
   startedAt: number | null
   lastChunkAt: number | null
   capturedMs: number
@@ -151,6 +153,7 @@ class PcmMp3CaptureController implements CaptureController {
   #state: CaptureStateSnapshot = {
     sessionId: null,
     state: 'idle',
+    engine: 'web',
     startedAt: null,
     lastChunkAt: null,
     capturedMs: 0,
@@ -221,6 +224,7 @@ class PcmMp3CaptureController implements CaptureController {
 
     await logInfo('PCM capture started', {
       sessionId: options.sessionId,
+      engine: 'web',
       startedAt: this.#startedAt,
       sampleRate: this.#sampleRate,
       chunkDurationMs: options.chunkDurationMs,
@@ -244,6 +248,7 @@ class PcmMp3CaptureController implements CaptureController {
     this.#setState({
       state: 'recording',
       sessionId: options.sessionId,
+      engine: 'web',
       startedAt: this.#startedAt,
       lastChunkAt: this.#startedAt,
       capturedMs: 0,
@@ -469,6 +474,7 @@ class PcmMp3CaptureController implements CaptureController {
     this.#setState({
       state: 'idle',
       sessionId: null,
+      engine: 'web',
       startedAt: null,
       lastChunkAt: null,
       capturedMs: 0,
@@ -600,6 +606,7 @@ class NativeIosCaptureController implements CaptureController {
   #state: CaptureStateSnapshot = {
     sessionId: null,
     state: 'idle',
+    engine: 'ios-native',
     startedAt: null,
     lastChunkAt: null,
     capturedMs: 0,
@@ -610,6 +617,7 @@ class NativeIosCaptureController implements CaptureController {
   #pollId: number | null = null
   #filePath: string | null = null
   #activeSessionId: string | null = null
+  #hasAppStateListener = false
 
   get state(): CaptureStateSnapshot {
     return this.#state
@@ -627,6 +635,38 @@ class NativeIosCaptureController implements CaptureController {
 
     this.#setState({ state: 'starting', error: undefined, capturedMs: 0 })
     await manifestService.init()
+
+    if (!this.#hasAppStateListener) {
+      this.#hasAppStateListener = true
+      void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+        void logInfo('iOS app state change', {
+          isActive,
+          sessionId: this.#activeSessionId,
+          captureState: this.#state.state,
+          engine: this.#state.engine,
+        })
+        if (isActive) {
+          void NativeIosRecorder.status()
+            .then((status) =>
+              logInfo('Native recorder status on foreground', {
+                isRecording: status.isRecording,
+                capturedMs: status.capturedMs,
+                filePath: status.filePath,
+              }),
+            )
+            .catch((error) =>
+              logWarn('Native recorder status check failed', {
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            )
+        }
+      }).catch(() => undefined)
+    }
+
+    await logInfo('Capture engine selected', {
+      engine: 'ios-native',
+      sessionId: options.sessionId,
+    })
 
     const startResult = await NativeIosRecorder.start({
       sessionId: options.sessionId,

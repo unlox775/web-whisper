@@ -50,7 +50,7 @@ public class WWRecorderPlugin: CAPPlugin {
 
             self.recorder = recorder
             self.startedAtMs = Int64(Date().timeIntervalSince1970 * 1000.0)
-            self.filePath = fileUrl.lastPathComponent
+            self.filePath = "WebWhisperRecordings/\(fileUrl.lastPathComponent)"
 
             call.resolve([
                 "startedAtMs": self.startedAtMs ?? 0,
@@ -91,8 +91,7 @@ public class WWRecorderPlugin: CAPPlugin {
         let fileBytes: Int64
         if let filePath = self.filePath {
             let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-            let recordingsDir = documents.appendingPathComponent("WebWhisperRecordings", isDirectory: true)
-            let fileUrl = recordingsDir.appendingPathComponent(filePath, isDirectory: false)
+            let fileUrl = documents.appendingPathComponent(filePath, isDirectory: false)
             let attrs = try? FileManager.default.attributesOfItem(atPath: fileUrl.path)
             fileBytes = (attrs?[FileAttributeKey.size] as? NSNumber)?.int64Value ?? 0
         } else {

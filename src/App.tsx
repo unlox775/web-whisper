@@ -3968,6 +3968,7 @@ function App() {
               Audio: {capturedAudioLabel} / {effectiveChunkCount} seg{hasInitSegment ? ' + init' : ''}
             </span>
             <span>Data: {formatDataSize(displayedBytes)}</span>
+            <span>Engine: {captureState.engine === 'ios-native' ? 'iOS Native' : 'Web'}</span>
           </div>
         ) : null}
         <section className="session-section" aria-label="Recording sessions">
