@@ -47,6 +47,7 @@ Out of scope (for now):
 - 2026-02-27: Added GitHub Actions CI (lint/test/build) and expanded the App Store roadmap checklist.
 - 2026-02-27: Added Capacitor iOS wrapper project under `ios/` plus build/TestFlight documentation.
 - 2026-02-27: Added a tucked-away "About" panel in Developer Console linking iOS/Android contribution info; fixed lint configuration and TypeScript-eslint issues so CI lint passes.
+- 2026-02-27: Began implementing dual-mode recorder: web uses existing WebAudio MP3 chunking; iOS (Capacitor) will use a Swift-native background recorder bridged to JS.
 
 ## Self-evaluation (fill in at end)
 

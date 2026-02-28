@@ -12,6 +12,7 @@
     "native:ios": "npm run build && npx cap sync ios"
   },
   "dependencies": {
+    "@capacitor/filesystem": "^8.1.2",
     "idb": "^8.0.3",
     "lamejs": "^1.2.1",
     "react": "^19.1.1",

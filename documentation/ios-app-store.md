@@ -41,6 +41,7 @@ npm run native:ios
 
 ## Notes / limitations (current)
 
-- This is a wrapper around the existing web app. Background recording reliability on iOS still depends on implementing native audio capture (planned in `documentation/roadmap.md`).
-- Recordings are stored in the web layer today (IndexedDB). A native implementation will likely move large audio blobs to the native filesystem and mark them “do not back up” to avoid iCloud backup bloat.
+- On iOS (Capacitor), recording uses a **native recorder** so it continues when backgrounded/screen locked.
+- Today the native recording is imported back into the web app’s IndexedDB on **Stop** (so playback works with existing web UI). Very long recordings may need follow-up work to avoid large in-memory transfers.
+- Transcription/snip workflows are still web-first; native background transcription is a future milestone in `documentation/roadmap.md`.
 
