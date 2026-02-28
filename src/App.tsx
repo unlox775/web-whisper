@@ -6,6 +6,7 @@ import {
   useState,
 } from 'react'
 import { captureController } from './modules/capture/controller'
+import { Capacitor } from '@capacitor/core'
 import { initializeRecordingWakeLock, setRecordingWakeLockActive } from './modules/capture/wake-lock'
 import { RecordingAnalysisGraph } from './components/RecordingAnalysisGraph'
 import { type SessionAnalysis } from './modules/analysis/session-analysis'
@@ -772,6 +773,16 @@ function App() {
   }, [storageLimitBytes])
 
   useEffect(() => settingsStore.subscribe((value) => setSettings({ ...value })), [])
+
+  useEffect(() => {
+    void logInfo(
+      `Runtime detected: native=${Capacitor.isNativePlatform()} platform=${Capacitor.getPlatform()} engine=${captureController.state.engine}`,
+      {
+        href: typeof window !== 'undefined' ? window.location.href : 'unknown',
+        userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
+      },
+    )
+  }, [])
 
   useEffect(() => {
     if (settings?.storageLimitBytes == null) {
@@ -3773,6 +3784,12 @@ function App() {
             <p className="buffer-label">Data</p>
             <p className="buffer-value">{bufferLabel}</p>
           </div>
+          {developerMode ? (
+            <div className="buffer-card" role="status" aria-live="polite">
+              <p className="buffer-label">Engine</p>
+              <p className="buffer-value">{captureState.engine === 'ios-native' ? 'iOS Native' : 'Web'}</p>
+            </div>
+          ) : null}
           {developerMode ? (
             <button
               className="dev-trigger"

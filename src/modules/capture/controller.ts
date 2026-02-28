@@ -178,6 +178,7 @@ class PcmMp3CaptureController implements CaptureController {
       throw new Error('Recorder already running')
     }
 
+    await logInfo('Capture engine selected: web', { sessionId: options.sessionId })
     this.#setState({ state: 'starting', error: undefined, capturedMs: 0 })
     await manifestService.init()
 
@@ -639,7 +640,7 @@ class NativeIosCaptureController implements CaptureController {
     if (!this.#hasAppStateListener) {
       this.#hasAppStateListener = true
       void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
-        void logInfo('iOS app state change', {
+        void logInfo(`iOS app state change: ${isActive ? 'foreground' : 'background'}`, {
           isActive,
           sessionId: this.#activeSessionId,
           captureState: this.#state.state,
@@ -647,13 +648,7 @@ class NativeIosCaptureController implements CaptureController {
         })
         if (isActive) {
           void NativeIosRecorder.status()
-            .then((status) =>
-              logInfo('Native recorder status on foreground', {
-                isRecording: status.isRecording,
-                capturedMs: status.capturedMs,
-                filePath: status.filePath,
-              }),
-            )
+            .then((status) => logInfo(`Native recorder status on foreground: recording=${status.isRecording} capturedMs=${status.capturedMs}`, status))
             .catch((error) =>
               logWarn('Native recorder status check failed', {
                 error: error instanceof Error ? error.message : String(error),
@@ -663,10 +658,7 @@ class NativeIosCaptureController implements CaptureController {
       }).catch(() => undefined)
     }
 
-    await logInfo('Capture engine selected', {
-      engine: 'ios-native',
-      sessionId: options.sessionId,
-    })
+    await logInfo('Capture engine selected: ios-native', { sessionId: options.sessionId })
 
     const startResult = await NativeIosRecorder.start({
       sessionId: options.sessionId,
