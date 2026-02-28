@@ -597,10 +597,23 @@ class IndexedDBManifestService implements ManifestService {
   async purgeLegacyMp4Sessions(): Promise<{ deletedSessions: number }> {
     const sessions = await this.listSessions()
     const legacy = sessions.filter((session) => /mp4|m4a/i.test(session.mimeType ?? ''))
+    let deletedSessions = 0
     for (const session of legacy) {
-      await this.deleteSession(session.id)
+      try {
+        const chunks = await this.getChunkMetadata(session.id)
+        const looksLikeFragmentedMp4 =
+          chunks.length > 1 &&
+          chunks.some((chunk) => chunk.seq === 0 && (chunk.endMs - chunk.startMs <= 10 || chunk.byteLength < 4096))
+        if (!looksLikeFragmentedMp4) {
+          continue
+        }
+        await this.deleteSession(session.id)
+        deletedSessions += 1
+      } catch {
+        // Best-effort cleanup: never block app startup if legacy purge fails.
+      }
     }
-    return { deletedSessions: legacy.length }
+    return { deletedSessions }
   }
 
   async storageTotals(): Promise<{ totalBytes: number }> {

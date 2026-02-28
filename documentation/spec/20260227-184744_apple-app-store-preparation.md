@@ -51,6 +51,7 @@ Out of scope (for now):
 - 2026-02-28: Added debug visibility for native engine selection (UI indicator + logs) and improved background/foreground diagnostics to verify iOS native recorder continues while JS is suspended.
 - 2026-02-28: Fixed iOS plugin registration: added `CAP_PLUGIN` bridge (`WWRecorder.m`) and switched JS availability detection to `Capacitor.isPluginAvailable`, preventing false “native mode” when the plugin isn’t actually implemented.
 - 2026-02-28: Diagnosed native recorder working but import failing because `@capacitor/filesystem` is not implemented at runtime; next change will import audio via base64 returned from the native recorder to avoid Filesystem entirely.
+- 2026-02-28: Fixed `purgeLegacyMp4Sessions` to only delete fragmented legacy MP4 sessions (init+segments). This prevents deleting new iOS native recordings (`audio/mp4`) on every `loadSessions()` call.
 
 ## Self-evaluation (fill in at end)
 
