@@ -409,6 +409,7 @@ export class RecordingSlicesApi {
   // browser decoders can truncate/lie on long fMP4 fragment concatenations. See chunk-based decode above.
 
   async getRangeAudio(session: SessionRecord, startMs: number, endMs: number, _mimeTypeHint?: string | null): Promise<RecordingAudioSlice> {
+    void _mimeTypeHint
     const sliced = await this.#decodeRangeToMonoSamples(session, startMs, endMs)
     const blob = encodeWavPcm16Mono(sliced.samples, sliced.sampleRate)
     const iso = new Date(session.startedAt ?? Date.now()).toISOString().replace(/[:.]/g, '-')
@@ -431,6 +432,7 @@ export class RecordingSlicesApi {
     endMs: number,
     _mimeTypeHint?: string | null,
   ): Promise<RecordingRangeInspection> {
+    void _mimeTypeHint
     const sliced = await this.#decodeRangeToMonoSamples(session, startMs, endMs)
     const { samples, sampleRate } = sliced
     const sampleCount = samples.length

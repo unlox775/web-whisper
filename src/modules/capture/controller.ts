@@ -2,6 +2,8 @@ import { ensureMp3EncoderLoaded, getMp3EncoderCtor } from './mp3-encoder'
 import { computeChunkVolumeProfile } from '../storage/chunk-volume'
 import { manifestService, type SessionRecord, type SessionStatus } from '../storage/manifest'
 import { logDebug, logError, logInfo, logWarn } from '../logging/logger'
+import { isNativeIosRecorderAvailable, NativeIosRecorder } from './native-ios-recorder'
+import { App as CapacitorApp } from '@capacitor/app'
 
 export type RecorderState = 'idle' | 'starting' | 'recording' | 'stopping' | 'error'
 
@@ -15,6 +17,7 @@ export interface CaptureStartOptions {
 export interface CaptureStateSnapshot {
   sessionId: string | null
   state: RecorderState
+  engine: 'web' | 'ios-native'
   startedAt: number | null
   lastChunkAt: number | null
   capturedMs: number
@@ -148,6 +151,7 @@ class PcmMp3CaptureController implements CaptureController {
   #state: CaptureStateSnapshot = {
     sessionId: null,
     state: 'idle',
+    engine: 'web',
     startedAt: null,
     lastChunkAt: null,
     capturedMs: 0,
@@ -172,6 +176,7 @@ class PcmMp3CaptureController implements CaptureController {
       throw new Error('Recorder already running')
     }
 
+    await logInfo('Capture engine selected: web', { sessionId: options.sessionId })
     this.#setState({ state: 'starting', error: undefined, capturedMs: 0 })
     await manifestService.init()
 
@@ -218,6 +223,7 @@ class PcmMp3CaptureController implements CaptureController {
 
     await logInfo('PCM capture started', {
       sessionId: options.sessionId,
+      engine: 'web',
       startedAt: this.#startedAt,
       sampleRate: this.#sampleRate,
       chunkDurationMs: options.chunkDurationMs,
@@ -241,6 +247,7 @@ class PcmMp3CaptureController implements CaptureController {
     this.#setState({
       state: 'recording',
       sessionId: options.sessionId,
+      engine: 'web',
       startedAt: this.#startedAt,
       lastChunkAt: this.#startedAt,
       capturedMs: 0,
@@ -466,6 +473,7 @@ class PcmMp3CaptureController implements CaptureController {
     this.#setState({
       state: 'idle',
       sessionId: null,
+      engine: 'web',
       startedAt: null,
       lastChunkAt: null,
       capturedMs: 0,
@@ -482,6 +490,7 @@ class PcmMp3CaptureController implements CaptureController {
 
   attachAnalysisPort(_port: MessagePort): void {
     // PCM path doesn't use an external analysis port yet.
+    void _port
   }
 
   #cleanup() {
@@ -489,19 +498,25 @@ class PcmMp3CaptureController implements CaptureController {
       this.#processor.onaudioprocess = null
       try {
         this.#processor.disconnect()
-      } catch {}
+      } catch (error) {
+        void error
+      }
       this.#processor = null
     }
     if (this.#source) {
       try {
         this.#source.disconnect()
-      } catch {}
+      } catch (error) {
+        void error
+      }
       this.#source = null
     }
     if (this.#muteGain) {
       try {
         this.#muteGain.disconnect()
-      } catch {}
+      } catch (error) {
+        void error
+      }
       this.#muteGain = null
     }
     if (this.#audioContext) {
@@ -572,4 +587,317 @@ class PcmMp3CaptureController implements CaptureController {
   }
 }
 
-export const captureController: CaptureController = new PcmMp3CaptureController()
+const decodeBase64ToBytes = (base64: string): Uint8Array => {
+  const cleaned = base64.includes(',') ? base64.split(',').pop() ?? '' : base64
+  if (typeof window === 'undefined' || typeof window.atob !== 'function') {
+    throw new Error('Base64 decode unavailable in this environment')
+  }
+  const binary = window.atob(cleaned)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i)
+  }
+  return bytes
+}
+
+class NativeIosCaptureController implements CaptureController {
+  #listeners = new Set<(state: CaptureStateSnapshot) => void>()
+  #state: CaptureStateSnapshot = {
+    sessionId: null,
+    state: 'idle',
+    engine: 'ios-native',
+    startedAt: null,
+    lastChunkAt: null,
+    capturedMs: 0,
+    bytesBuffered: 0,
+    mimeType: null,
+    chunksRecorded: 0,
+  }
+  #pollId: number | null = null
+  #filePath: string | null = null
+  #activeSessionId: string | null = null
+  #hasAppStateListener = false
+  #targetKbps = 64
+
+  get state(): CaptureStateSnapshot {
+    return this.#state
+  }
+
+  #setState(patch: Partial<CaptureStateSnapshot>) {
+    this.#state = { ...this.#state, ...patch }
+    this.#listeners.forEach((listener) => listener(this.#state))
+  }
+
+  async start(options: CaptureStartOptions): Promise<void> {
+    if (this.#state.state === 'recording' || this.#state.state === 'starting') {
+      throw new Error('Recorder already running')
+    }
+
+    this.#setState({ state: 'starting', error: undefined, capturedMs: 0 })
+    await manifestService.init()
+
+    if (!this.#hasAppStateListener) {
+      this.#hasAppStateListener = true
+      void CapacitorApp.addListener('appStateChange', ({ isActive }) => {
+        void logInfo(`iOS app state change: ${isActive ? 'foreground' : 'background'}`, {
+          isActive,
+          sessionId: this.#activeSessionId,
+          captureState: this.#state.state,
+          engine: this.#state.engine,
+        })
+        void NativeIosRecorder.status()
+          .then((status) =>
+            logInfo(
+              `Native recorder status on ${isActive ? 'foreground' : 'background'}: recording=${status.isRecording} capturedMs=${status.capturedMs} pending=${status.pendingChunks ?? 0}`,
+              status,
+            ),
+          )
+          .catch((error) =>
+            logWarn('Native recorder status check failed', {
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          )
+      }).catch(() => undefined)
+    }
+
+    await logInfo('Capture engine selected: ios-native', { sessionId: options.sessionId })
+
+    // Ensure MP3 encoder is available for native PCM->MP3 chunk ingestion.
+    await ensureMp3EncoderLoaded()
+
+    const startResult = await NativeIosRecorder.start({
+      sessionId: options.sessionId,
+      targetBitrate: options.targetBitrate,
+      chunkDurationMs: options.chunkDurationMs,
+    })
+    this.#targetKbps = Math.max(8, Math.round(options.targetBitrate / 1000))
+
+    this.#filePath = startResult.filePath
+    this.#activeSessionId = options.sessionId
+    const startedAt = startResult.startedAtMs
+    await manifestService.updateSession(options.sessionId, {
+      startedAt,
+      updatedAt: startedAt,
+      mimeType: MP3_MIME,
+      status: 'recording',
+      notes: 'Recording in progress (native iOS engine).',
+    })
+
+    this.#setState({
+      state: 'recording',
+      sessionId: options.sessionId,
+      startedAt,
+      lastChunkAt: startedAt,
+      capturedMs: 0,
+      mimeType: MP3_MIME,
+      bytesBuffered: 0,
+      chunksRecorded: 0,
+    })
+
+    this.#pollId = window.setInterval(() => {
+      void this.#pollNativeStatusAndDrain().catch(() => undefined)
+    }, 750)
+  }
+
+  #sessionIdMatches(status: { isRecording: boolean; capturedMs: number; filePath: string | null }): boolean {
+    if (this.#state.state !== 'recording') return false
+    if (!status.isRecording) return false
+    if (this.#filePath && status.filePath && this.#filePath !== status.filePath) return false
+    return Boolean(this.#activeSessionId)
+  }
+
+  #drainInFlight: Promise<void> | null = null
+
+  async #pollNativeStatusAndDrain(): Promise<void> {
+    const status = await NativeIosRecorder.status()
+    if (!this.#sessionIdMatches(status)) return
+    this.#setState({ capturedMs: status.capturedMs })
+    const pending = typeof status.pendingChunks === 'number' ? status.pendingChunks : 0
+    if (pending <= 0 || !this.#activeSessionId) return
+    if (this.#drainInFlight) return
+    this.#drainInFlight = this.#drainPendingChunks(this.#activeSessionId).finally(() => {
+      this.#drainInFlight = null
+    })
+    await this.#drainInFlight
+  }
+
+  async #drainPendingChunks(sessionId: string): Promise<void> {
+    // Pull chunks one-by-one from native and append into IndexedDB.
+    while (true) {
+      const { chunk: next } = await NativeIosRecorder.consumeChunk({ sessionId })
+      if (!next) return
+      if (next.format !== 'pcm16le') {
+        throw new Error(`Unsupported native chunk format: ${String((next as { format?: unknown }).format)}`)
+      }
+      const bytes = decodeBase64ToBytes(next.dataBase64)
+      const pcmBuffer = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+      const samples = new Int16Array(pcmBuffer)
+
+      const Mp3Encoder = getMp3EncoderCtor()
+      const encoder = new Mp3Encoder(1, next.sampleRate, this.#targetKbps)
+      const encoded = encoder.encodeBuffer(samples)
+      const flushed = encoder.flush()
+      const parts: BlobPart[] = []
+      if (encoded.length > 0) parts.push(new Uint8Array(encoded))
+      if (flushed.length > 0) parts.push(new Uint8Array(flushed))
+      const blob = new Blob(parts, { type: MP3_MIME })
+
+      await manifestService.appendChunk(
+        {
+          id: `${sessionId}-chunk-${next.seq}`,
+          sessionId,
+          seq: next.seq,
+          startMs: next.startMs,
+          endMs: next.endMs,
+          verifiedAudioMsec: null,
+        },
+        blob,
+      )
+      this.#setState({
+        chunksRecorded: this.#state.chunksRecorded + 1,
+        bytesBuffered: this.#state.bytesBuffered + blob.size,
+        lastChunkAt: next.endMs,
+      })
+      try {
+        const profile = await computeChunkVolumeProfile(blob, {
+          chunkId: `${sessionId}-chunk-${next.seq}`,
+          sessionId,
+          seq: next.seq,
+          chunkStartMs: next.startMs,
+          chunkEndMs: next.endMs,
+        })
+        await manifestService.storeChunkVolumeProfile(profile)
+      } catch (error) {
+        await logWarn('Native chunk volume profile failed', {
+          sessionId,
+          seq: next.seq,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (this.#state.state !== 'recording') {
+      return
+    }
+    this.#setState({ state: 'stopping' })
+    if (this.#pollId !== null) {
+      window.clearInterval(this.#pollId)
+      this.#pollId = null
+    }
+
+    const sessionId = this.#state.sessionId
+    void (this.#state.startedAt ?? Date.now())
+    let sessionNotes: string | undefined
+    try {
+      const stopped = await NativeIosRecorder.stop()
+      await logInfo('Native iOS recorder stopped', {
+        sessionId,
+        capturedMs: stopped.capturedMs,
+        totalFramesCaptured: stopped.totalFramesCaptured,
+        sampleRate: stopped.sampleRate,
+      })
+
+      // Drain any remaining chunks now that recording has stopped.
+      if (sessionId) {
+        await this.#drainPendingChunks(sessionId)
+      }
+
+      if (!sessionId) {
+        throw new Error('Missing session id for native recording')
+      }
+
+      const chunkMetadata = await manifestService.getChunkMetadata(sessionId)
+      const hasPlayableChunk = chunkMetadata.some((chunk) => chunk.byteLength > 0 && chunk.endMs > chunk.startMs)
+      const status: SessionStatus = hasPlayableChunk ? 'ready' : 'error'
+      if (status === 'error') {
+        sessionNotes = 'Error: no audio captured (native recorder).'
+      }
+
+      const durationMs =
+        chunkMetadata.length > 0 ? chunkMetadata[chunkMetadata.length - 1].endMs - chunkMetadata[0].startMs : 0
+      const totalBytes = chunkMetadata.reduce((sum, chunk) => sum + chunk.byteLength, 0)
+      if (typeof stopped.capturedMs === 'number' && Math.abs(stopped.capturedMs - durationMs) > 1250) {
+        await logWarn('Native capture duration differs from imported chunk duration', {
+          sessionId,
+          nativeCapturedMs: stopped.capturedMs,
+          importedDurationMs: durationMs,
+          chunkCount: chunkMetadata.length,
+        })
+      }
+
+      await manifestService.updateSession(sessionId, {
+        status,
+        updatedAt: Date.now(),
+        durationMs,
+        totalBytes,
+        chunkCount: chunkMetadata.length,
+        mimeType: MP3_MIME,
+        notes: status === 'ready' ? 'Recording complete (native iOS engine).' : sessionNotes,
+      })
+
+      await logInfo('Native iOS recording imported', {
+        sessionId,
+        durationMs,
+        bytes: totalBytes,
+        chunkCount: chunkMetadata.length,
+      })
+    } catch (error) {
+      sessionNotes = error instanceof Error ? error.message : String(error)
+      if (sessionId) {
+        await manifestService.updateSession(sessionId, {
+          status: 'error',
+          updatedAt: Date.now(),
+          notes: `Native recording failed: ${sessionNotes}`,
+        })
+      }
+      await logError(`Native iOS recording stop/import failed: ${sessionNotes}`, { sessionId })
+      this.#setState({ state: 'error', error: sessionNotes })
+    } finally {
+      this.#filePath = null
+      this.#activeSessionId = null
+      this.#setState({
+        state: 'idle',
+        sessionId: null,
+        startedAt: null,
+        lastChunkAt: null,
+        capturedMs: 0,
+        bytesBuffered: 0,
+        chunksRecorded: 0,
+        mimeType: null,
+        error: sessionNotes,
+      })
+    }
+  }
+
+  async flushPending(): Promise<void> {
+    // Native recorder persists on-device; import happens on stop.
+  }
+
+  attachAnalysisPort(_port: MessagePort): void {
+    void _port
+  }
+
+  getDiagnostics(): CaptureDiagnostics {
+    return {
+      sessionId: this.#state.sessionId,
+      state: this.#state.state,
+      startedAt: this.#state.startedAt,
+      audioContext: null,
+      stream: null,
+      audioGraph: null,
+      processing: null,
+    }
+  }
+
+  subscribe(listener: (state: CaptureStateSnapshot) => void): () => void {
+    this.#listeners.add(listener)
+    listener(this.#state)
+    return () => this.#listeners.delete(listener)
+  }
+}
+
+export const captureController: CaptureController = isNativeIosRecorderAvailable()
+  ? new NativeIosCaptureController()
+  : new PcmMp3CaptureController()

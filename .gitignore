@@ -8,4 +8,11 @@ node_modules/
 
 # Build artifacts (docs is intentional output)
 dist/
+ios/App/Pods/
+ios/App/build/
+ios/App/DerivedData/
+ios/App/App/public/
+.capacitor/
+.capacitor.config.json
 .DS_Store
+ios/App/App.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/

@@ -6,6 +6,7 @@ import {
   useState,
 } from 'react'
 import { captureController } from './modules/capture/controller'
+import { Capacitor } from '@capacitor/core'
 import { initializeRecordingWakeLock, setRecordingWakeLockActive } from './modules/capture/wake-lock'
 import { RecordingAnalysisGraph } from './components/RecordingAnalysisGraph'
 import { type SessionAnalysis } from './modules/analysis/session-analysis'
@@ -157,6 +158,7 @@ const RETENTION_PASS_INTERVAL_MS = 120_000
 const AUDIO_PURGED_NOTICE = 'Audio was purged to stay under the storage cap. Transcription retries are disabled.'
 const GROQ_KEY_URL = 'https://console.groq.com/keys'
 const GROQ_PRICING_URL = 'https://groq.com/pricing'
+const REPO_URL = 'https://github.com/unlox775/web-whisper'
 const STARTING_CANCEL_HINT_MS = 3000
 const STARTING_CUE_TIMESTAMPS_MS = [3000, 6000, 9000, 12000]
 
@@ -344,7 +346,7 @@ function App() {
   const [developerOverlayLoading, setDeveloperOverlayLoading] = useState(false)
   const [developerTables, setDeveloperTables] = useState<DeveloperTable[]>([])
   const [selectedDeveloperTable, setSelectedDeveloperTable] = useState<string | null>(null)
-  const [developerOverlayMode, setDeveloperOverlayMode] = useState<'tables' | 'logs'>('tables')
+  const [developerOverlayMode, setDeveloperOverlayMode] = useState<'tables' | 'logs' | 'about'>('tables')
   const [logSessions, setLogSessions] = useState<LogSessionRecord[]>([])
   const [selectedLogSession, setSelectedLogSession] = useState<LogSessionRecord | null>(null)
   const [logEntries, setLogEntries] = useState<LogEntryRecord[]>([])
@@ -773,6 +775,16 @@ function App() {
   useEffect(() => settingsStore.subscribe((value) => setSettings({ ...value })), [])
 
   useEffect(() => {
+    void logInfo(
+      `Runtime detected: native=${Capacitor.isNativePlatform()} platform=${Capacitor.getPlatform()} engine=${captureController.state.engine}`,
+      {
+        href: typeof window !== 'undefined' ? window.location.href : 'unknown',
+        userAgent: typeof navigator !== 'undefined' ? navigator.userAgent : 'unknown',
+      },
+    )
+  }, [])
+
+  useEffect(() => {
     if (settings?.storageLimitBytes == null) {
       return
     }
@@ -935,15 +947,15 @@ function App() {
     }
 
     document.addEventListener('touchmove', preventMultiTouch, { passive: false })
-    document.addEventListener('gesturestart' as any, preventGesture as EventListener)
-    document.addEventListener('gesturechange' as any, preventGesture as EventListener)
-    document.addEventListener('gestureend' as any, preventGesture as EventListener)
+    document.addEventListener('gesturestart', preventGesture as EventListener)
+    document.addEventListener('gesturechange', preventGesture as EventListener)
+    document.addEventListener('gestureend', preventGesture as EventListener)
 
     return () => {
       document.removeEventListener('touchmove', preventMultiTouch)
-      document.removeEventListener('gesturestart' as any, preventGesture as EventListener)
-      document.removeEventListener('gesturechange' as any, preventGesture as EventListener)
-      document.removeEventListener('gestureend' as any, preventGesture as EventListener)
+      document.removeEventListener('gesturestart', preventGesture as EventListener)
+      document.removeEventListener('gesturechange', preventGesture as EventListener)
+      document.removeEventListener('gestureend', preventGesture as EventListener)
     }
   }, [])
 
@@ -2247,7 +2259,9 @@ function App() {
       if (current.state !== 'recording') {
         return
       }
-      if (current.chunksRecorded > 0) {
+      const hasAudio =
+        current.engine === 'ios-native' ? current.capturedMs > 0 : current.chunksRecorded > 0
+      if (hasAudio) {
         return
       }
       const diagnostics =
@@ -2255,6 +2269,8 @@ function App() {
       void logWarn('No audio captured after timeout; stopping recording', {
         sessionId: current.sessionId,
         timeoutMs: 15000,
+        engine: current.engine,
+        capturedMs: current.capturedMs,
         error: current.error ?? null,
         diagnostics,
       })
@@ -2266,6 +2282,8 @@ function App() {
         captureState: {
           state: current.state,
           chunksRecorded: current.chunksRecorded,
+          capturedMs: current.capturedMs,
+          engine: current.engine,
           error: current.error ?? null,
         },
         diagnostics,
@@ -3773,6 +3791,12 @@ function App() {
             <p className="buffer-value">{bufferLabel}</p>
           </div>
           {developerMode ? (
+            <div className="buffer-card" role="status" aria-live="polite">
+              <p className="buffer-label">Engine</p>
+              <p className="buffer-value">{captureState.engine === 'ios-native' ? 'iOS Native' : 'Web'}</p>
+            </div>
+          ) : null}
+          {developerMode ? (
             <button
               className="dev-trigger"
               type="button"
@@ -3967,6 +3991,7 @@ function App() {
               Audio: {capturedAudioLabel} / {effectiveChunkCount} seg{hasInitSegment ? ' + init' : ''}
             </span>
             <span>Data: {formatDataSize(displayedBytes)}</span>
+            <span>Engine: {captureState.engine === 'ios-native' ? 'iOS Native' : 'Web'}</span>
           </div>
         ) : null}
         <section className="session-section" aria-label="Recording sessions">
@@ -4402,7 +4427,7 @@ function App() {
                                 await copyToClipboard(compactText)
                                 setDoctorCopyStatus('Copied compact report to clipboard.')
                                 window.setTimeout(() => setDoctorCopyStatus(null), 2500)
-                              } catch (error) {
+                              } catch {
                                 setDoctorCopyStatus('Clipboard copy blocked; compact report shown below (tap Select all).')
                               }
                             } catch (error) {
@@ -5230,6 +5255,16 @@ function App() {
                 >
                   Logs
                 </button>
+                <button
+                  type="button"
+                  className={developerOverlayMode === 'about' ? 'is-selected' : ''}
+                  onClick={() => {
+                    setDeveloperOverlayMode('about')
+                    setDeveloperOverlayLoading(false)
+                  }}
+                >
+                  About
+                </button>
               </div>
                 {developerOverlayMode === 'tables' ? (
                   <div className="dev-panel-body">
@@ -5313,7 +5348,7 @@ function App() {
                       )}
                     </div>
                   </div>
-                ) : (
+                ) : developerOverlayMode === 'logs' ? (
                   <div className="dev-log-body">
                     <div className="dev-log-header">
                       <button
@@ -5376,6 +5411,27 @@ function App() {
                         ))
                       )}
                     </div>
+                  </div>
+                ) : (
+                  <div className="dev-about-body">
+                    <h3 className="dev-about-title">Web Whisper</h3>
+                    <p className="dev-about-text">
+                      The installable iOS app wrapper lives in this repo under <code>ios/</code>. Build and TestFlight steps
+                      are documented in <code>documentation/ios-app-store.md</code>.
+                    </p>
+                    <p className="dev-about-text">
+                      Contributions are welcome, especially an Android wrapper and localization. See{' '}
+                      <a href={`${REPO_URL}/blob/main/documentation/contributor-roadmap.md`} target="_blank" rel="noreferrer">
+                        contributor roadmap
+                      </a>
+                      .
+                    </p>
+                    <p className="dev-about-text">
+                      Repo:{' '}
+                      <a href={REPO_URL} target="_blank" rel="noreferrer">
+                        {REPO_URL}
+                      </a>
+                    </p>
                   </div>
                 )}
             </div>

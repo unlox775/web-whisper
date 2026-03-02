@@ -2359,6 +2359,36 @@ body {
   opacity: 0.8;
 }
 
+.dev-about-body {
+  padding: 1rem;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.65rem;
+}
+
+.dev-about-title {
+  margin: 0;
+  font-size: 1rem;
+  color: #f1f5f9;
+}
+
+.dev-about-text {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.45;
+  color: #cbd5f5;
+}
+
+.dev-about-body a {
+  color: #5eead4;
+  text-decoration: none;
+}
+
+.dev-about-body a:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
 @media (max-width: 960px) {
   .content-grid {
     display: flex;
