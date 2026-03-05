@@ -190,6 +190,7 @@ public class WWRecorder: CAPPlugin {
             "capturedMs": capturedMs,
             "filePath": "" as Any,
             "pendingChunks": pending.count,
+            "totalFramesCaptured": totalFramesCaptured,
         ])
     }
 
@@ -207,6 +208,8 @@ public class WWRecorder: CAPPlugin {
 
         call.resolve([
             "capturedMs": Int64(Double(totalFramesCaptured) / sampleRate * 1000.0),
+            "totalFramesCaptured": totalFramesCaptured,
+            "sampleRate": Int(sampleRate),
         ])
     }
 
