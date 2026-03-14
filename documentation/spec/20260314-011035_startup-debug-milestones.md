@@ -1,0 +1,37 @@
+# Startup debug milestones (living spec)
+
+- Branch: `main`
+- Started (UTC): 2026-03-14
+- Owner intent: Add milestone debug logs at startup and in the debug panel to identify why the web app takes 50s–2min to show the recordings list, and why the debug panel shows "Loading" for ~10s.
+
+## Scope
+
+- Add timestamped milestone logs for: first execution, first load of page, manifest init, listSessions, storageTotals, purgeLegacyMp4, refreshTranscriptionPreviews (and its per-session listSnips), recordings UI ready.
+- Add milestone logs in the developer/debug panel when loading: loadDeveloperTables (sessions, chunks, chunkVolumes, snips) and loadLogSessions.
+- Logs must be exportable (existing logger persists to IndexedDB; also emit to console with a consistent prefix so user can export and paste).
+- No changes to data purging or storage logic.
+
+## Acceptance criteria
+
+- Milestone logs appear in order during page load with timestamps.
+- Milestone logs appear in the debug panel when opening it and loading tables/logs.
+- Logs are visible in the debug panel (log session) and exportable for analysis.
+- Build succeeds; no functional changes to data handling.
+
+## Plan / todos
+
+- [x] Create startup log utility with timestamps (or use existing logger with a clear prefix).
+- [x] Instrument main.tsx first execution.
+- [x] Instrument App mount and loadSessions (manifestService.init, purgeLegacyMp4, listSessions, storageTotals, setRecordings, refreshTranscriptionPreviews).
+- [x] Instrument refreshTranscriptionPreviews (per-session listSnips).
+- [x] Instrument loadDeveloperTables (sessions, chunks, chunkVolumes, snips).
+- [x] Instrument loadLogSessions.
+- [x] Ensure logs go to both logger and console with `[startup]` or similar prefix for export.
+
+## Edits log
+
+- 2026-03-14: Created spec. Added `src/modules/logging/startup-milestones.ts` with `markStartupMilestone` and `markDebugPanelMilestone` (console + logger via dynamic import). Instrumented: main.tsx (first execution, registerSW); App (mount, initializeLogger, reconcileDanglingSessions, loadSessions, refreshTranscriptionPreviews); manifest getDB open; loadDeveloperTables; loadLogSessions. Logs use `[startup]` prefix and elapsed ms from boot.
+
+## Note
+
+- `npm run build` currently fails on PWA/workbox/terser step (pre-existing); `tsc -b` and app bundle succeed.
