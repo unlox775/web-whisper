@@ -33,6 +33,7 @@ import {
   logWarn,
   shutdownLogger,
 } from './modules/logging/logger'
+import { markStartupMilestone, markDebugPanelMilestone } from './modules/logging/startup-milestones'
 import { transcriptionService, validateGroqApiKey } from './modules/transcription/service'
 
 type DeveloperTable = {
@@ -607,6 +608,7 @@ function App() {
   }, [isSnipAudioPurged])
 
   const refreshTranscriptionPreviews = useCallback(async (sessions: SessionRecord[]) => {
+    markStartupMilestone('refreshTranscriptionPreviews: start', { sessionCount: sessions.length })
     try {
       const entries = await Promise.all(
         sessions.map(async (session) => {
@@ -648,7 +650,9 @@ function App() {
       setTranscriptionPreviews(next)
       setTranscriptionErrorCounts(nextErrors)
       setTranscriptionSnipCounts(nextCounts)
+      markStartupMilestone('refreshTranscriptionPreviews: done')
     } catch (error) {
+      markStartupMilestone('refreshTranscriptionPreviews: error')
       await logError('Transcription preview load failed', {
         error: error instanceof Error ? error.message : String(error),
       })
@@ -657,10 +661,13 @@ function App() {
 
   /** Loads the latest session manifest snapshot and triggers background verification. */
   const loadSessions = useCallback(async () => {
+    markStartupMilestone('loadSessions: start')
     // Ensure the manifest is usable before any list or summary calls.
     await manifestService.init()
+    markStartupMilestone('loadSessions: manifest init done')
     // Data-loss OK migration: purge legacy MP4 sessions/chunks/volumes.
     await manifestService.purgeLegacyMp4Sessions()
+    markStartupMilestone('loadSessions: purgeLegacyMp4 done')
     // Reuse or create a single provider instance so verification caching survives reloads.
     const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
     sessionAnalysisProviderRef.current = provider
@@ -669,6 +676,10 @@ function App() {
       manifestService.listSessions(),
       manifestService.storageTotals(),
     ])
+    markStartupMilestone('loadSessions: listSessions+storageTotals done', {
+      sessionCount: sessions.length,
+      totalBytes: totals.totalBytes,
+    })
 
     const previousMap = sessionUpdatesRef.current
     let highlightCandidate: SessionRecord | null = null
@@ -693,6 +704,7 @@ function App() {
     }
 
     setRecordings(sessions)
+    markStartupMilestone('loadSessions: setRecordings done, recordings list visible')
     // Update the buffer usage indicator with the latest totals and quota.
     setBufferTotals({ totalBytes: totals.totalBytes, limitBytes: storageLimitBytes })
     void refreshTranscriptionPreviews(sessions)
@@ -772,6 +784,10 @@ function App() {
     }
   }, [storageLimitBytes])
 
+  useEffect(() => {
+    markStartupMilestone('App: useEffect mount (first render done)')
+  }, [])
+
   useEffect(() => settingsStore.subscribe((value) => setSettings({ ...value })), [])
 
   useEffect(() => {
@@ -792,18 +808,21 @@ function App() {
   }, [runRetentionPass, settings?.storageLimitBytes])
 
   useEffect(() => {
-    void initializeLogger()
+    markStartupMilestone('App: initializeLogger start')
+    void initializeLogger().then(() => markStartupMilestone('App: initializeLogger done'))
     return () => {
       void shutdownLogger()
     }
   }, [])
 
   useEffect(() => {
+    markStartupMilestone('App: initializeRecordingWakeLock')
     initializeRecordingWakeLock()
   }, [])
 
   useEffect(() => {
-    void manifestService.reconcileDanglingSessions()
+    markStartupMilestone('App: reconcileDanglingSessions start')
+    void manifestService.reconcileDanglingSessions().then(() => markStartupMilestone('App: reconcileDanglingSessions done'))
   }, [])
 
   useEffect(() => {
@@ -3533,6 +3552,7 @@ function App() {
   )
 
     const loadDeveloperTables = useCallback(async () => {
+      markDebugPanelMilestone('loadDeveloperTables: start')
       try {
         const [sessions, chunks, chunkVolumes, snips] = await Promise.all([
           manifestService.listSessions(),
@@ -3540,6 +3560,12 @@ function App() {
           manifestService.listChunkVolumeProfiles(),
           manifestService.listSnips(),
         ])
+        markDebugPanelMilestone('loadDeveloperTables: all tables loaded', {
+          sessions: sessions.length,
+          chunks: chunks.length,
+          chunkVolumes: chunkVolumes.length,
+          snips: snips.length,
+        })
         setDeveloperTables([
           { name: 'sessions', rows: sessions.map((row) => ({ ...row })) },
           { name: 'chunks', rows: chunks.map((row) => ({ ...row })) },
@@ -3585,12 +3611,15 @@ function App() {
   )
 
   const loadLogSessions = useCallback(async () => {
+    markDebugPanelMilestone('loadLogSessions: start')
     try {
       const sessions = await manifestService.listLogSessions()
+      markDebugPanelMilestone('loadLogSessions: listLogSessions done', { count: sessions.length })
       setLogSessions(sessions)
       const current = getActiveLogSession()
       const preferred = current ?? sessions[0] ?? null
       await handleSelectLogSession(preferred)
+      markDebugPanelMilestone('loadLogSessions: done')
     } catch (error) {
       console.error('[UI] Failed to load log sessions', error)
       setLogSessions([])
@@ -3615,6 +3644,7 @@ function App() {
   )
 
   const handleOpenDeveloperOverlay = useCallback(async () => {
+    markDebugPanelMilestone('handleOpenDeveloperOverlay: open')
     setDeveloperOverlayMode('tables')
     setDeveloperOverlayOpen(true)
     setDeveloperOverlayLoading(true)

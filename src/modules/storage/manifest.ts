@@ -1,4 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
+import { markStartupMilestone } from '../logging/startup-milestones'
 import type { ChunkVolumeProfile } from './chunk-volume'
 import { DEFAULT_CHUNK_TIMING_STATUS, computeSequentialTimings } from './chunk-timing'
 
@@ -241,6 +242,7 @@ let dbPromise: Promise<IDBPDatabase<DurableRecorderDB>> | null = null
 
 async function getDB(): Promise<IDBPDatabase<DurableRecorderDB>> {
   if (!dbPromise) {
+    markStartupMilestone('manifest: getDB openDB start')
     dbPromise = openDB<DurableRecorderDB>(DB_NAME, DB_VERSION, {
       upgrade(db, oldVersion) {
         if (oldVersion < 1) {
@@ -269,6 +271,9 @@ async function getDB(): Promise<IDBPDatabase<DurableRecorderDB>> {
           snips.createIndex('by-session', 'sessionId')
         }
       },
+    }).then((db) => {
+      markStartupMilestone('manifest: getDB openDB done')
+      return db
     })
   }
   return dbPromise
