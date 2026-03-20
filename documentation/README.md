@@ -31,6 +31,7 @@ This folder contains the living documentation for Web Whisper. It is kept curren
 | Developer diagnostics | Ready | IndexedDB tables, logs, and doctor tests. |
 | Telemetry + uploads | Not implemented | No uploader or telemetry pipeline yet. |
 | Spec + prompt logging | Ready | `documentation/spec/` is the canonical log. |
+| GitHub Pages / `main` | Ready | Mar 2026: `main` reset to pre–App Store web baseline; iOS/Capacitor snapshot kept on `archive/main-with-apple-ios-and-debug-20260320`. |
 
 ## Current Focus
 - Add clipboard-first transcription UX for completed sessions.
