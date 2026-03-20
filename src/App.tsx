@@ -33,7 +33,7 @@ import {
   logWarn,
   shutdownLogger,
 } from './modules/logging/logger'
-import { markStartupMilestone, markDebugPanelMilestone } from './modules/logging/startup-milestones'
+import { markStartupMilestone, markDebugPanelMilestone, flushStartupMilestonesToLogger } from './modules/logging/startup-milestones'
 import { transcriptionService, validateGroqApiKey } from './modules/transcription/service'
 
 type DeveloperTable = {
@@ -809,7 +809,11 @@ function App() {
 
   useEffect(() => {
     markStartupMilestone('App: initializeLogger start')
-    void initializeLogger().then(() => markStartupMilestone('App: initializeLogger done'))
+    void initializeLogger()
+      .then(async () => {
+        markStartupMilestone('App: initializeLogger done')
+        await flushStartupMilestonesToLogger()
+      })
     return () => {
       void shutdownLogger()
     }
