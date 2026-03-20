@@ -30,7 +30,7 @@
 
 ## Edits log
 
-- 2026-03-20: Git hygiene — archived pre-revert `main` tip (Apple iOS + debug + docs asset bump) as `archive/main-with-apple-ios-and-debug-20260320`. Reset `main` to `6f0fca0` (pre–App Store). Cherry-picked startup milestone commit onto clean `main` where possible; kept WIP flush-to-logger buffering if applied.
+- 2026-03-20: Git hygiene — archived pre-revert `main` tip (Apple iOS + debug + docs asset bump) as `archive/main-with-apple-ios-and-debug-20260320`. Reset `main` to `6f0fca0` (pre–App Store). Cherry-picked startup milestone commit `6500925` then WIP flush `e893272` onto clean `main`. Regenerated `docs/` for Pages; noted in `documentation/README.md`.
 - 2026-03-14: Created spec. Added `src/modules/logging/startup-milestones.ts` with `markStartupMilestone` and `markDebugPanelMilestone` (console + logger via dynamic import). Instrumented: main.tsx (first execution, registerSW); App (mount, initializeLogger, reconcileDanglingSessions, loadSessions, refreshTranscriptionPreviews); manifest getDB open; loadDeveloperTables; loadLogSessions. Logs use `[startup]` prefix and elapsed ms from boot.
 
 ## Note
