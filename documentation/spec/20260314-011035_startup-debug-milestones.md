@@ -1,6 +1,6 @@
 # Startup debug milestones (living spec)
 
-- Branch: `main`
+- Branch: `main` (reset 2026-03-20 to merge `6f0fca0` = same tree as `cursor/starting-process-interface-5228` @ `9429c33`; iOS/App Store work preserved on `archive/main-with-apple-ios-and-debug-20260320`)
 - Started (UTC): 2026-03-14
 - Owner intent: Add milestone debug logs at startup and in the debug panel to identify why the web app takes 50s–2min to show the recordings list, and why the debug panel shows "Loading" for ~10s.
 
@@ -30,6 +30,7 @@
 
 ## Edits log
 
+- 2026-03-20: Git hygiene — archived pre-revert `main` tip (Apple iOS + debug + docs asset bump) as `archive/main-with-apple-ios-and-debug-20260320`. Reset `main` to `6f0fca0` (pre–App Store). Cherry-picked startup milestone commit onto clean `main` where possible; kept WIP flush-to-logger buffering if applied.
 - 2026-03-14: Created spec. Added `src/modules/logging/startup-milestones.ts` with `markStartupMilestone` and `markDebugPanelMilestone` (console + logger via dynamic import). Instrumented: main.tsx (first execution, registerSW); App (mount, initializeLogger, reconcileDanglingSessions, loadSessions, refreshTranscriptionPreviews); manifest getDB open; loadDeveloperTables; loadLogSessions. Logs use `[startup]` prefix and elapsed ms from boot.
 
 ## Note
