@@ -71,7 +71,7 @@ Improve perceived and actual load time for (1) the main recordings screen after 
 
 ## Edits log
 
-- 2026-03-24: Expanded `*-PROMPT.txt` to full conversation transcript (git/main/iOS recovery, `git log` question, Doctor Report + timing question, spec request, prompt-log correction) separated by `---`.
+- 2026-03-24: Expanded `*-PROMPT.txt` to full conversation transcript (opening turn: git/main/iOS + attached startup-milestones ask; `git log` question; Doctor Report + timing question; spec request; prompt-log correction) separated by `---`.
 - 2026-03-24: Created spec from owner prompt; captured log-derived timings, `getChunksForInspection` / `storageTotals` / dev-overlay analysis, and retention dead-weight notes.
 
 ## Self-evaluation vs acceptance criteria
