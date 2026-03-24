@@ -33,7 +33,12 @@ import {
   logWarn,
   shutdownLogger,
 } from './modules/logging/logger'
-import { markStartupMilestone, markDebugPanelMilestone, flushStartupMilestonesToLogger } from './modules/logging/startup-milestones'
+import {
+  markStartupMilestone,
+  markDebugPanelMilestone,
+  flushStartupMilestonesToLogger,
+  resetStartupMilestoneEpoch,
+} from './modules/logging/startup-milestones'
 import { transcriptionService, validateGroqApiKey } from './modules/transcription/service'
 
 const DEVELOPER_TABLE_PAGE_SIZE = 200
@@ -615,6 +620,7 @@ function App() {
     markStartupMilestone('refreshTranscriptionPreviews: start', { sessionCount: sessions.length })
     try {
       const allSnips = await manifestService.listSnips()
+      markStartupMilestone('refreshTranscriptionPreviews: listSnips done', { snipRows: allSnips.length })
       const snipsBySession = new Map<string, SnipRecord[]>()
       for (const snip of allSnips) {
         let list = snipsBySession.get(snip.sessionId)
@@ -627,6 +633,9 @@ function App() {
       for (const list of snipsBySession.values()) {
         list.sort((a, b) => a.index - b.index)
       }
+      markStartupMilestone('refreshTranscriptionPreviews: grouped by session', {
+        sessionBuckets: snipsBySession.size,
+      })
 
       const entries = sessions.map((session) => {
         if (session.status !== 'ready') return [session.id, '', 0, 0, 0, 0, 0] as const
@@ -666,7 +675,9 @@ function App() {
       setTranscriptionPreviews(next)
       setTranscriptionErrorCounts(nextErrors)
       setTranscriptionSnipCounts(nextCounts)
-      markStartupMilestone('refreshTranscriptionPreviews: done')
+      markStartupMilestone('refreshTranscriptionPreviews: done', {
+        previewSessions: Object.keys(next).length,
+      })
     } catch (error) {
       markStartupMilestone('refreshTranscriptionPreviews: error')
       await logError('Transcription preview load failed', {
@@ -688,11 +699,9 @@ function App() {
     const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
     sessionAnalysisProviderRef.current = provider
     const sessions = await manifestService.listSessions()
+    markStartupMilestone('loadSessions: listSessions done', { sessionCount: sessions.length })
     const totalBytes = sessions.reduce((sum, session) => sum + (session.totalBytes ?? 0), 0)
-    markStartupMilestone('loadSessions: listSessions+sessionBytesSum done', {
-      sessionCount: sessions.length,
-      totalBytes,
-    })
+    markStartupMilestone('loadSessions: sessionBytesSum done', { totalBytes })
 
     const previousMap = sessionUpdatesRef.current
     let highlightCandidate: SessionRecord | null = null
@@ -716,6 +725,9 @@ function App() {
       setHighlightedSessionId(highlightCandidate.id)
     }
 
+    markStartupMilestone('loadSessions: before setRecordings', {
+      highlightSessionId: highlightCandidate?.id ?? null,
+    })
     setRecordings(sessions)
     markStartupMilestone('loadSessions: setRecordings done, recordings list visible')
     // Update the buffer usage indicator with the latest totals and quota.
@@ -830,6 +842,25 @@ function App() {
   useEffect(() => {
     markStartupMilestone('App: reconcileDanglingSessions start')
     void manifestService.reconcileDanglingSessions().then(() => markStartupMilestone('App: reconcileDanglingSessions done'))
+  }, [])
+
+  useEffect(() => {
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        resetStartupMilestoneEpoch('visibility visible')
+      }
+    }
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        resetStartupMilestoneEpoch('bfcache pageshow')
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    window.addEventListener('pageshow', onPageShow)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibility)
+      window.removeEventListener('pageshow', onPageShow)
+    }
   }, [])
 
   useEffect(() => {

@@ -49,12 +49,17 @@ Improve perceived and actual load time for (1) the main recordings screen after 
 | **B1** | Spike: readers of `chunkVolumes` for purged chunks | Todo |
 | **B2** | Optional delete/truncate volume rows on retention + tests | Todo |
 
-## Section C — observability (optional)
+## Section C — observability (implemented)
 
 | ID | Item | Status |
 | --- | --- | --- |
-| **C1** | Finer sub-milestones in hot paths | Todo |
-| **C2** | Boot clock reset on visibility resume | Todo |
+| **C1** | Finer sub-milestones: `loadSessions` split into `listSessions done`, `sessionBytesSum done`, `before setRecordings`; `refreshTranscriptionPreviews` adds `listSnips done`, `grouped by session`, richer `done`; `[debug]` payloads include `activationMs` | Done |
+| **C2** | `resetStartupMilestoneEpoch()` on `visibilitychange` → visible and `pageshow` when `event.persisted` (bfcache); logs `[startup] activation epoch reset (…)` | Done |
+
+### Code references (C)
+
+- `src/modules/logging/startup-milestones.ts` — `resetStartupMilestoneEpoch`; `markDebugPanelMilestone` adds `activationMs`.
+- `src/App.tsx` — listeners for visibility / bfcache; extra milestones in `loadSessions` and `refreshTranscriptionPreviews`.
 
 ## Acceptance criteria
 
@@ -67,10 +72,11 @@ Improve perceived and actual load time for (1) the main recordings screen after 
 
 - [x] A1–A5 (see table above)
 - [ ] B1, B2
-- [ ] C1, C2 (optional)
+- [x] C1, C2
 
 ## Edits log
 
+- 2026-03-24: **Section C** — `resetStartupMilestoneEpoch` in `startup-milestones.ts`; visibility + bfcache listeners in `App.tsx`; finer `loadSessions` / `refreshTranscriptionPreviews` milestones; `activationMs` on debug panel logs.
 - 2026-03-24: Implemented **recommendation A** (manifest + App + CSS); rebuilt `docs/`; spec converted to checklist + B/C tables.
 - 2026-03-24: Expanded `*-PROMPT.txt` with full transcript separators.
 - 2026-03-24: Initial spec from owner prompt.

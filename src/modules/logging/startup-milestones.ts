@@ -23,6 +23,19 @@ function emitToLogger(msg: string, payload: Record<string, unknown>): void {
   }).catch(() => {})
 }
 
+/**
+ * Resets the `+NNNms` clock so the next milestones measure time since this activation
+ * (e.g. tab visible again after background). Does not clear the buffered logger queue.
+ */
+export function resetStartupMilestoneEpoch(reason?: string): void {
+  const now = Date.now()
+  bootT0 = now
+  const msg = `${PREFIX} activation epoch reset${reason ? ` (${reason})` : ''}`
+  const payload: Record<string, unknown> = { at: now, reason: reason ?? 'unspecified' }
+  console.info(msg, payload)
+  emitToLogger(msg, payload)
+}
+
 export function markStartupMilestone(label: string, details?: Record<string, unknown>): void {
   const now = Date.now()
   if (bootT0 === null) {
@@ -37,7 +50,8 @@ export function markStartupMilestone(label: string, details?: Record<string, unk
 
 export function markDebugPanelMilestone(label: string, details?: Record<string, unknown>): void {
   const now = Date.now()
-  const payload = { ...details, at: now }
+  const activationMs = bootT0 !== null ? now - bootT0 : null
+  const payload = { ...details, at: now, activationMs }
   const msg = `${PREFIX} [debug] ${label}`
   console.info(msg, details ?? '')
   emitToLogger(msg, payload)
