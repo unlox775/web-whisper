@@ -13,6 +13,7 @@ import './App.css'
 import {
   manifestService,
   type ChunkVolumeProfileRecord,
+  type DeveloperTableCounts,
   type LogEntryRecord,
   type LogSessionRecord,
   type SnipRecord,
@@ -35,10 +36,9 @@ import {
 import { markStartupMilestone, markDebugPanelMilestone, flushStartupMilestonesToLogger } from './modules/logging/startup-milestones'
 import { transcriptionService, validateGroqApiKey } from './modules/transcription/service'
 
-type DeveloperTable = {
-  name: string
-  rows: Array<Record<string, unknown>>
-}
+const DEVELOPER_TABLE_PAGE_SIZE = 200
+const DEVELOPER_TABLE_NAMES = ['sessions', 'chunks', 'chunkVolumes', 'snips'] as const
+type DeveloperSidebarTableName = (typeof DEVELOPER_TABLE_NAMES)[number]
 
 type ChunkInspectionRow = Record<string, unknown> & {
   id?: string
@@ -46,6 +46,8 @@ type ChunkInspectionRow = Record<string, unknown> & {
   seq?: number
   startMs?: number
   endMs?: number
+  byteLength?: number
+  storedByteLength?: number
   blobSize?: number
   verifiedByteLength?: number | null
   sizeMismatch?: boolean
@@ -343,8 +345,12 @@ function App() {
   const [isGroqSetupOpen, setGroqSetupOpen] = useState(false)
   const [isDeveloperOverlayOpen, setDeveloperOverlayOpen] = useState(false)
   const [developerOverlayLoading, setDeveloperOverlayLoading] = useState(false)
-  const [developerTables, setDeveloperTables] = useState<DeveloperTable[]>([])
-  const [selectedDeveloperTable, setSelectedDeveloperTable] = useState<string | null>(null)
+  const [developerLogsLoading, setDeveloperLogsLoading] = useState(false)
+  const [developerTableCounts, setDeveloperTableCounts] = useState<DeveloperTableCounts | null>(null)
+  const [developerVisibleRows, setDeveloperVisibleRows] = useState<Array<Record<string, unknown>>>([])
+  const [developerTableHasMore, setDeveloperTableHasMore] = useState(false)
+  const [developerTableRowsLoading, setDeveloperTableRowsLoading] = useState(false)
+  const [selectedDeveloperTable, setSelectedDeveloperTable] = useState<DeveloperSidebarTableName | null>(null)
   const [developerOverlayMode, setDeveloperOverlayMode] = useState<'tables' | 'logs'>('tables')
   const [logSessions, setLogSessions] = useState<LogSessionRecord[]>([])
   const [selectedLogSession, setSelectedLogSession] = useState<LogSessionRecord | null>(null)
@@ -608,26 +614,38 @@ function App() {
   const refreshTranscriptionPreviews = useCallback(async (sessions: SessionRecord[]) => {
     markStartupMilestone('refreshTranscriptionPreviews: start', { sessionCount: sessions.length })
     try {
-      const entries = await Promise.all(
-        sessions.map(async (session) => {
-          if (session.status !== 'ready') return [session.id, '', 0, 0, 0, 0, 0] as const
-          const snips = await manifestService.listSnips(session.id)
-          const errorCount = snips.filter((snip) => Boolean(snip.transcriptionError)).length
-          const transcribedCount = snips.filter((snip) => getSnipTranscriptionText(snip).length > 0).length
-          const purgedCount = snips.filter((snip) => isSnipAudioPurged(snip)).length
-          const total = snips.length
-          const retryableCount = Math.max(0, total - purgedCount)
-          return [
-            session.id,
-            buildTranscriptionPreview(snips),
-            errorCount,
-            transcribedCount,
-            total,
-            purgedCount,
-            retryableCount,
-          ] as const
-        }),
-      )
+      const allSnips = await manifestService.listSnips()
+      const snipsBySession = new Map<string, SnipRecord[]>()
+      for (const snip of allSnips) {
+        let list = snipsBySession.get(snip.sessionId)
+        if (!list) {
+          list = []
+          snipsBySession.set(snip.sessionId, list)
+        }
+        list.push(snip)
+      }
+      for (const list of snipsBySession.values()) {
+        list.sort((a, b) => a.index - b.index)
+      }
+
+      const entries = sessions.map((session) => {
+        if (session.status !== 'ready') return [session.id, '', 0, 0, 0, 0, 0] as const
+        const snips = snipsBySession.get(session.id) ?? []
+        const errorCount = snips.filter((snip) => Boolean(snip.transcriptionError)).length
+        const transcribedCount = snips.filter((snip) => getSnipTranscriptionText(snip).length > 0).length
+        const purgedCount = snips.filter((snip) => isSnipAudioPurged(snip)).length
+        const total = snips.length
+        const retryableCount = Math.max(0, total - purgedCount)
+        return [
+          session.id,
+          buildTranscriptionPreview(snips),
+          errorCount,
+          transcribedCount,
+          total,
+          purgedCount,
+          retryableCount,
+        ] as const
+      })
       const next: Record<string, string> = {}
       const nextErrors: Record<string, number> = {}
       const nextCounts: Record<
@@ -669,14 +687,11 @@ function App() {
     // Reuse or create a single provider instance so verification caching survives reloads.
     const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
     sessionAnalysisProviderRef.current = provider
-    // Fetch sessions and overall storage usage concurrently for snappier UI updates.
-    const [sessions, totals] = await Promise.all([
-      manifestService.listSessions(),
-      manifestService.storageTotals(),
-    ])
-    markStartupMilestone('loadSessions: listSessions+storageTotals done', {
+    const sessions = await manifestService.listSessions()
+    const totalBytes = sessions.reduce((sum, session) => sum + (session.totalBytes ?? 0), 0)
+    markStartupMilestone('loadSessions: listSessions+sessionBytesSum done', {
       sessionCount: sessions.length,
-      totalBytes: totals.totalBytes,
+      totalBytes,
     })
 
     const previousMap = sessionUpdatesRef.current
@@ -704,7 +719,7 @@ function App() {
     setRecordings(sessions)
     markStartupMilestone('loadSessions: setRecordings done, recordings list visible')
     // Update the buffer usage indicator with the latest totals and quota.
-    setBufferTotals({ totalBytes: totals.totalBytes, limitBytes: storageLimitBytes })
+    setBufferTotals({ totalBytes, limitBytes: storageLimitBytes })
     void refreshTranscriptionPreviews(sessions)
 
     // Identify sessions that still need timing verification so charts remain monotonic.
@@ -1171,7 +1186,9 @@ function App() {
       setSessionAnalysis(null)
       setAnalysisState('idle')
       setAnalysisError(null)
-      setDeveloperTables([])
+      setDeveloperTableCounts(null)
+      setDeveloperVisibleRows([])
+      setDeveloperTableHasMore(false)
       setSelectedDeveloperTable(null)
       setDeveloperOverlayMode('tables')
       setLogSessions([])
@@ -3319,7 +3336,9 @@ function App() {
 
   const handleCloseDeveloperOverlay = () => {
     setDeveloperOverlayOpen(false)
-    setDeveloperTables([])
+    setDeveloperTableCounts(null)
+    setDeveloperVisibleRows([])
+    setDeveloperTableHasMore(false)
     setSelectedDeveloperTable(null)
     setDeveloperOverlayMode('tables')
     setLogSessions([])
@@ -3537,51 +3556,85 @@ function App() {
     [ensureSnipPlaybackUrl, isSnipAudioPurged, playbackVolume, selectedRecording, snipPlayingId],
   )
 
-    const loadDeveloperTables = useCallback(async () => {
-      markDebugPanelMilestone('loadDeveloperTables: start')
-      try {
-        const [sessions, chunks, chunkVolumes, snips] = await Promise.all([
-          manifestService.listSessions(),
-          manifestService.getChunksForInspection(),
-          manifestService.listChunkVolumeProfiles(),
-          manifestService.listSnips(),
-        ])
-        markDebugPanelMilestone('loadDeveloperTables: all tables loaded', {
-          sessions: sessions.length,
-          chunks: chunks.length,
-          chunkVolumes: chunkVolumes.length,
-          snips: snips.length,
-        })
-        setDeveloperTables([
-          { name: 'sessions', rows: sessions.map((row) => ({ ...row })) },
-          { name: 'chunks', rows: chunks.map((row) => ({ ...row })) },
-          {
-            name: 'chunkVolumes',
-            rows: chunkVolumes.map((row) => ({
-              ...row,
-              framesPreview: row.frames.slice(0, 24),
-              framesTotal: row.frames.length,
-            })),
-          },
-          {
-            name: 'snips',
-            rows: snips.map((row) => ({
-              ...row,
-              segmentsPreview: row.transcription?.segments?.slice(0, 6) ?? [],
-              segmentsCount: row.transcription?.segments?.length ?? 0,
-            })),
-          },
-        ])
-        setSelectedDeveloperTable((prev) => prev ?? 'sessions')
-      } catch (error) {
-        console.error('[UI] Failed to load developer tables', error)
-        setDeveloperTables([])
-        setSelectedDeveloperTable('sessions')
-        await logError('Developer table load failed', {
-          error: error instanceof Error ? error.message : String(error),
-        })
-      }
-    }, [])
+  const loadDeveloperIndexedDbShell = useCallback(async () => {
+    markDebugPanelMilestone('loadDeveloperTableCounts: start')
+    const counts = await manifestService.getDeveloperTableCounts()
+    markDebugPanelMilestone('loadDeveloperTableCounts: done', counts)
+    setDeveloperTableCounts(counts)
+    setSelectedDeveloperTable('sessions')
+    markDebugPanelMilestone('loadDeveloperTablePage: start', { table: 'sessions', offset: 0 })
+    const { rows, hasMore } = await manifestService.getDeveloperTablePage(
+      'sessions',
+      0,
+      DEVELOPER_TABLE_PAGE_SIZE,
+    )
+    markDebugPanelMilestone('loadDeveloperTablePage: done', {
+      table: 'sessions',
+      rowCount: rows.length,
+      hasMore,
+    })
+    setDeveloperVisibleRows(rows)
+    setDeveloperTableHasMore(hasMore)
+  }, [])
+
+  const loadDeveloperTableFromSidebar = useCallback(async (name: DeveloperSidebarTableName) => {
+    setSelectedDeveloperTable(name)
+    setDeveloperOverlayLoading(true)
+    try {
+      markDebugPanelMilestone('loadDeveloperTablePage: start', { table: name, offset: 0 })
+      const { rows, hasMore } = await manifestService.getDeveloperTablePage(
+        name,
+        0,
+        DEVELOPER_TABLE_PAGE_SIZE,
+      )
+      markDebugPanelMilestone('loadDeveloperTablePage: done', {
+        table: name,
+        rowCount: rows.length,
+        hasMore,
+      })
+      setDeveloperVisibleRows(rows)
+      setDeveloperTableHasMore(hasMore)
+    } catch (error) {
+      console.error('[UI] Failed to load developer table', error)
+      setDeveloperVisibleRows([])
+      setDeveloperTableHasMore(false)
+      await logError('Developer table page load failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setDeveloperOverlayLoading(false)
+    }
+  }, [])
+
+  const appendDeveloperTablePage = useCallback(async () => {
+    const table = selectedDeveloperTable
+    if (!table) return
+    setDeveloperTableRowsLoading(true)
+    try {
+      const offset = developerVisibleRows.length
+      markDebugPanelMilestone('loadDeveloperTablePage: append', { table, offset })
+      const { rows, hasMore } = await manifestService.getDeveloperTablePage(
+        table,
+        offset,
+        DEVELOPER_TABLE_PAGE_SIZE,
+      )
+      markDebugPanelMilestone('loadDeveloperTablePage: done', {
+        table,
+        rowCount: rows.length,
+        hasMore,
+        append: true,
+      })
+      setDeveloperVisibleRows((prev) => [...prev, ...rows])
+      setDeveloperTableHasMore(hasMore)
+    } catch (error) {
+      console.error('[UI] Failed to append developer table page', error)
+      await logError('Developer table append failed', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      setDeveloperTableRowsLoading(false)
+    }
+  }, [selectedDeveloperTable, developerVisibleRows.length])
 
   const handleSelectLogSession = useCallback(
     async (session: LogSessionRecord | null) => {
@@ -3634,12 +3687,16 @@ function App() {
     setDeveloperOverlayMode('tables')
     setDeveloperOverlayOpen(true)
     setDeveloperOverlayLoading(true)
+    setDeveloperTableCounts(null)
+    setDeveloperVisibleRows([])
+    setDeveloperTableHasMore(false)
+    setSelectedDeveloperTable(null)
     try {
-      await loadDeveloperTables()
-      await loadLogSessions()
+      await loadDeveloperIndexedDbShell()
     } catch (error) {
       console.error('[UI] Failed to load developer data', error)
-      setDeveloperTables([])
+      setDeveloperTableCounts(null)
+      setDeveloperVisibleRows([])
       setSelectedDeveloperTable(null)
       await logError('Developer overlay failed to load', {
         error: error instanceof Error ? error.message : String(error),
@@ -3647,7 +3704,7 @@ function App() {
     } finally {
       setDeveloperOverlayLoading(false)
     }
-  }, [loadDeveloperTables, loadLogSessions])
+  }, [loadDeveloperIndexedDbShell])
 
   const bufferLabel = `${formatDataSize(bufferTotals.totalBytes)} / ${formatDataSize(bufferTotals.limitBytes)}`
   const hasAudioFlow = captureState.state === 'recording' && captureState.capturedMs > 0
@@ -5248,7 +5305,7 @@ function App() {
                   onClick={() => {
                     setDeveloperOverlayMode('tables')
                     setDeveloperOverlayLoading(true)
-                    void loadDeveloperTables().finally(() => setDeveloperOverlayLoading(false))
+                    void loadDeveloperIndexedDbShell().finally(() => setDeveloperOverlayLoading(false))
                   }}
                 >
                   IndexedDB
@@ -5258,8 +5315,8 @@ function App() {
                   className={developerOverlayMode === 'logs' ? 'is-selected' : ''}
                   onClick={() => {
                     setDeveloperOverlayMode('logs')
-                    setDeveloperOverlayLoading(true)
-                    void loadLogSessions().finally(() => setDeveloperOverlayLoading(false))
+                    setDeveloperLogsLoading(true)
+                    void loadLogSessions().finally(() => setDeveloperLogsLoading(false))
                   }}
                 >
                   Logs
@@ -5268,15 +5325,17 @@ function App() {
                 {developerOverlayMode === 'tables' ? (
                   <div className="dev-panel-body">
                     <div className="dev-table-buttons">
-                      {developerTables.map((table) => (
+                      {DEVELOPER_TABLE_NAMES.map((tableName) => (
                         <button
-                          key={table.name}
+                          key={tableName}
                           type="button"
-                          className={selectedDeveloperTable === table.name ? 'is-selected' : ''}
-                          onClick={() => setSelectedDeveloperTable(table.name)}
+                          className={selectedDeveloperTable === tableName ? 'is-selected' : ''}
+                          onClick={() => void loadDeveloperTableFromSidebar(tableName)}
                         >
-                          {table.name}
-                          <span className="dev-table-count">{table.rows.length}</span>
+                          {tableName}
+                          <span className="dev-table-count">
+                            {developerTableCounts ? developerTableCounts[tableName] : '—'}
+                          </span>
                         </button>
                       ))}
                     </div>
@@ -5285,65 +5344,93 @@ function App() {
                         <p>Loading…</p>
                       ) : !selectedDeveloperTable ? (
                         <p>Select a table to inspect rows.</p>
+                      ) : developerVisibleRows.length === 0 ? (
+                        <p>No rows.</p>
                       ) : (
-                        (() => {
-                          const activeTable = developerTables.find((table) => table.name === selectedDeveloperTable)
-                          if (!activeTable) return <p>No rows.</p>
-                          if (activeTable.rows.length === 0) return <p>No rows.</p>
-
-                          if (selectedDeveloperTable === 'chunks') {
-                            const chunkRows = activeTable.rows as ChunkInspectionRow[]
-                            return chunkRows.map((row, index) => {
-                              const key = typeof row.id === 'string' ? row.id : `${row.sessionId ?? 'chunk'}-${row.seq ?? index}`
-                              const blobSize = typeof row.blobSize === 'number' ? row.blobSize : null
-                              const verified = typeof row.verifiedByteLength === 'number' ? row.verifiedByteLength : null
-                              const blobLabel = blobSize !== null ? `${blobSize} B (${formatDataSize(blobSize)})` : 'unknown'
-                              const verifiedLabel = verified !== null ? `${verified} B (${formatDataSize(verified)})` : 'unverified'
-                              const mismatch = Boolean(row.sizeMismatch ?? (verified !== null && blobSize !== null && verified !== blobSize))
-                              return (
-                                <div key={key} className={`dev-table-chunk ${mismatch ? 'has-mismatch' : ''}`}>
-                                  <pre>{JSON.stringify(row, null, 2)}</pre>
-                                  <p className="dev-chunk-extra">
-                                    <span>blob.size: {blobLabel}</span>
-                                    <span>verified: {verifiedLabel}</span>
-                                    <span className={mismatch ? 'dev-chunk-warning' : 'dev-chunk-ok'}>
-                                      {mismatch ? '⚠ size mismatch' : '✓ sizes match'}
-                                    </span>
-                                  </p>
-                                </div>
-                              )
-                            })
-                          }
-
-                          if (selectedDeveloperTable === 'chunkVolumes') {
-                            const volumeRows = activeTable.rows as unknown as Array<
-                              ChunkVolumeProfileRecord & { framesPreview?: unknown; framesTotal?: number }
-                            >
-                            return volumeRows.map((row, index) => {
-                              const key = `${row.sessionId}-${row.chunkId}-${index}`
-                              const framesTotal = row.framesTotal ?? row.frames.length
-                              const averageVolume = typeof row.averageNormalized === 'number' ? row.averageNormalized : 0
-                              const peakVolume = typeof row.maxNormalized === 'number' ? row.maxNormalized : 0
-                              const verifiedDurationSec =
-                                typeof row.durationMs === 'number' ? (row.durationMs / 1000).toFixed(2) : '0.00'
-                              return (
-                                <div key={key} className="dev-table-chunk">
-                                  <pre>{JSON.stringify(row, null, 2)}</pre>
-                                  <p className="dev-chunk-extra">
-                                    <span>frames: {framesTotal}</span>
-                                    <span>duration: {verifiedDurationSec}s</span>
-                                    <span>avg volume: {averageVolume.toFixed(4)}</span>
-                                    <span>peak volume: {peakVolume.toFixed(4)}</span>
-                                  </p>
-                                </div>
-                              )
-                            })
-                          }
-
-                          return activeTable.rows.map((row, index) => (
-                            <pre key={index}>{JSON.stringify(row, null, 2)}</pre>
-                          ))
-                        })()
+                        <>
+                          {selectedDeveloperTable === 'chunks'
+                            ? (developerVisibleRows as ChunkInspectionRow[]).map((row, index) => {
+                                const key =
+                                  typeof row.id === 'string' ? row.id : `${row.sessionId ?? 'chunk'}-${row.seq ?? index}`
+                                const blobSize = typeof row.blobSize === 'number' ? row.blobSize : null
+                                const storedBytes =
+                                  typeof row.storedByteLength === 'number'
+                                    ? row.storedByteLength
+                                    : typeof row.byteLength === 'number'
+                                      ? row.byteLength
+                                      : null
+                                const verified =
+                                  typeof row.verifiedByteLength === 'number' ? row.verifiedByteLength : null
+                                const blobLabel =
+                                  blobSize !== null ? `${blobSize} B (${formatDataSize(blobSize)})` : 'unknown'
+                                const storedLabel =
+                                  storedBytes !== null
+                                    ? `${storedBytes} B (${formatDataSize(storedBytes)})`
+                                    : 'unknown'
+                                const verifiedLabel =
+                                  verified !== null
+                                    ? `${verified} B (${formatDataSize(verified)})`
+                                    : 'skipped (no arrayBuffer read)'
+                                const mismatch = Boolean(
+                                  row.sizeMismatch ??
+                                    (verified !== null && blobSize !== null && verified !== blobSize),
+                                )
+                                return (
+                                  <div key={key} className={`dev-table-chunk ${mismatch ? 'has-mismatch' : ''}`}>
+                                    <pre>{JSON.stringify(row, null, 2)}</pre>
+                                    <p className="dev-chunk-extra">
+                                      <span>byteLength: {storedLabel}</span>
+                                      <span>blob.size: {blobLabel}</span>
+                                      <span>arrayBuffer verify: {verifiedLabel}</span>
+                                      <span className={mismatch ? 'dev-chunk-warning' : 'dev-chunk-ok'}>
+                                        {mismatch ? '⚠ size mismatch' : '✓ byteLength vs blob.size'}
+                                      </span>
+                                    </p>
+                                  </div>
+                                )
+                              })
+                            : null}
+                          {selectedDeveloperTable === 'chunkVolumes'
+                            ? (developerVisibleRows as unknown as Array<
+                                ChunkVolumeProfileRecord & { framesPreview?: unknown; framesTotal?: number }
+                              >).map((row, index) => {
+                                const key = `${row.sessionId}-${row.chunkId}-${index}`
+                                const framesTotal = row.framesTotal ?? row.frames.length
+                                const averageVolume =
+                                  typeof row.averageNormalized === 'number' ? row.averageNormalized : 0
+                                const peakVolume = typeof row.maxNormalized === 'number' ? row.maxNormalized : 0
+                                const verifiedDurationSec =
+                                  typeof row.durationMs === 'number' ? (row.durationMs / 1000).toFixed(2) : '0.00'
+                                return (
+                                  <div key={key} className="dev-table-chunk">
+                                    <pre>{JSON.stringify(row, null, 2)}</pre>
+                                    <p className="dev-chunk-extra">
+                                      <span>frames: {framesTotal}</span>
+                                      <span>duration: {verifiedDurationSec}s</span>
+                                      <span>avg volume: {averageVolume.toFixed(4)}</span>
+                                      <span>peak volume: {peakVolume.toFixed(4)}</span>
+                                    </p>
+                                  </div>
+                                )
+                              })
+                            : null}
+                          {selectedDeveloperTable !== 'chunks' && selectedDeveloperTable !== 'chunkVolumes'
+                            ? developerVisibleRows.map((row, index) => (
+                                <pre key={index}>{JSON.stringify(row, null, 2)}</pre>
+                              ))
+                            : null}
+                          {developerTableHasMore ? (
+                            <div className="dev-table-load-more">
+                              <button
+                                type="button"
+                                disabled={developerTableRowsLoading}
+                                onClick={() => void appendDeveloperTablePage()}
+                              >
+                                {developerTableRowsLoading ? 'Loading…' : 'Load more rows'}
+                              </button>
+                            </div>
+                          ) : null}
+                        </>
                       )}
                     </div>
                   </div>
@@ -5380,7 +5467,7 @@ function App() {
                       </button>
                     </div>
                     <div className="dev-log-entries">
-                      {developerOverlayLoading ? (
+                      {developerLogsLoading ? (
                         <p>Loading…</p>
                       ) : !selectedLogSession ? (
                         <p>No log sessions found.</p>

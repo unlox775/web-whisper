@@ -2192,6 +2192,25 @@ body {
   gap: 0.75rem;
 }
 
+.dev-table-load-more {
+  padding: 0.5rem 0 0;
+}
+
+.dev-table-load-more button {
+  font: inherit;
+  padding: 0.4rem 0.85rem;
+  border-radius: 0.5rem;
+  border: 1px solid rgba(94, 234, 212, 0.35);
+  background: rgba(15, 23, 42, 0.75);
+  color: rgba(226, 232, 240, 0.95);
+  cursor: pointer;
+}
+
+.dev-table-load-more button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
 .dev-table-rows pre {
   margin: 0;
   padding: 0.75rem;

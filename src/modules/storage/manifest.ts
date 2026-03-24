@@ -73,6 +73,15 @@ export type SnipRecord = {
 
 export type SnipSeed = Pick<SnipRecord, 'index' | 'startMs' | 'endMs' | 'durationMs' | 'breakReason' | 'boundaryIndex'>
 
+export type DeveloperTableName = 'sessions' | 'chunks' | 'chunkVolumes' | 'snips'
+
+export type DeveloperTableCounts = {
+  sessions: number
+  chunks: number
+  chunkVolumes: number
+  snips: number
+}
+
 export interface SessionTimingVerificationResult {
   sessionId: string
   status: ChunkTimingStatus
@@ -302,6 +311,13 @@ export interface ManifestService {
     applyRetentionPolicy(options: { limitBytes: number; now?: number }): Promise<StorageRetentionResult>
     verifySessionChunkTimings(sessionId: string): Promise<SessionTimingVerificationResult>
     reconcileDanglingSessions(): Promise<void>
+  getDeveloperTableCounts(): Promise<DeveloperTableCounts>
+  getDeveloperTablePage(
+    table: DeveloperTableName,
+    offset: number,
+    limit: number,
+  ): Promise<{ rows: Array<Record<string, unknown>>; hasMore: boolean }>
+  /** @deprecated Prefer getDeveloperTablePage — loads all rows without per-blob arrayBuffer reads. */
   getChunksForInspection(): Promise<Array<Record<string, unknown>>>
   createLogSession(): Promise<LogSessionRecord>
   finishLogSession(id: string): Promise<void>
@@ -604,13 +620,8 @@ class IndexedDBManifestService implements ManifestService {
 
   async storageTotals(): Promise<{ totalBytes: number }> {
     const db = await getDB()
-    const chunkStore = db.transaction('chunks').store
-    let totalBytes = 0
-    let cursor = await chunkStore.openCursor()
-    while (cursor) {
-      totalBytes += cursor.value.byteLength
-      cursor = await cursor.continue()
-    }
+    const sessions = await db.getAll('sessions')
+    const totalBytes = sessions.reduce((sum, session) => sum + (session.totalBytes ?? 0), 0)
     return { totalBytes }
   }
 
@@ -1076,38 +1087,103 @@ class IndexedDBManifestService implements ManifestService {
     await tx.done
   }
 
-  async getChunksForInspection(): Promise<Array<Record<string, unknown>>> {
+  async getDeveloperTableCounts(): Promise<DeveloperTableCounts> {
     const db = await getDB()
-    const chunks = await db.transaction('chunks').store.getAll()
-    const ordered = chunks.sort((a, b) => {
-      if (a.startMs !== b.startMs) return b.startMs - a.startMs
-      if (a.seq !== b.seq) return b.seq - a.seq
-      return (b.createdAt ?? 0) - (a.createdAt ?? 0)
-    })
+    const [sessions, chunks, chunkVolumes, snips] = await Promise.all([
+      db.count('sessions'),
+      db.count('chunks'),
+      db.count('chunkVolumes'),
+      db.count('snips'),
+    ])
+    return { sessions, chunks, chunkVolumes, snips }
+  }
 
-    return Promise.all(
-      ordered.map(async ({ blob, ...rest }) => {
-        let verifiedByteLength: number | null = null
-        try {
-          const buffer = await blob.arrayBuffer()
-          verifiedByteLength = buffer.byteLength
-        } catch (error) {
-          console.warn('[Manifest] Failed to read chunk blob for inspection', error)
-        }
+  async getDeveloperTablePage(
+    table: DeveloperTableName,
+    offset: number,
+    limit: number,
+  ): Promise<{ rows: Array<Record<string, unknown>>; hasMore: boolean }> {
+    const safeOffset = Math.max(0, offset)
+    const safeLimit = Math.min(500, Math.max(1, limit))
+    const db = await getDB()
 
-        return {
+    if (table === 'sessions') {
+      const sessions = await db.getAll('sessions')
+      const sorted = sessions
+        .map((session) => ({
+          ...session,
+          timingStatus: session.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+        }))
+        .sort((a, b) => b.startedAt - a.startedAt)
+      const slice = sorted.slice(safeOffset, safeOffset + safeLimit)
+      return {
+        rows: slice.map((row) => ({ ...row })),
+        hasMore: safeOffset + safeLimit < sorted.length,
+      }
+    }
+
+    const storeName = table === 'chunkVolumes' ? 'chunkVolumes' : table
+    const tx = db.transaction(storeName)
+    const store = tx.store
+    let cursor = await store.openCursor()
+    let skipped = 0
+    const rows: Array<Record<string, unknown>> = []
+
+    while (cursor && skipped < safeOffset) {
+      skipped += 1
+      cursor = await cursor.continue()
+    }
+
+    while (cursor && rows.length < safeLimit) {
+      if (table === 'chunks') {
+        const chunk = cursor.value as StoredChunk
+        const { blob, ...rest } = chunk
+        rows.push({
           ...rest,
           timingStatus: rest.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+          blob: '[binary omitted]',
           blobSize: blob.size,
           blobType: blob.type,
-          verifiedByteLength,
-          sizeMismatch: verifiedByteLength !== null && verifiedByteLength !== blob.size,
+          storedByteLength: rest.byteLength,
+          verifiedByteLength: null,
+          sizeMismatch: rest.byteLength !== blob.size,
           startIso: new Date(rest.startMs).toISOString(),
           endIso: new Date(rest.endMs).toISOString(),
-          blob: '[binary omitted]',
-        }
-      }),
-    )
+        })
+      } else if (table === 'chunkVolumes') {
+        const record = sanitizeVolumeRecord(cursor.value as ChunkVolumeProfileRecord)
+        rows.push({
+          ...record,
+          framesPreview: record.frames.slice(0, 24),
+          framesTotal: record.frames.length,
+        })
+      } else {
+        const snip = normalizeSnipRecord(cursor.value as SnipRecord)
+        rows.push({
+          ...snip,
+          segmentsPreview: snip.transcription?.segments?.slice(0, 6) ?? [],
+          segmentsCount: snip.transcription?.segments?.length ?? 0,
+        })
+      }
+      cursor = await cursor.continue()
+    }
+
+    const hasMore = cursor !== null
+    await tx.done
+    return { rows, hasMore }
+  }
+
+  async getChunksForInspection(): Promise<Array<Record<string, unknown>>> {
+    const merged: Array<Record<string, unknown>> = []
+    let offset = 0
+    const pageSize = 400
+    while (true) {
+      const { rows, hasMore } = await this.getDeveloperTablePage('chunks', offset, pageSize)
+      merged.push(...rows)
+      if (!hasMore) break
+      offset += rows.length
+    }
+    return merged
   }
 
   async createLogSession(): Promise<LogSessionRecord> {

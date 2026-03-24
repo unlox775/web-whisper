@@ -58,3 +58,11 @@ Yeah, give me a little more complete list of proposed engineering steps you want
 ---
 
 No, this doesn't include the prompts earlier in this conversation, it should
+
+---
+
+Ok, I want you do complete ALL of the Recommendations A section.  The Spec should be a little more todo-style based with checklist and statuses. For 3 Mainblist, the long term solultion looks best
+
+---
+
+Keep going!
