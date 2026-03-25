@@ -620,6 +620,19 @@ function App() {
   const refreshTranscriptionPreviews = useCallback(async (sessions: SessionRecord[]) => {
     const gen = (previewRefreshGenRef.current += 1)
     const passT0 = performance.now()
+    let lastPv = passT0
+    const markPv = (label: string, extra?: Record<string, unknown>) => {
+      const now = performance.now()
+      markStartupMilestone(label, {
+        ...extra,
+        stepMs: Math.round(now - lastPv),
+        previewPathMs: Math.round(now - passT0),
+        previewGen: gen,
+      })
+      lastPv = now
+    }
+
+    markPv('refreshTranscriptionPreviews: entered')
     const activeIds = new Set(sessions.map((s) => s.id))
     const readySessions = sessions.filter((s) => s.status === 'ready')
     const readyIds = readySessions.map((s) => s.id)
@@ -629,21 +642,32 @@ function App() {
         ? 0
         : Math.ceil(readySessions.length / TRANSCRIPTION_PREVIEW_SESSION_CHUNK)
 
-    markStartupMilestone('refreshTranscriptionPreviews: start', {
+    markPv('refreshTranscriptionPreviews: derived activeIds + readySessions + chunkTotal', {
       sessionCount: sessions.length,
       readySessionCount: readySessions.length,
       previewChunkTotal: chunkTotal,
     })
 
+    markStartupMilestone('refreshTranscriptionPreviews: start', {
+      sessionCount: sessions.length,
+      readySessionCount: readySessions.length,
+      previewChunkTotal: chunkTotal,
+      previewGen: gen,
+      previewPathMs: Math.round(performance.now() - passT0),
+    })
+
     try {
       if (chunkTotal === 0) {
+        markPv('refreshTranscriptionPreviews: no ready chunks, clear sync line')
         setMainListSyncLine(null)
       } else {
+        markPv('refreshTranscriptionPreviews: set sync line for preview batches')
         setMainListSyncLine(
           `Loading transcription previews (batch 0/${chunkTotal} · 0/${readySessions.length} sessions)…`,
         )
       }
 
+      const pruneT0 = performance.now()
       setTranscriptionPreviews((prev) => {
         const next = { ...prev }
         for (const s of sessions) {
@@ -651,6 +675,11 @@ function App() {
         }
         return next
       })
+      markPv('refreshTranscriptionPreviews: setTranscriptionPreviews prune queued', {
+        syncMs: Math.round(performance.now() - pruneT0),
+      })
+
+      const errPruneT0 = performance.now()
       setTranscriptionErrorCounts((prev) => {
         const next = { ...prev }
         for (const s of sessions) {
@@ -658,6 +687,11 @@ function App() {
         }
         return next
       })
+      markPv('refreshTranscriptionPreviews: setTranscriptionErrorCounts prune queued', {
+        syncMs: Math.round(performance.now() - errPruneT0),
+      })
+
+      const snipPruneT0 = performance.now()
       setTranscriptionSnipCounts((prev) => {
         const next = { ...prev }
         for (const id of readyIds) delete next[id]
@@ -665,6 +699,9 @@ function App() {
           if (s.status !== 'ready') delete next[s.id]
         }
         return next
+      })
+      markPv('refreshTranscriptionPreviews: setTranscriptionSnipCounts prune queued', {
+        syncMs: Math.round(performance.now() - snipPruneT0),
       })
 
       let listSnipsAccumMs = 0
@@ -674,11 +711,26 @@ function App() {
 
       for (let i = 0; i < readySessions.length; i += TRANSCRIPTION_PREVIEW_SESSION_CHUNK) {
         if (gen !== previewRefreshGenRef.current) return
+        const chunkIndex = Math.floor(i / TRANSCRIPTION_PREVIEW_SESSION_CHUNK) + 1
         const slice = readySessions.slice(i, i + TRANSCRIPTION_PREVIEW_SESSION_CHUNK)
         const chunkIds = slice.map((s) => s.id)
+        markPv('refreshTranscriptionPreviews: chunk loop iteration start', {
+          chunkIndex,
+          chunkTotal,
+          sessionsThisChunk: slice.length,
+        })
         const chunkT0 = performance.now()
-        const snipsMap = await manifestService.listSnipsForSessions(chunkIds)
+        markPv('refreshTranscriptionPreviews: before await listSnipsForSessions', {
+          chunkIndex,
+          chunkTotal,
+        })
+        const snipsMap = await manifestService.listSnipsForSessions(chunkIds, { chunkIndex, chunkTotal })
         const chunkMs = Math.round(performance.now() - chunkT0)
+        markPv('refreshTranscriptionPreviews: after await listSnipsForSessions', {
+          chunkIndex,
+          chunkTotal,
+          chunkListSnipsMs: chunkMs,
+        })
         listSnipsAccumMs += chunkMs
         if (firstChunkListSnipsMs === null) firstChunkListSnipsMs = chunkMs
 
@@ -743,21 +795,34 @@ function App() {
           }
           return next
         })
+        markPv('refreshTranscriptionPreviews: chunk React setState batch queued', {
+          chunkIndex,
+          chunkTotal,
+        })
 
+        const yieldT0 = performance.now()
         await new Promise<void>((resolve) => {
           window.setTimeout(resolve, 0)
+        })
+        markPv('refreshTranscriptionPreviews: chunk after setTimeout(0) yield', {
+          chunkIndex,
+          yieldMs: Math.round(performance.now() - yieldT0),
         })
       }
 
       if (gen !== previewRefreshGenRef.current) return
 
+      markPv('refreshTranscriptionPreviews: all chunk loops finished')
       markStartupMilestone('refreshTranscriptionPreviews: all chunks read', {
         totalSnipRows,
         listSnipsMs: listSnipsAccumMs,
         previewChunks,
         firstChunkListSnipsMs,
+        previewGen: gen,
+        previewPathMs: Math.round(performance.now() - passT0),
       })
 
+      const trimT0 = performance.now()
       setTranscriptionPreviews((prev) => {
         const next: Record<string, string> = {}
         for (const id of activeIds) {
@@ -765,6 +830,11 @@ function App() {
         }
         return next
       })
+      markPv('refreshTranscriptionPreviews: trim previews to activeIds queued', {
+        syncMs: Math.round(performance.now() - trimT0),
+      })
+
+      const trimErrT0 = performance.now()
       setTranscriptionErrorCounts((prev) => {
         const next: Record<string, number> = {}
         for (const id of activeIds) {
@@ -772,6 +842,11 @@ function App() {
         }
         return next
       })
+      markPv('refreshTranscriptionPreviews: trim error counts queued', {
+        syncMs: Math.round(performance.now() - trimErrT0),
+      })
+
+      const trimSnipT0 = performance.now()
       setTranscriptionSnipCounts((prev) => {
         const next: Record<string, { transcribedCount: number; total: number; purgedCount: number; retryableCount: number }> =
           {}
@@ -779,6 +854,9 @@ function App() {
           if (prev[id] !== undefined) next[id] = prev[id]
         }
         return next
+      })
+      markPv('refreshTranscriptionPreviews: trim snip counts queued', {
+        syncMs: Math.round(performance.now() - trimSnipT0),
       })
 
       markStartupMilestone('refreshTranscriptionPreviews: done', {
@@ -789,7 +867,12 @@ function App() {
       })
       setMainListSyncLine(null)
     } catch (error) {
-      markStartupMilestone('refreshTranscriptionPreviews: error')
+      const now = performance.now()
+      markStartupMilestone('refreshTranscriptionPreviews: error', {
+        previewGen: gen,
+        previewPathMs: Math.round(now - passT0),
+        error: error instanceof Error ? error.message : String(error),
+      })
       if (gen === previewRefreshGenRef.current) {
         setMainListSyncLine(null)
       }
@@ -803,31 +886,52 @@ function App() {
   const loadSessions = useCallback(async () => {
     setMainListSyncLine('Reading session list from storage…')
     try {
-      markStartupMilestone('loadSessions: start')
+      const loadPathT0 = performance.now()
+      let lastLoad = loadPathT0
+      const markLoad = (label: string, extra?: Record<string, unknown>) => {
+        const now = performance.now()
+        markStartupMilestone(label, {
+          ...extra,
+          stepMs: Math.round(now - lastLoad),
+          loadPathMs: Math.round(now - loadPathT0),
+        })
+        lastLoad = now
+      }
+
+      markLoad('loadSessions: start')
       // Ensure the manifest is usable before any list or summary calls.
       const manifestInitT0 = performance.now()
-      markStartupMilestone('loadSessions: manifest init await started')
+      markLoad('loadSessions: manifest init await started')
       await manifestService.init()
-      markStartupMilestone('loadSessions: manifest init done', {
+      markLoad('loadSessions: manifest init done', {
         awaitMs: Math.round(performance.now() - manifestInitT0),
       })
+      markLoad('loadSessions: before SessionAnalysisProvider ref')
       // Reuse or create a single provider instance so verification caching survives reloads.
       const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
       sessionAnalysisProviderRef.current = provider
+      markLoad('loadSessions: SessionAnalysisProvider ref ready')
       const listSessionsT0 = performance.now()
-      markStartupMilestone('loadSessions: about to await listSessions()')
+      markLoad('loadSessions: about to await listSessions()')
       const sessions = await manifestService.listSessions()
-      markStartupMilestone('loadSessions: listSessions done', {
+      markLoad('loadSessions: listSessions done', {
         sessionCount: sessions.length,
         awaitMs: Math.round(performance.now() - listSessionsT0),
       })
+      const sumT0 = performance.now()
       const totalBytes = sessions.reduce((sum, session) => sum + (session.totalBytes ?? 0), 0)
-      markStartupMilestone('loadSessions: sessionBytesSum done', { totalBytes })
+      markLoad('loadSessions: sessionBytesSum done', {
+        totalBytes,
+        syncMs: Math.round(performance.now() - sumT0),
+      })
 
+      markLoad('loadSessions: before highlight scan')
       const previousMap = sessionUpdatesRef.current
       let highlightCandidate: SessionRecord | null = null
+      let highlightScanIterations = 0
       if (sessionsInitializedRef.current) {
         for (const session of sessions) {
+          highlightScanIterations += 1
           if (session.status !== 'ready' || session.chunkCount === 0) continue
           if (!previousMap.has(session.id)) continue
           const previousUpdatedAt = previousMap.get(session.id)
@@ -838,31 +942,52 @@ function App() {
           }
         }
       }
+      markLoad('loadSessions: highlight scan done', {
+        highlightScanIterations,
+        highlightCandidateId: highlightCandidate?.id ?? null,
+      })
 
+      const mapT0 = performance.now()
       sessionUpdatesRef.current = new Map(sessions.map((session) => [session.id, session.updatedAt]))
+      markLoad('loadSessions: sessionUpdatesRef map built', {
+        syncMs: Math.round(performance.now() - mapT0),
+        mapSize: sessions.length,
+      })
+
       if (!sessionsInitializedRef.current) {
+        markLoad('loadSessions: first sessions init flag')
         sessionsInitializedRef.current = true
       } else if (highlightCandidate) {
+        markLoad('loadSessions: setHighlightedSessionId queued', { sessionId: highlightCandidate.id })
         setHighlightedSessionId(highlightCandidate.id)
+      } else {
+        markLoad('loadSessions: no highlight update')
       }
 
-      markStartupMilestone('loadSessions: before setRecordings', {
+      markLoad('loadSessions: before setRecordings', {
         highlightSessionId: highlightCandidate?.id ?? null,
       })
       setRecordings(sessions)
-      markStartupMilestone('loadSessions: setRecordings done, recordings list visible')
+      markLoad('loadSessions: setRecordings done, recordings list visible')
       // Update the buffer usage indicator with the latest totals and quota.
+      markLoad('loadSessions: before setBufferTotals')
       setBufferTotals({ totalBytes, limitBytes: storageLimitBytes })
-      markStartupMilestone('loadSessions: bufferTotals queued', {
+      markLoad('loadSessions: bufferTotals queued', {
         totalBytes,
         limitBytes: storageLimitBytes,
       })
+      markLoad('loadSessions: scheduling refreshTranscriptionPreviews (async)')
       void refreshTranscriptionPreviews(sessions)
+      markLoad('loadSessions: returned after scheduling previews (sync part done)')
 
       // Identify sessions that still need timing verification so charts remain monotonic.
+      markLoad('loadSessions: before timing verification filter')
       const sessionsNeedingVerification = sessions.filter(
         (session) => session.chunkCount > 0 && (session.timingStatus ?? 'unverified') !== 'verified',
       )
+      markLoad('loadSessions: timing verification filter done', {
+        sessionsNeedingVerification: sessionsNeedingVerification.length,
+      })
       sessionsNeedingVerification.forEach((session) => {
         void provider
           .ensureTimings(session.id)
@@ -888,6 +1013,10 @@ function App() {
             })
           })
       })
+      markLoad('loadSessions: ensureTimings scheduled for sessions', {
+        scheduled: sessionsNeedingVerification.length,
+      })
+      markLoad('loadSessions: try path complete')
     } catch (error) {
       setMainListSyncLine(null)
       throw error

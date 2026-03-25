@@ -1,6 +1,7 @@
 **ALWAYS APPEND NEW USER PROMPTS TO THE ACTIVE PROMPT LOG BEFORE MAKING CHANGES.**
-**ALWAYS RUN `npm run build` (OR REQUESTED BUILD CMD) AND COMMIT RESULTING CHANGES AFTER EVERY CODE UPDATE, UNLESS THE USER EXPLICITLY ASKS YOU NOT TO.**
+**ALWAYS RUN `npm run build` (OR REQUESTED BUILD CMD) AFTER MATERIAL CODE CHANGES SO `tsc` AND THE APP STAY GREEN.**
 **ALWAYS RUN `npm install` BEFORE `npm run build` SO `tsc` IS AVAILABLE.**
+**DO NOT run `git commit`, `git push`, or other destructive git writes unless the user explicitly asks.** Local/desktop workflow: build is enough; the human reviews diffs and commits.
 
 # Collaboration Playbook
 

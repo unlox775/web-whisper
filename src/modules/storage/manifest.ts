@@ -301,7 +301,10 @@ export interface ManifestService {
     listChunkVolumeProfiles(sessionId?: string): Promise<ChunkVolumeProfileRecord[]>
   listSnips(sessionId?: string): Promise<SnipRecord[]>
   /** Read snips for many sessions in one readonly transaction (indexed getAll per session). */
-  listSnipsForSessions(sessionIds: string[]): Promise<Map<string, SnipRecord[]>>
+  listSnipsForSessions(
+    sessionIds: string[],
+    debugChunk?: { chunkIndex: number; chunkTotal: number },
+  ): Promise<Map<string, SnipRecord[]>>
   appendSnips(sessionId: string, snips: SnipSeed[]): Promise<SnipRecord[]>
   updateSnipTranscription(
     snipId: string,
@@ -331,7 +334,11 @@ export interface ManifestService {
 class IndexedDBManifestService implements ManifestService {
   async init(): Promise<void> {
     markStartupMilestone('manifest: init: entry')
+    const initDbT0 = typeof performance !== 'undefined' ? performance.now() : 0
     await getDB()
+    markStartupMilestone('manifest: init: after getDB await', {
+      awaitMs: typeof performance !== 'undefined' ? Math.round(performance.now() - initDbT0) : undefined,
+    })
     markStartupMilestone('manifest: init: before return')
   }
 
@@ -396,9 +403,13 @@ class IndexedDBManifestService implements ManifestService {
   }
 
   async listSessions(): Promise<SessionRecord[]> {
+    const lsT0 = typeof performance !== 'undefined' ? performance.now() : 0
     markStartupMilestone('manifest: listSessions: entry')
+    const getDbT0 = typeof performance !== 'undefined' ? performance.now() : 0
     const db = await getDB()
-    markStartupMilestone('manifest: listSessions: after getDB')
+    markStartupMilestone('manifest: listSessions: after getDB', {
+      awaitMs: typeof performance !== 'undefined' ? Math.round(performance.now() - getDbT0) : undefined,
+    })
     markStartupMilestone('manifest: listSessions: before getAll(sessions)')
     const getAllT0 = typeof performance !== 'undefined' ? performance.now() : 0
     const sessions = await db.getAll('sessions')
@@ -406,12 +417,25 @@ class IndexedDBManifestService implements ManifestService {
       rowCount: sessions.length,
       awaitMs: typeof performance !== 'undefined' ? Math.round(performance.now() - getAllT0) : undefined,
     })
+    const mapT0 = typeof performance !== 'undefined' ? performance.now() : 0
     const mapped = sessions.map((session) => ({
       ...session,
       timingStatus: session.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
     }))
+    markStartupMilestone('manifest: listSessions: map done', {
+      syncMs: typeof performance !== 'undefined' ? Math.round(performance.now() - mapT0) : undefined,
+      count: mapped.length,
+    })
+    const sortT0 = typeof performance !== 'undefined' ? performance.now() : 0
     const sorted = mapped.sort((a, b) => b.startedAt - a.startedAt)
-    markStartupMilestone('manifest: listSessions: before return', { sessionCount: sorted.length })
+    markStartupMilestone('manifest: listSessions: sort done', {
+      syncMs: typeof performance !== 'undefined' ? Math.round(performance.now() - sortT0) : undefined,
+      count: sorted.length,
+    })
+    markStartupMilestone('manifest: listSessions: before return', {
+      sessionCount: sorted.length,
+      listSessionsTotalMs: typeof performance !== 'undefined' ? Math.round(performance.now() - lsT0) : undefined,
+    })
     return sorted
   }
 
@@ -532,21 +556,54 @@ class IndexedDBManifestService implements ManifestService {
     })
   }
 
-  async listSnipsForSessions(sessionIds: string[]): Promise<Map<string, SnipRecord[]>> {
+  async listSnipsForSessions(
+    sessionIds: string[],
+    debugChunk?: { chunkIndex: number; chunkTotal: number },
+  ): Promise<Map<string, SnipRecord[]>> {
+    const fnT0 = typeof performance !== 'undefined' ? performance.now() : 0
     const unique = [...new Set(sessionIds)]
     const out = new Map<string, SnipRecord[]>()
+    markStartupMilestone('manifest: listSnipsForSessions: entry', {
+      sessionIdCount: unique.length,
+      ...debugChunk,
+    })
     if (unique.length === 0) {
+      markStartupMilestone('manifest: listSnipsForSessions: empty ids, return', { ...debugChunk })
       return out
     }
+    const gdbT0 = typeof performance !== 'undefined' ? performance.now() : 0
     const db = await getDB()
+    markStartupMilestone('manifest: listSnipsForSessions: after getDB', {
+      awaitMs: typeof performance !== 'undefined' ? Math.round(performance.now() - gdbT0) : undefined,
+      ...debugChunk,
+    })
+    markStartupMilestone('manifest: listSnipsForSessions: before readonly tx + getAll', { ...debugChunk })
+    const idbT0 = typeof performance !== 'undefined' ? performance.now() : 0
     const tx = db.transaction('snips', 'readonly')
     const index = tx.objectStore('snips').index('by-session')
     const rawLists = await Promise.all(unique.map((id) => index.getAll(id)))
     await tx.done
+    markStartupMilestone('manifest: listSnipsForSessions: after IDB getAll+tx.done', {
+      awaitMs: typeof performance !== 'undefined' ? Math.round(performance.now() - idbT0) : undefined,
+      getAllCalls: unique.length,
+      ...debugChunk,
+    })
+    const normT0 = typeof performance !== 'undefined' ? performance.now() : 0
+    let totalRawRows = 0
     unique.forEach((sessionId, i) => {
       const rows = rawLists[i].map((record) => normalizeSnipRecord(record))
+      totalRawRows += rows.length
       rows.sort((a, b) => a.index - b.index)
       out.set(sessionId, rows)
+    })
+    markStartupMilestone('manifest: listSnipsForSessions: after normalize+sort', {
+      syncMs: typeof performance !== 'undefined' ? Math.round(performance.now() - normT0) : undefined,
+      totalRawRows,
+      ...debugChunk,
+    })
+    markStartupMilestone('manifest: listSnipsForSessions: before return', {
+      totalMs: typeof performance !== 'undefined' ? Math.round(performance.now() - fnT0) : undefined,
+      ...debugChunk,
     })
     return out
   }

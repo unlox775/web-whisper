@@ -163,3 +163,7 @@ User (2026-03-25): Screenshots + logs — gap between first line and refreshTran
 ---
 
 User (2026-03-25): Debugging 101 — breadcrumbs before/inside/after every await in loadSessions path; nested debugging; fix compact doctor report to list ALL log messages not last 30.
+
+---
+
+User (2026-03-25): Frustrated — prior change was too shallow (rename only); demand 35–50+ debug lines, nested inside listSessions/loadSessions with per-step timings to find which sub-step costs seconds; stop auto-committing on every edit (Mac/desktop); build ok but no git without explicit ask.
