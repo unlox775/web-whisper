@@ -40,7 +40,8 @@ Work on **A** removed or narrowed several bad paths (dev overlay `getAll`+`array
 
 ### How to read one boot (practical)
 
-- **Time to first preview chunk:** `refreshTranscriptionPreviews: first chunk read` → **`chunkListSnipsMs`**, **`snipRows`** (newest-ready batch).
+- **Sort exports by wall time:** use payload **`atIso`** (or **`atMs`**) on each line — survives buffered flush better than headline `+NNNms`.
+- **Each preview batch:** `refreshTranscriptionPreviews: chunk applied` → **`chunkIndex`**, **`chunkTotal`**, **`chunkListSnipsMs`**, **`sessionsHydratedSoFar`**.
 - **Total snip read work:** `all chunks read` → **`listSnipsMs`** (sum of chunk DB times), **`totalSnipRows`**, **`previewChunks`**.
 - **End-to-end preview pass:** `refreshTranscriptionPreviews: done` → **`refreshTranscriptionPreviewsMs`** (includes yielding + `setState`).
 - **Session list read:** wall delta from **`loadSessions: start`** to **`loadSessions: listSessions done`** (payload can add `sessionCount`).
@@ -87,7 +88,7 @@ Percentages are **not** stable across devices (CPU, disk, DB size). Treat the ta
 
 | ID | Item | Status |
 | --- | --- | --- |
-| **C1** | Finer sub-milestones: `loadSessions` split into `listSessions done`, `sessionBytesSum done`, `before setRecordings`; `refreshTranscriptionPreviews`: `first chunk read`, `all chunks read`, `done` (+ `listSnipsMs` sum, `refreshTranscriptionPreviewsMs`); `[debug]` payloads include `activationMs` | Done |
+| **C1** | Finer sub-milestones: `loadSessions` split into `listSessions done`, `sessionBytesSum done`, `before setRecordings`, `bufferTotals queued`; `refreshTranscriptionPreviews`: **`chunk applied`** (every batch), `all chunks read`, `done`; **`atMs` / `atIso` / `perfNowMs`** on all `[startup]` milestones; `App: settings hydrated`; `preparePlaybackSource` (`start`, `getChunkData done`, `blob built`); header **main-list sync banner** during session + preview load; `[debug]` uses `atMs` / `atIso` | Done |
 | **C2** | `resetStartupMilestoneEpoch()` on `visibilitychange` → visible and `pageshow` when `event.persisted` (bfcache); logs `[startup] activation epoch reset (…)` | Done |
 
 ### Code references (C)
@@ -110,6 +111,7 @@ Percentages are **not** stable across devices (CPU, disk, DB size). Treat the ta
 
 ## Edits log
 
+- 2026-03-25: **Startup observability + banner** — `atMs`/`atIso`/`perfNowMs` on milestones; per-preview-chunk `chunk applied`; `loadSessions: bufferTotals queued`; `App: settings hydrated`; `preparePlaybackSource` spans; `mainListSyncLine` banner (session read → preview batches).
 - 2026-03-25: **Preview load UX + chunking** — `manifest.listSnipsForSessions`; `refreshTranscriptionPreviews` processes ready sessions in chunks (`TRANSCRIPTION_PREVIEW_SESSION_CHUNK`), merges state per chunk, `previewRefreshGenRef` cancels stale passes; list cards **Loading preview…** + spinner until hydrated; **no snips yet** copy when `totalSnips===0`; spec table + C1 wording updated.
 - 2026-03-25: **Spec — startup delay truth table** — documented three dominant blocks (full `snips` getAll, full session list, idle reconcile + IDB contention), why `+NNNms` / buffer flush / overlap obscured costs, and how to use `listSnipsMs` / wall deltas for analysis.
 - 2026-03-25: **Transcription preview milestones** — `refreshTranscriptionPreviews` logs `listSnipsMs` (IndexedDB `snips` getAll) and `refreshTranscriptionPreviewsMs` end-to-end so the “Transcription pending…” gap is visible in exports.

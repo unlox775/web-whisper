@@ -31,29 +31,45 @@ export function resetStartupMilestoneEpoch(reason?: string): void {
   const now = Date.now()
   bootT0 = now
   const msg = `${PREFIX} activation epoch reset${reason ? ` (${reason})` : ''}`
-  const payload: Record<string, unknown> = { at: now, reason: reason ?? 'unspecified' }
+  const payload: Record<string, unknown> = {
+    atMs: now,
+    atIso: new Date(now).toISOString(),
+    reason: reason ?? 'unspecified',
+  }
   console.info(msg, payload)
   emitToLogger(msg, payload)
 }
 
 export function markStartupMilestone(label: string, details?: Record<string, unknown>): void {
-  const now = Date.now()
+  const atMs = Date.now()
   if (bootT0 === null) {
-    bootT0 = now
+    bootT0 = atMs
   }
-  const elapsedMs = now - bootT0
-  const payload = { elapsedMs, ...details }
+  const elapsedMs = atMs - bootT0
+  const perfNowMs = typeof performance !== 'undefined' ? performance.now() : undefined
+  const payload: Record<string, unknown> = {
+    ...details,
+    elapsedMs,
+    atMs,
+    atIso: new Date(atMs).toISOString(),
+    ...(perfNowMs !== undefined ? { perfNowMs } : {}),
+  }
   const msg = `${PREFIX} +${elapsedMs}ms: ${label}`
-  console.info(msg, details ?? '')
+  console.info(msg, payload)
   emitToLogger(msg, payload)
 }
 
 export function markDebugPanelMilestone(label: string, details?: Record<string, unknown>): void {
-  const now = Date.now()
-  const activationMs = bootT0 !== null ? now - bootT0 : null
-  const payload = { ...details, at: now, activationMs }
+  const atMs = Date.now()
+  const activationMs = bootT0 !== null ? atMs - bootT0 : null
+  const payload: Record<string, unknown> = {
+    ...details,
+    atMs,
+    atIso: new Date(atMs).toISOString(),
+    activationMs,
+  }
   const msg = `${PREFIX} [debug] ${label}`
-  console.info(msg, details ?? '')
+  console.info(msg, payload)
   emitToLogger(msg, payload)
 }
 

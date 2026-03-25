@@ -143,3 +143,7 @@ Web Whisper — Doctor Report (compact) + analysis request (visual delays, slow 
 ---
 
 User (2026-03-25): Ask for a small timeline of actual pauses vs inconclusive gaps; first paint with all rows in loading mode then ~5s until transcription snippets; many intermediate UI updates; buffer/quota wrong (0/200) then later correct for 50MB; dev overlay felt instant—don’t interpret gaps as app time; if log insufficient, only recommend more debugging.
+
+---
+
+User (2026-03-25): ~6.8s gap aligns with felt delay; add UI + instrumentation for paints/async during that window — identify gaps and add timers / banner (implemented in code).

@@ -340,6 +340,8 @@ function App() {
     totalBytes: 0,
     limitBytes: DEFAULT_STORAGE_LIMIT_BYTES,
   })
+  /** Header line while session list / preview index is catching up (explains multi-paint startup). */
+  const [mainListSyncLine, setMainListSyncLine] = useState<string | null>(null)
   const [liveSnipRecords, setLiveSnipRecords] = useState<SnipRecord[]>([])
   const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null)
   const [isTranscriptionMounted, setTranscriptionMounted] = useState(false)
@@ -425,6 +427,7 @@ function App() {
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
   const previewRefreshGenRef = useRef(0)
+  const settingsHydrationLoggedRef = useRef(false)
   const sessionAnalysisProviderRef = useRef<SessionAnalysisProvider | null>(null)
   const autoTranscribeSessionsRef = useRef<Set<string>>(new Set())
   const liveTranscriptionQueueRef = useRef<LiveTranscriptionQueue>({
@@ -621,12 +624,26 @@ function App() {
     const readySessions = sessions.filter((s) => s.status === 'ready')
     const readyIds = readySessions.map((s) => s.id)
 
+    const chunkTotal =
+      readySessions.length === 0
+        ? 0
+        : Math.ceil(readySessions.length / TRANSCRIPTION_PREVIEW_SESSION_CHUNK)
+
     markStartupMilestone('refreshTranscriptionPreviews: start', {
       sessionCount: sessions.length,
       readySessionCount: readySessions.length,
+      previewChunkTotal: chunkTotal,
     })
 
     try {
+      if (chunkTotal === 0) {
+        setMainListSyncLine(null)
+      } else {
+        setMainListSyncLine(
+          `Loading transcription previews (batch 0/${chunkTotal} · 0/${readySessions.length} sessions)…`,
+        )
+      }
+
       setTranscriptionPreviews((prev) => {
         const next = { ...prev }
         for (const s of sessions) {
@@ -673,14 +690,26 @@ function App() {
 
         if (gen !== previewRefreshGenRef.current) return
 
-        if (previewChunks === 0 && slice.length > 0) {
-          markStartupMilestone('refreshTranscriptionPreviews: first chunk read', {
-            sessionsInChunk: slice.length,
-            snipRows: chunkRows,
-            chunkListSnipsMs: chunkMs,
-          })
-        }
         previewChunks += 1
+        if (previewChunks === 1) {
+          firstChunkListSnipsMs = chunkMs
+        }
+        const sessionsHydratedSoFar = Math.min(
+          readySessions.length,
+          previewChunks * TRANSCRIPTION_PREVIEW_SESSION_CHUNK,
+        )
+        markStartupMilestone('refreshTranscriptionPreviews: chunk applied', {
+          chunkIndex: previewChunks,
+          chunkTotal,
+          sessionsThisChunk: slice.length,
+          snipRowsThisChunk: chunkRows,
+          chunkListSnipsMs: chunkMs,
+          sessionsHydratedSoFar,
+          readySessionCount: readySessions.length,
+        })
+        setMainListSyncLine(
+          `Loading transcription previews (batch ${previewChunks}/${chunkTotal} · ${sessionsHydratedSoFar}/${readySessions.length} sessions)…`,
+        )
 
         setTranscriptionPreviews((prev) => {
           const next = { ...prev }
@@ -758,8 +787,12 @@ function App() {
         readySessionsHydrated: readySessions.length,
         totalSnipRows,
       })
+      setMainListSyncLine(null)
     } catch (error) {
       markStartupMilestone('refreshTranscriptionPreviews: error')
+      if (gen === previewRefreshGenRef.current) {
+        setMainListSyncLine(null)
+      }
       await logError('Transcription preview load failed', {
         error: error instanceof Error ? error.message : String(error),
       })
@@ -768,78 +801,88 @@ function App() {
 
   /** Loads the latest session manifest snapshot and triggers background verification. */
   const loadSessions = useCallback(async () => {
-    markStartupMilestone('loadSessions: start')
-    // Ensure the manifest is usable before any list or summary calls.
-    await manifestService.init()
-    markStartupMilestone('loadSessions: manifest init done')
-    // Reuse or create a single provider instance so verification caching survives reloads.
-    const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
-    sessionAnalysisProviderRef.current = provider
-    const sessions = await manifestService.listSessions()
-    markStartupMilestone('loadSessions: listSessions done', { sessionCount: sessions.length })
-    const totalBytes = sessions.reduce((sum, session) => sum + (session.totalBytes ?? 0), 0)
-    markStartupMilestone('loadSessions: sessionBytesSum done', { totalBytes })
+    setMainListSyncLine('Reading session list from storage…')
+    try {
+      markStartupMilestone('loadSessions: start')
+      // Ensure the manifest is usable before any list or summary calls.
+      await manifestService.init()
+      markStartupMilestone('loadSessions: manifest init done')
+      // Reuse or create a single provider instance so verification caching survives reloads.
+      const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
+      sessionAnalysisProviderRef.current = provider
+      const sessions = await manifestService.listSessions()
+      markStartupMilestone('loadSessions: listSessions done', { sessionCount: sessions.length })
+      const totalBytes = sessions.reduce((sum, session) => sum + (session.totalBytes ?? 0), 0)
+      markStartupMilestone('loadSessions: sessionBytesSum done', { totalBytes })
 
-    const previousMap = sessionUpdatesRef.current
-    let highlightCandidate: SessionRecord | null = null
-    if (sessionsInitializedRef.current) {
-      for (const session of sessions) {
-        if (session.status !== 'ready' || session.chunkCount === 0) continue
-        if (!previousMap.has(session.id)) continue
-        const previousUpdatedAt = previousMap.get(session.id)
-        if (previousUpdatedAt !== undefined && previousUpdatedAt !== session.updatedAt) {
-          if (!highlightCandidate || session.updatedAt > highlightCandidate.updatedAt) {
-            highlightCandidate = session
+      const previousMap = sessionUpdatesRef.current
+      let highlightCandidate: SessionRecord | null = null
+      if (sessionsInitializedRef.current) {
+        for (const session of sessions) {
+          if (session.status !== 'ready' || session.chunkCount === 0) continue
+          if (!previousMap.has(session.id)) continue
+          const previousUpdatedAt = previousMap.get(session.id)
+          if (previousUpdatedAt !== undefined && previousUpdatedAt !== session.updatedAt) {
+            if (!highlightCandidate || session.updatedAt > highlightCandidate.updatedAt) {
+              highlightCandidate = session
+            }
           }
         }
       }
-    }
 
-    sessionUpdatesRef.current = new Map(sessions.map((session) => [session.id, session.updatedAt]))
-    if (!sessionsInitializedRef.current) {
-      sessionsInitializedRef.current = true
-    } else if (highlightCandidate) {
-      setHighlightedSessionId(highlightCandidate.id)
-    }
+      sessionUpdatesRef.current = new Map(sessions.map((session) => [session.id, session.updatedAt]))
+      if (!sessionsInitializedRef.current) {
+        sessionsInitializedRef.current = true
+      } else if (highlightCandidate) {
+        setHighlightedSessionId(highlightCandidate.id)
+      }
 
-    markStartupMilestone('loadSessions: before setRecordings', {
-      highlightSessionId: highlightCandidate?.id ?? null,
-    })
-    setRecordings(sessions)
-    markStartupMilestone('loadSessions: setRecordings done, recordings list visible')
-    // Update the buffer usage indicator with the latest totals and quota.
-    setBufferTotals({ totalBytes, limitBytes: storageLimitBytes })
-    void refreshTranscriptionPreviews(sessions)
+      markStartupMilestone('loadSessions: before setRecordings', {
+        highlightSessionId: highlightCandidate?.id ?? null,
+      })
+      setRecordings(sessions)
+      markStartupMilestone('loadSessions: setRecordings done, recordings list visible')
+      // Update the buffer usage indicator with the latest totals and quota.
+      setBufferTotals({ totalBytes, limitBytes: storageLimitBytes })
+      markStartupMilestone('loadSessions: bufferTotals queued', {
+        totalBytes,
+        limitBytes: storageLimitBytes,
+      })
+      void refreshTranscriptionPreviews(sessions)
 
-    // Identify sessions that still need timing verification so charts remain monotonic.
-    const sessionsNeedingVerification = sessions.filter(
-      (session) => session.chunkCount > 0 && (session.timingStatus ?? 'unverified') !== 'verified',
-    )
-    sessionsNeedingVerification.forEach((session) => {
-      void provider
-        .ensureTimings(session.id)
-        .then((result) => {
-          const updatedSession = result.session
-          if (result.status !== 'verified' || !updatedSession) {
-            return
-          }
-          // Merge the verified session back into state so timestamps show the corrected values.
-          setRecordings((prev) =>
-            prev.map((existing) =>
-              existing.id === updatedSession.id ? { ...existing, ...updatedSession } : existing,
-            ),
-          )
-          // Remember the updated timestamp so future comparisons recognise the change.
-          sessionUpdatesRef.current.set(updatedSession.id, updatedSession.updatedAt)
-        })
-        .catch((error) => {
-          // Soft-fail on verification misses so the UI can still display existing data.
-          console.warn('[UI] Session timing verification failed', {
-            sessionId: session.id,
-            error,
+      // Identify sessions that still need timing verification so charts remain monotonic.
+      const sessionsNeedingVerification = sessions.filter(
+        (session) => session.chunkCount > 0 && (session.timingStatus ?? 'unverified') !== 'verified',
+      )
+      sessionsNeedingVerification.forEach((session) => {
+        void provider
+          .ensureTimings(session.id)
+          .then((result) => {
+            const updatedSession = result.session
+            if (result.status !== 'verified' || !updatedSession) {
+              return
+            }
+            // Merge the verified session back into state so timestamps show the corrected values.
+            setRecordings((prev) =>
+              prev.map((existing) =>
+                existing.id === updatedSession.id ? { ...existing, ...updatedSession } : existing,
+              ),
+            )
+            // Remember the updated timestamp so future comparisons recognise the change.
+            sessionUpdatesRef.current.set(updatedSession.id, updatedSession.updatedAt)
           })
-        })
-    })
+          .catch((error) => {
+            // Soft-fail on verification misses so the UI can still display existing data.
+            console.warn('[UI] Session timing verification failed', {
+              sessionId: session.id,
+              error,
+            })
+          })
+      })
+    } catch (error) {
+      setMainListSyncLine(null)
+      throw error
+    }
   }, [refreshTranscriptionPreviews, storageLimitBytes])
 
   const runRetentionPass = useCallback(async (options?: { force?: boolean; reason?: string }) => {
@@ -891,6 +934,18 @@ function App() {
   }, [])
 
   useEffect(() => settingsStore.subscribe((value) => setSettings({ ...value })), [])
+
+  useEffect(() => {
+    if (settings == null || settingsHydrationLoggedRef.current) {
+      return
+    }
+    settingsHydrationLoggedRef.current = true
+    markStartupMilestone('App: settings hydrated', {
+      storageLimitBytes: settings.storageLimitBytes ?? null,
+      developerMode: Boolean(settings.developerMode),
+      hasGroqKey: Boolean(settings.groqApiKey && settings.groqApiKey.length > 0),
+    })
+  }, [settings])
 
   useEffect(() => {
     if (settings?.storageLimitBytes == null) {
@@ -2407,7 +2462,19 @@ function App() {
     async (forceReload = false) => {
       if (!selectedRecording) return false
       const mime = selectedRecording.mimeType ?? 'audio/mpeg'
+      const passT0 = performance.now()
+      markStartupMilestone('preparePlaybackSource: start', {
+        sessionId: selectedRecording.id,
+        chunkCount: selectedRecording.chunkCount,
+        forceReload,
+      })
+      const chunkReadT0 = performance.now()
       const chunks = await manifestService.getChunkData(selectedRecording.id)
+      markStartupMilestone('preparePlaybackSource: getChunkData done', {
+        sessionId: selectedRecording.id,
+        rowsRead: chunks.length,
+        getChunkDataMs: Math.round(performance.now() - chunkReadT0),
+      })
       const orderedChunks = [...chunks].sort((a, b) => a.seq - b.seq)
       if (orderedChunks.length === 0) {
         throw new Error('No audio available yet. Keep recording to capture chunks.')
@@ -2416,9 +2483,17 @@ function App() {
       if (playableChunks.length === 0) {
         throw new Error('Audio for this recording was purged.')
       }
+      const blobT0 = performance.now()
       const parts: BlobPart[] = []
       playableChunks.forEach((chunk) => parts.push(chunk.blob))
       const blob = new Blob(parts, { type: mime })
+      markStartupMilestone('preparePlaybackSource: blob built', {
+        sessionId: selectedRecording.id,
+        playableChunkCount: playableChunks.length,
+        blobSize: blob.size,
+        blobBuildMs: Math.round(performance.now() - blobT0),
+        preparePlaybackSourceMs: Math.round(performance.now() - passT0),
+      })
       await logInfo('Playback source prepared', {
         sessionId: selectedRecording.id,
         blobSize: blob.size,
@@ -3958,6 +4033,13 @@ function App() {
           </button>
         </div>
       </header>
+
+      {mainListSyncLine ? (
+        <div className="main-list-sync-banner" role="status" aria-live="polite">
+          <span className="main-list-sync-spinner" aria-hidden />
+          <span className="main-list-sync-text">{mainListSyncLine}</span>
+        </div>
+      ) : null}
 
       {errorMessage ? (
         <div className="alert-banner" role="alert">
