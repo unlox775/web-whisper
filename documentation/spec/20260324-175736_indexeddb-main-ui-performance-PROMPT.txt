@@ -85,6 +85,10 @@ continue.
 
 ---
 
+Continue please.
+
+---
+
 Web Whisper — Doctor Report (compact)
 Session: e30bfa94-35b2-43f8-8672-b08a2bce9049
 StartedAt: 2026-03-24T15:50:11.449Z
@@ -127,3 +131,7 @@ Recent logs (last 30):
 ===================================
 
 All right. I still saw quite a long delay. I want you to explain to me before you fix anything else why the heck you think there's still a really long delay. I'm really not understanding and I'm really kind of upset that this long delay is still not obvious. It seems like in the very first debugging thing we should have been able to see what was taking so long. maybe that's we need to update the spec document with what the delay is and what percentage is coming from what blocks because it's like you took two of the things that reach about 30% of the delay and fix those and then you left the giant ones in the middle that were also 20 and 25% come on you can do better than that look at our debug thing here tell me what's going on
+
+---
+
+Continue please.

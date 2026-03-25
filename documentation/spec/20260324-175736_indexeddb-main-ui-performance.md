@@ -22,7 +22,7 @@ Work on **A** removed or narrowed several bad paths (dev overlay `getAll`+`array
 
 | Block | Code | Why it hurts |
 | --- | --- | --- |
-| **1. All snips for previews** | `refreshTranscriptionPreviews` → `manifestService.listSnips()` with **no** `sessionId` → `snips` store **`getAll()`** | Cost scales with **total snip rows** (often 2k+), not “how many cards fit on screen”. Until this finishes, cards can sit on **“Transcription pending…”** even though the session **titles** already rendered. |
+| **1. All snips for previews** | `refreshTranscriptionPreviews` → **`listSnipsForSessions`** in chunks of 20 ready sessions: **one** readonly tx per chunk, **`by-session` `getAll`** per session (still reads **every** snip row once; total bytes ~= old single `getAll`). **Top-of-list sessions hydrate first**; cards show **“Loading preview…”** until their chunk arrives. |
 | **2. All sessions for the list** | `loadSessions` → `listSessions()` | **Every** session row is read for the sidebar. Scales with session count (~100+). |
 | **3. Reconcile “dangling” recordings** | `reconcileDanglingSessions()` (scheduled with **`requestIdleCallback`**, timeout 8s) | **`sessions.getAll()`**, then for each session still **`recording`**, **`chunks` index `getAll(sessionId)`**. Usually few `recording` rows, but the **`sessions` full read** still runs and **runs in parallel** with (1) and (2). |
 
@@ -36,12 +36,13 @@ Work on **A** removed or narrowed several bad paths (dev overlay `getAll`+`array
 
 3. **Overlapping work** — `loadSessions`, `refreshTranscriptionPreviews`, and `reconcileDanglingSessions` **do not serialize** in one chain. Sorting lines by `+ms` **double-counts** and hides **IDB contention**.
 
-4. **Headline vs payload** — the string **`listSnips done`** alone does not show how long **`await listSnips()`** took. Use the structured fields **`listSnipsMs`** and **`refreshTranscriptionPreviewsMs`** on those milestones (added 2026-03-25) when analyzing exports.
+4. **Headline vs payload** — use structured fields on milestones (`first chunk read`, `all chunks read`, `done`) including **`listSnipsMs`** (**sum** of per-chunk IndexedDB read times) and **`refreshTranscriptionPreviewsMs`**.
 
 ### How to read one boot (practical)
 
-- **Snip read cost:** `refreshTranscriptionPreviews: listSnips done` → **`listSnipsMs`** (dominant part of preview readiness).
-- **End-to-end preview pass:** `refreshTranscriptionPreviews: done` → **`refreshTranscriptionPreviewsMs`** (includes grouping + `setState`).
+- **Time to first preview chunk:** `refreshTranscriptionPreviews: first chunk read` → **`chunkListSnipsMs`**, **`snipRows`** (newest-ready batch).
+- **Total snip read work:** `all chunks read` → **`listSnipsMs`** (sum of chunk DB times), **`totalSnipRows`**, **`previewChunks`**.
+- **End-to-end preview pass:** `refreshTranscriptionPreviews: done` → **`refreshTranscriptionPreviewsMs`** (includes yielding + `setState`).
 - **Session list read:** wall delta from **`loadSessions: start`** to **`loadSessions: listSessions done`** (payload can add `sessionCount`).
 - **Reconcile:** wall delta **`App: reconcileDanglingSessions start`** → **`done`** (often overlaps list + snips).
 
@@ -67,11 +68,11 @@ Percentages are **not** stable across devices (CPU, disk, DB size). Treat the ta
 | **A2** | Dev console: one table at a time, page size 200 + “Load more”; chunk rows metadata only, no default `arrayBuffer()` (`getDeveloperTablePage`) | Done |
 | **A3** | Dev console: overlay open does not await `loadLogSessions`; Logs tab uses `developerLogsLoading` | Done |
 | **A4** | Main list: buffer total = **Σ `session.totalBytes`** after `listSessions` (incremental per session on disk) | Done |
-| **A5** | Main list: `refreshTranscriptionPreviews` — **one** `listSnips()` (full `snips` `getAll` when no `sessionId`) + group by `sessionId`; avoids N-per-session round-trips but **not** O(sessions)-only work | Done |
+| **A5** | Main list: `refreshTranscriptionPreviews` — **`listSnipsForSessions`** (chunked), incremental React state; **Loading preview…** + spinner until session’s chunk applied; **denormalized preview still TODO** for zero snip reads | Done |
 
 ### Code references (A)
 
-- `src/modules/storage/manifest.ts` — `DeveloperTableName`, `DeveloperTableCounts`, `getDeveloperTableCounts`, `getDeveloperTablePage`; `storageTotals()` sums sessions; `getChunksForInspection()` pages without per-blob `arrayBuffer`.
+- `src/modules/storage/manifest.ts` — `listSnipsForSessions`; `DeveloperTableName`, `DeveloperTableCounts`, `getDeveloperTableCounts`, `getDeveloperTablePage`; `storageTotals()` sums sessions; `getChunksForInspection()` pages without per-blob `arrayBuffer`.
 - `src/App.tsx` — `loadDeveloperIndexedDbShell`, `loadDeveloperTableFromSidebar`, `appendDeveloperTablePage`; dev UI; `loadSessions` milestone `listSessions+sessionBytesSum done`.
 - `src/App.css` — `.dev-table-load-more`.
 
@@ -86,7 +87,7 @@ Percentages are **not** stable across devices (CPU, disk, DB size). Treat the ta
 
 | ID | Item | Status |
 | --- | --- | --- |
-| **C1** | Finer sub-milestones: `loadSessions` split into `listSessions done`, `sessionBytesSum done`, `before setRecordings`; `refreshTranscriptionPreviews` adds `listSnips done`, `grouped by session`, richer `done`; `[debug]` payloads include `activationMs` | Done |
+| **C1** | Finer sub-milestones: `loadSessions` split into `listSessions done`, `sessionBytesSum done`, `before setRecordings`; `refreshTranscriptionPreviews`: `first chunk read`, `all chunks read`, `done` (+ `listSnipsMs` sum, `refreshTranscriptionPreviewsMs`); `[debug]` payloads include `activationMs` | Done |
 | **C2** | `resetStartupMilestoneEpoch()` on `visibilitychange` → visible and `pageshow` when `event.persisted` (bfcache); logs `[startup] activation epoch reset (…)` | Done |
 
 ### Code references (C)
@@ -109,6 +110,7 @@ Percentages are **not** stable across devices (CPU, disk, DB size). Treat the ta
 
 ## Edits log
 
+- 2026-03-25: **Preview load UX + chunking** — `manifest.listSnipsForSessions`; `refreshTranscriptionPreviews` processes ready sessions in chunks (`TRANSCRIPTION_PREVIEW_SESSION_CHUNK`), merges state per chunk, `previewRefreshGenRef` cancels stale passes; list cards **Loading preview…** + spinner until hydrated; **no snips yet** copy when `totalSnips===0`; spec table + C1 wording updated.
 - 2026-03-25: **Spec — startup delay truth table** — documented three dominant blocks (full `snips` getAll, full session list, idle reconcile + IDB contention), why `+NNNms` / buffer flush / overlap obscured costs, and how to use `listSnipsMs` / wall deltas for analysis.
 - 2026-03-25: **Transcription preview milestones** — `refreshTranscriptionPreviews` logs `listSnipsMs` (IndexedDB `snips` getAll) and `refreshTranscriptionPreviewsMs` end-to-end so the “Transcription pending…” gap is visible in exports.
 - 2026-03-25: **Legacy MP4 removal (continuation)** — MP3/PCM→MP3-only paths: drop `isHeaderSegment` / init UI from `App.tsx`, simplify `recording-slices.ts` (no fMP4 init concat), remove unused `mimeTypeHint` from `#regenerateMissingVolumes`; `tsc` + `npm run build`.

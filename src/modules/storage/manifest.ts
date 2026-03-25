@@ -300,6 +300,8 @@ export interface ManifestService {
     getChunkVolumeProfile(chunkId: string): Promise<ChunkVolumeProfileRecord | null>
     listChunkVolumeProfiles(sessionId?: string): Promise<ChunkVolumeProfileRecord[]>
   listSnips(sessionId?: string): Promise<SnipRecord[]>
+  /** Read snips for many sessions in one readonly transaction (indexed getAll per session). */
+  listSnipsForSessions(sessionIds: string[]): Promise<Map<string, SnipRecord[]>>
   appendSnips(sessionId: string, snips: SnipSeed[]): Promise<SnipRecord[]>
   updateSnipTranscription(
     snipId: string,
@@ -516,6 +518,25 @@ class IndexedDBManifestService implements ManifestService {
       }
       return a.index - b.index
     })
+  }
+
+  async listSnipsForSessions(sessionIds: string[]): Promise<Map<string, SnipRecord[]>> {
+    const unique = [...new Set(sessionIds)]
+    const out = new Map<string, SnipRecord[]>()
+    if (unique.length === 0) {
+      return out
+    }
+    const db = await getDB()
+    const tx = db.transaction('snips', 'readonly')
+    const index = tx.objectStore('snips').index('by-session')
+    const rawLists = await Promise.all(unique.map((id) => index.getAll(id)))
+    await tx.done
+    unique.forEach((sessionId, i) => {
+      const rows = rawLists[i].map((record) => normalizeSnipRecord(record))
+      rows.sort((a, b) => a.index - b.index)
+      out.set(sessionId, rows)
+    })
+    return out
   }
 
   async appendSnips(sessionId: string, snips: SnipSeed[]): Promise<SnipRecord[]> {

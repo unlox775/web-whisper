@@ -42,6 +42,8 @@ import {
 import { transcriptionService, validateGroqApiKey } from './modules/transcription/service'
 
 const DEVELOPER_TABLE_PAGE_SIZE = 200
+/** Sessions per IndexedDB read when rebuilding main-list transcription previews. */
+const TRANSCRIPTION_PREVIEW_SESSION_CHUNK = 20
 const DEVELOPER_TABLE_NAMES = ['sessions', 'chunks', 'chunkVolumes', 'snips'] as const
 type DeveloperSidebarTableName = (typeof DEVELOPER_TABLE_NAMES)[number]
 
@@ -422,6 +424,7 @@ function App() {
   const doctorRunIdRef = useRef(0)
   const sessionUpdatesRef = useRef<Map<string, number>>(new Map())
   const sessionsInitializedRef = useRef(false)
+  const previewRefreshGenRef = useRef(0)
   const sessionAnalysisProviderRef = useRef<SessionAnalysisProvider | null>(null)
   const autoTranscribeSessionsRef = useRef<Set<string>>(new Set())
   const liveTranscriptionQueueRef = useRef<LiveTranscriptionQueue>({
@@ -596,93 +599,164 @@ function App() {
       return { ...prev, [sessionId]: errorCount }
     })
     setTranscriptionSnipCounts((prev) => {
-      if (total === 0) {
-        if (!(sessionId in prev)) return prev
-        const next = { ...prev }
-        delete next[sessionId]
-        return next
-      }
+      const entry = { transcribedCount, total, purgedCount, retryableCount }
       const current = prev[sessionId]
       if (
         current &&
-        current.transcribedCount === transcribedCount &&
-        current.total === total &&
-        current.purgedCount === purgedCount &&
-        current.retryableCount === retryableCount
+        current.transcribedCount === entry.transcribedCount &&
+        current.total === entry.total &&
+        current.purgedCount === entry.purgedCount &&
+        current.retryableCount === entry.retryableCount
       ) {
         return prev
       }
-      return { ...prev, [sessionId]: { transcribedCount, total, purgedCount, retryableCount } }
+      return { ...prev, [sessionId]: entry }
     })
   }, [isSnipAudioPurged])
 
   const refreshTranscriptionPreviews = useCallback(async (sessions: SessionRecord[]) => {
+    const gen = (previewRefreshGenRef.current += 1)
     const passT0 = performance.now()
-    markStartupMilestone('refreshTranscriptionPreviews: start', { sessionCount: sessions.length })
+    const activeIds = new Set(sessions.map((s) => s.id))
+    const readySessions = sessions.filter((s) => s.status === 'ready')
+    const readyIds = readySessions.map((s) => s.id)
+
+    markStartupMilestone('refreshTranscriptionPreviews: start', {
+      sessionCount: sessions.length,
+      readySessionCount: readySessions.length,
+    })
+
     try {
-      const allSnips = await manifestService.listSnips()
-      const listSnipsMs = Math.round(performance.now() - passT0)
-      markStartupMilestone('refreshTranscriptionPreviews: listSnips done', {
-        snipRows: allSnips.length,
-        listSnipsMs,
-      })
-      const snipsBySession = new Map<string, SnipRecord[]>()
-      for (const snip of allSnips) {
-        let list = snipsBySession.get(snip.sessionId)
-        if (!list) {
-          list = []
-          snipsBySession.set(snip.sessionId, list)
+      setTranscriptionPreviews((prev) => {
+        const next = { ...prev }
+        for (const s of sessions) {
+          if (s.status !== 'ready') delete next[s.id]
         }
-        list.push(snip)
-      }
-      for (const list of snipsBySession.values()) {
-        list.sort((a, b) => a.index - b.index)
-      }
-      markStartupMilestone('refreshTranscriptionPreviews: grouped by session', {
-        sessionBuckets: snipsBySession.size,
+        return next
+      })
+      setTranscriptionErrorCounts((prev) => {
+        const next = { ...prev }
+        for (const s of sessions) {
+          if (s.status !== 'ready') delete next[s.id]
+        }
+        return next
+      })
+      setTranscriptionSnipCounts((prev) => {
+        const next = { ...prev }
+        for (const id of readyIds) delete next[id]
+        for (const s of sessions) {
+          if (s.status !== 'ready') delete next[s.id]
+        }
+        return next
       })
 
-      const entries = sessions.map((session) => {
-        if (session.status !== 'ready') return [session.id, '', 0, 0, 0, 0, 0] as const
-        const snips = snipsBySession.get(session.id) ?? []
-        const errorCount = snips.filter((snip) => Boolean(snip.transcriptionError)).length
-        const transcribedCount = snips.filter((snip) => getSnipTranscriptionText(snip).length > 0).length
-        const purgedCount = snips.filter((snip) => isSnipAudioPurged(snip)).length
-        const total = snips.length
-        const retryableCount = Math.max(0, total - purgedCount)
-        return [
-          session.id,
-          buildTranscriptionPreview(snips),
-          errorCount,
-          transcribedCount,
-          total,
-          purgedCount,
-          retryableCount,
-        ] as const
+      let listSnipsAccumMs = 0
+      let totalSnipRows = 0
+      let firstChunkListSnipsMs: number | null = null
+      let previewChunks = 0
+
+      for (let i = 0; i < readySessions.length; i += TRANSCRIPTION_PREVIEW_SESSION_CHUNK) {
+        if (gen !== previewRefreshGenRef.current) return
+        const slice = readySessions.slice(i, i + TRANSCRIPTION_PREVIEW_SESSION_CHUNK)
+        const chunkIds = slice.map((s) => s.id)
+        const chunkT0 = performance.now()
+        const snipsMap = await manifestService.listSnipsForSessions(chunkIds)
+        const chunkMs = Math.round(performance.now() - chunkT0)
+        listSnipsAccumMs += chunkMs
+        if (firstChunkListSnipsMs === null) firstChunkListSnipsMs = chunkMs
+
+        let chunkRows = 0
+        for (const id of chunkIds) {
+          chunkRows += snipsMap.get(id)?.length ?? 0
+        }
+        totalSnipRows += chunkRows
+
+        if (gen !== previewRefreshGenRef.current) return
+
+        if (previewChunks === 0 && slice.length > 0) {
+          markStartupMilestone('refreshTranscriptionPreviews: first chunk read', {
+            sessionsInChunk: slice.length,
+            snipRows: chunkRows,
+            chunkListSnipsMs: chunkMs,
+          })
+        }
+        previewChunks += 1
+
+        setTranscriptionPreviews((prev) => {
+          const next = { ...prev }
+          for (const session of slice) {
+            const snips = snipsMap.get(session.id) ?? []
+            const preview = buildTranscriptionPreview(snips)
+            if (preview) next[session.id] = preview
+            else delete next[session.id]
+          }
+          return next
+        })
+        setTranscriptionErrorCounts((prev) => {
+          const next = { ...prev }
+          for (const session of slice) {
+            const snips = snipsMap.get(session.id) ?? []
+            const errorCount = snips.filter((snip) => Boolean(snip.transcriptionError)).length
+            if (errorCount > 0) next[session.id] = errorCount
+            else delete next[session.id]
+          }
+          return next
+        })
+        setTranscriptionSnipCounts((prev) => {
+          const next = { ...prev }
+          for (const session of slice) {
+            const snips = snipsMap.get(session.id) ?? []
+            const transcribedCount = snips.filter((snip) => getSnipTranscriptionText(snip).length > 0).length
+            const purgedCount = snips.filter((snip) => isSnipAudioPurged(snip)).length
+            const total = snips.length
+            const retryableCount = Math.max(0, total - purgedCount)
+            next[session.id] = { transcribedCount, total, purgedCount, retryableCount }
+          }
+          return next
+        })
+
+        await new Promise<void>((resolve) => {
+          window.setTimeout(resolve, 0)
+        })
+      }
+
+      if (gen !== previewRefreshGenRef.current) return
+
+      markStartupMilestone('refreshTranscriptionPreviews: all chunks read', {
+        totalSnipRows,
+        listSnipsMs: listSnipsAccumMs,
+        previewChunks,
+        firstChunkListSnipsMs,
       })
-      const next: Record<string, string> = {}
-      const nextErrors: Record<string, number> = {}
-      const nextCounts: Record<
-        string,
-        { transcribedCount: number; total: number; purgedCount: number; retryableCount: number }
-      > = {}
-      entries.forEach(([sessionId, preview, errorCount, transcribedCount, total, purgedCount, retryableCount]) => {
-        if (preview) {
-          next[sessionId] = preview
+
+      setTranscriptionPreviews((prev) => {
+        const next: Record<string, string> = {}
+        for (const id of activeIds) {
+          if (prev[id] !== undefined) next[id] = prev[id]
         }
-        if (errorCount > 0) {
-          nextErrors[sessionId] = errorCount
-        }
-        if (total > 0) {
-          nextCounts[sessionId] = { transcribedCount, total, purgedCount, retryableCount }
-        }
+        return next
       })
-      setTranscriptionPreviews(next)
-      setTranscriptionErrorCounts(nextErrors)
-      setTranscriptionSnipCounts(nextCounts)
+      setTranscriptionErrorCounts((prev) => {
+        const next: Record<string, number> = {}
+        for (const id of activeIds) {
+          if (prev[id] !== undefined) next[id] = prev[id]
+        }
+        return next
+      })
+      setTranscriptionSnipCounts((prev) => {
+        const next: Record<string, { transcribedCount: number; total: number; purgedCount: number; retryableCount: number }> =
+          {}
+        for (const id of activeIds) {
+          if (prev[id] !== undefined) next[id] = prev[id]
+        }
+        return next
+      })
+
       markStartupMilestone('refreshTranscriptionPreviews: done', {
-        previewSessions: Object.keys(next).length,
         refreshTranscriptionPreviewsMs: Math.round(performance.now() - passT0),
+        previewChunks,
+        readySessionsHydrated: readySessions.length,
+        totalSnipRows,
       })
     } catch (error) {
       markStartupMilestone('refreshTranscriptionPreviews: error')
@@ -4078,6 +4152,8 @@ function App() {
               const retryableSnips = transcriptionCounts?.retryableCount ?? Math.max(0, totalSnips - purgedSnips)
               const hasTranscript = transcribedCount > 0
               const hasTranscriptionError = canTranscribe && transcriptionErrorCount > 0
+              const previewHydrated =
+                session.status !== 'ready' || transcriptionSnipCounts[session.id] !== undefined
               const hasSnips = totalSnips > 0 || hasTranscriptionError
               const errorNotes = session.status === 'error' ? session.notes ?? 'Recording error.' : ''
               const isRetrying = Boolean(retryingSessionIds[session.id])
@@ -4114,6 +4190,8 @@ function App() {
                 ? 'Recording in progress...'
                 : errorNotes
                   ? errorNotes
+                  : session.status === 'ready' && canTranscribe && !previewHydrated
+                    ? 'Loading preview…'
                   : isTranscribing
                     ? 'Finishing transcription...'
                     : transcriptionPreview
@@ -4128,6 +4206,8 @@ function App() {
                           ? hasGroqKey
                             ? 'Recording complete. Waiting for a valid Groq key.'
                             : 'Recording complete.'
+                        : totalSnips === 0 && previewHydrated
+                          ? 'No snips yet for this recording.'
                           : 'Transcription pending...'
               return (
                 <li key={session.id}>
@@ -4154,9 +4234,16 @@ function App() {
                     </header>
                     <div className="session-preview-row">
                       <p className="session-preview">{previewText}</p>
-                      {isTranscribing ? <span className="session-spinner" aria-label="Transcribing…" /> : null}
+                      {isTranscribing ||
+                      (session.status === 'ready' && canTranscribe && !previewHydrated) ? (
+                        <span
+                          className="session-spinner"
+                          aria-label={isTranscribing ? 'Transcribing…' : 'Loading preview…'}
+                        />
+                      ) : null}
                       {!isTranscribing &&
                       canRetryTranscription &&
+                      previewHydrated &&
                       (hasTranscriptionError || (!transcriptionPreview && !errorNotes)) &&
                       session.status === 'ready' ? (
                         <button
