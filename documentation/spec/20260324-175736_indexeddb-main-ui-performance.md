@@ -36,7 +36,7 @@ Work on **A** removed or narrowed several bad paths (dev overlay `getAll`+`array
 
 3. **Overlapping work** — `loadSessions`, `refreshTranscriptionPreviews`, and `reconcileDanglingSessions` **do not serialize** in one chain. Sorting lines by `+ms` **double-counts** and hides **IDB contention**.
 
-4. **Headline vs payload** — use structured fields on milestones (`first chunk read`, `all chunks read`, `done`) including **`listSnipsMs`** (**sum** of per-chunk IndexedDB read times) and **`refreshTranscriptionPreviewsMs`**.
+4. **Headline vs payload** — use **`atIso` / `atMs`** plus structured fields (`chunk applied`, `all chunks read`, `done`, **`listSnipsMs`**, **`refreshTranscriptionPreviewsMs`**). Ignore lines whose **`atIso`** is wildly out of order vs neighbors (buffer mixing epochs).
 
 ### How to read one boot (practical)
 
