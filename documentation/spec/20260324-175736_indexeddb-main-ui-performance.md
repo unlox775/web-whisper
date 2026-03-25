@@ -10,7 +10,7 @@ Improve perceived and actual load time for (1) the main recordings screen after 
 
 ## Evidence summary (from logs + screenshot, 2026-03-24)
 
-- **`loadSessions` path:** ~15 s between `purgeLegacyMp4 done` and list + totals / `setRecordings` on a device with ~126 sessions, ~11.5k chunks/volumes, ~2.9k snips. `refreshTranscriptionPreviews` added ~1 s after that.
+- **`loadSessions` path (historical log, 2026-03-24):** ~15 s between early IndexedDB/session work and list + totals / `setRecordings` on a device with ~126 sessions, ~11.5k chunks/volumes, ~2.9k snips. `refreshTranscriptionPreviews` added ~1 s after that.
 - **Developer overlay (before fix):** ~9 s for loading all tables at once, then ~1 s for `loadLogSessions`. Sidebar counts could appear while the detail pane stayed on “Loading…” until both completed.
 - **Milestone `+NNNms` values** after long backgrounding are elapsed since first boot in that tab; use **wall-clock deltas** between log timestamps for a single navigation.
 
@@ -76,6 +76,7 @@ Improve perceived and actual load time for (1) the main recordings screen after 
 
 ## Edits log
 
+- 2026-03-25: **Legacy MP4 removal (continuation)** — MP3/PCM→MP3-only paths: drop `isHeaderSegment` / init UI from `App.tsx`, simplify `recording-slices.ts` (no fMP4 init concat), remove unused `mimeTypeHint` from `#regenerateMissingVolumes`; `tsc` + `npm run build`.
 - 2026-03-24: **Section C** — `resetStartupMilestoneEpoch` in `startup-milestones.ts`; visibility + bfcache listeners in `App.tsx`; finer `loadSessions` / `refreshTranscriptionPreviews` milestones; `activationMs` on debug panel logs.
 - 2026-03-24: Implemented **recommendation A** (manifest + App + CSS); rebuilt `docs/`; spec converted to checklist + B/C tables.
 - 2026-03-24: Expanded `*-PROMPT.txt` with full transcript separators.

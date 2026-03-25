@@ -27,7 +27,6 @@ export interface PrepareSessionAnalysisOptions {
   mimeTypeHint?: string | null
 }
 
-const MP4_MIME_PATTERN = /mp4|m4a/i
 const ANALYSIS_TIMELINE_VERSION = 3
 
 export class SessionAnalysisProvider {
@@ -75,7 +74,7 @@ export class SessionAnalysisProvider {
 
     let verification = await this.ensureTimings(session.id)
     if (verification.status !== 'verified' && verification.missingChunkIds.length > 0) {
-      await this.#regenerateMissingVolumes(session, verification.missingChunkIds, options.mimeTypeHint)
+      await this.#regenerateMissingVolumes(session, verification.missingChunkIds)
       verification = await this.ensureTimings(session.id)
     }
 
@@ -113,16 +112,9 @@ export class SessionAnalysisProvider {
     }
 
     const chunkRows = await this.#manifest.getChunkMetadata(session.id)
-    const isMp4LikeSession = /mp4|m4a/i.test(session.mimeType ?? options.mimeTypeHint ?? '')
     const orderedChunks = [...chunkRows]
       .filter((chunk) => chunk.seq >= 0)
       .sort((a, b) => a.seq - b.seq)
-      .filter((chunk) => {
-        if (!isMp4LikeSession) return true
-        if (chunk.seq !== 0) return true
-        const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
-        return !(durationMs <= 10 || chunk.byteLength < 4096)
-      })
 
     const durationsBySeq = new Map<number, number>()
     orderedChunks.forEach((chunk) => {
@@ -284,11 +276,7 @@ export class SessionAnalysisProvider {
     }
   }
 
-  async #regenerateMissingVolumes(
-    session: SessionRecord,
-    missingChunkIds: string[],
-    mimeTypeHint?: string | null,
-  ): Promise<void> {
+  async #regenerateMissingVolumes(session: SessionRecord, missingChunkIds: string[]): Promise<void> {
     if (missingChunkIds.length === 0) {
       return
     }
@@ -298,22 +286,13 @@ export class SessionAnalysisProvider {
       return
     }
 
-    const headerChunk = chunkData.find((chunk) => chunk.seq === 0) ?? null
-    const headerBlob = headerChunk?.blob ?? null
-    const headerMime = headerBlob?.type ?? session.mimeType ?? mimeTypeHint ?? 'audio/mp4'
-
     const targets = chunkData.filter(
       (chunk) => chunk.seq > 0 && chunk.blob.size > 0 && missingChunkIds.includes(chunk.id),
     )
 
     for (const chunk of targets) {
       try {
-        let analysisBlob: Blob = chunk.blob
-        if (headerBlob && MP4_MIME_PATTERN.test(headerMime)) {
-          analysisBlob = new Blob([headerBlob, chunk.blob], {
-            type: headerBlob.type || chunk.blob.type || headerMime,
-          })
-        }
+        const analysisBlob: Blob = chunk.blob
 
         const profile = await computeChunkVolumeProfile(analysisBlob, {
           chunkId: chunk.id,

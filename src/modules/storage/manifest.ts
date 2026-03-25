@@ -306,7 +306,6 @@ export interface ManifestService {
     patch: { transcription?: SnipTranscription | null; transcriptionError?: string | null },
   ): Promise<SnipRecord | null>
     deleteSession(sessionId: string): Promise<void>
-    purgeLegacyMp4Sessions(): Promise<{ deletedSessions: number }>
     storageTotals(): Promise<{ totalBytes: number }>
     applyRetentionPolicy(options: { limitBytes: number; now?: number }): Promise<StorageRetentionResult>
     verifySessionChunkTimings(sessionId: string): Promise<SessionTimingVerificationResult>
@@ -369,8 +368,7 @@ class IndexedDBManifestService implements ManifestService {
       blob,
       byteLength: blob.size,
       createdAt: Date.now(),
-      // Only treat seq0 as init/header for mp4-like captures. For PCM->MP3 sessions, seq0 is real audio.
-      verifiedAudioMsec: entry.seq === 0 && /mp4|m4a/i.test(blob.type) ? 0 : null,
+      verifiedAudioMsec: null,
       timingStatus: DEFAULT_CHUNK_TIMING_STATUS,
     }
 
@@ -609,15 +607,6 @@ class IndexedDBManifestService implements ManifestService {
     await tx.done
   }
 
-  async purgeLegacyMp4Sessions(): Promise<{ deletedSessions: number }> {
-    const sessions = await this.listSessions()
-    const legacy = sessions.filter((session) => /mp4|m4a/i.test(session.mimeType ?? ''))
-    for (const session of legacy) {
-      await this.deleteSession(session.id)
-    }
-    return { deletedSessions: legacy.length }
-  }
-
   async storageTotals(): Promise<{ totalBytes: number }> {
     const db = await getDB()
     const sessions = await db.getAll('sessions')
@@ -714,14 +703,8 @@ class IndexedDBManifestService implements ManifestService {
     })
 
     const COVERAGE_EPSILON_MS = 4
-    const isHeaderChunk = (chunk: StoredChunk, session: SessionRecord | null): boolean => {
-      const mimeType = chunk.blob.type || session?.mimeType || ''
-      if (!/mp4|m4a/i.test(mimeType)) {
-        return false
-      }
-      const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
-      return chunk.seq === 0 && (durationMs <= 10 || chunk.byteLength < 4096)
-    }
+    /** Legacy MP4 init-segment chunks removed from product; retention never skips a "header" chunk. */
+    const isHeaderChunk = (_chunk: StoredChunk, _session: SessionRecord | null): boolean => false
     const normalizeChunkRange = (
       chunk: StoredChunk,
       timing: { baseStartMs: number; baseIsAbsolute: boolean; snipIsAbsolute: boolean },
@@ -908,18 +891,8 @@ class IndexedDBManifestService implements ManifestService {
     const durations: number[] = new Array(ordered.length)
     const missingChunkIds: string[] = []
 
-    const sessionMime = normalizedSession?.mimeType ?? ''
-    const isMp4LikeSession = /mp4|m4a/i.test(sessionMime)
-    const likelyInitChunk =
-      isMp4LikeSession ? ordered.find((chunk) => chunk.seq === 0 && (chunk.endMs - chunk.startMs <= 10 || chunk.byteLength < 4096)) ?? null : null
-
     for (let i = 0; i < ordered.length; i += 1) {
       const chunk = ordered[i]
-      const isInit = likelyInitChunk?.id === chunk.id
-      if (isInit) {
-        durations[i] = 0
-        continue
-      }
       // Prefer the previously verified audio length when it exists.
       const verifiedDuration =
         typeof chunk.verifiedAudioMsec === 'number' && chunk.verifiedAudioMsec > 0
@@ -941,11 +914,7 @@ class IndexedDBManifestService implements ManifestService {
       missingChunkIds.push(chunk.id)
     }
 
-    const baseStartMsCandidate =
-      likelyInitChunk?.startMs ??
-      normalizedSession?.startedAt ??
-      ordered[0]?.startMs ??
-      Date.now()
+    const baseStartMsCandidate = normalizedSession?.startedAt ?? ordered[0]?.startMs ?? Date.now()
     const baseStartMs = Number.isFinite(baseStartMsCandidate) ? Math.round(baseStartMsCandidate) : Date.now()
 
     if (missingChunkIds.length > 0) {

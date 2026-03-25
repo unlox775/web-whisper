@@ -32,7 +32,6 @@ export interface RecordingRangeInspection {
   peak: number
 }
 
-const MP4_MIME_PATTERN = /mp4|m4a/i
 const LIVE_SNIP_TAIL_MS = 15_000
 
 const writeAscii = (view: DataView, offset: number, value: string) => {
@@ -221,17 +220,15 @@ export class RecordingSlicesApi {
     const target = chunks.find((chunk) => chunk.seq === seq) ?? null
     if (!target) return null
 
-    const headerChunk = chunks.find((chunk) => chunk.seq === 0) ?? null
     const baseMimeType = target.blob.type || session.mimeType || 'audio/mpeg'
-    const needsInit = headerChunk && headerChunk.id !== target.id && MP4_MIME_PATTERN.test(baseMimeType)
-    const blob = needsInit ? new Blob([headerChunk.blob, target.blob], { type: baseMimeType }) : target.blob
+    const blob = target.blob
 
     const startMs = target.startMs
     const endMs = target.endMs
     const durationMs = Math.max(0, endMs - startMs)
     const iso = new Date(session.startedAt ?? Date.now()).toISOString().replace(/[:.]/g, '-')
     const seqLabel = String(seq + 1).padStart(2, '0')
-    const extension = /mpeg/i.test(baseMimeType) ? 'mp3' : /webm/i.test(baseMimeType) ? 'webm' : /mp4|m4a/i.test(baseMimeType) ? 'mp4' : 'bin'
+    const extension = /mpeg/i.test(baseMimeType) ? 'mp3' : /webm/i.test(baseMimeType) ? 'webm' : 'bin'
 
     return {
       kind: 'chunk',
@@ -258,23 +255,13 @@ export class RecordingSlicesApi {
 
   async #getChunkIndex(session: SessionRecord): Promise<{
     baseStartMs: number
-    headerChunk: StoredChunk | null
     playable: Array<StoredChunk & { startOffsetMs: number; endOffsetMs: number }>
   }> {
     await this.#ensureInit()
     const chunks = await this.#manifest.getChunkData(session.id)
-    const sessionMime = session.mimeType ?? ''
-    const isMp4Like = /mp4|m4a/i.test(sessionMime)
-    const headerChunk =
-      isMp4Like
-        ? (chunks.find((chunk) => chunk.seq === 0 && (chunk.endMs - chunk.startMs <= 10 || chunk.byteLength < 4096)) ?? null)
-        : null
-    const playableChunks = chunks
-      .filter((chunk) => !headerChunk || chunk.id !== headerChunk.id)
-      .sort((a, b) => a.seq - b.seq)
+    const playableChunks = [...chunks].sort((a, b) => a.seq - b.seq)
     const baseStartMsCandidate =
-      headerChunk?.startMs ??
-      (playableChunks.length > 0 ? playableChunks[0].startMs : session.startedAt ?? Date.now())
+      playableChunks.length > 0 ? playableChunks[0].startMs : session.startedAt ?? Date.now()
     const baseStartMs = Number.isFinite(baseStartMsCandidate) ? Math.round(baseStartMsCandidate) : Date.now()
     const looksAbsolute = baseStartMs > 1_000_000_000_000
 
@@ -284,13 +271,12 @@ export class RecordingSlicesApi {
       return { ...chunk, startOffsetMs: Math.max(0, startOffsetMs), endOffsetMs: Math.max(0, endOffsetMs) }
     })
 
-    return { baseStartMs, headerChunk, playable }
+    return { baseStartMs, playable }
   }
 
-  async #decodeChunkToBuffer(session: SessionRecord, chunk: StoredChunk, headerChunk: StoredChunk | null): Promise<AudioBuffer> {
-    const mimeType = chunk.blob.type || session.mimeType || 'audio/mp4'
-    const needsInit = headerChunk && headerChunk.id !== chunk.id && MP4_MIME_PATTERN.test(mimeType)
-    const blob = needsInit ? new Blob([headerChunk.blob, chunk.blob], { type: mimeType }) : chunk.blob
+  async #decodeChunkToBuffer(session: SessionRecord, chunk: StoredChunk): Promise<AudioBuffer> {
+    const mimeType = chunk.blob.type || session.mimeType || 'audio/mpeg'
+    const blob = chunk.blob
 
     const audioContext = await this.#getAudioContext()
     try {
@@ -305,7 +291,6 @@ export class RecordingSlicesApi {
         `seq=${chunk.seq}`,
         `bytes=${blob.size}`,
         `mime=${mimeType}`,
-        needsInit ? 'init=1' : 'init=0',
       ].join(' ')
       throw new Error(`Failed to decode chunk audio (${detail})${message ? `: ${message}` : ''}`)
     }
@@ -318,7 +303,7 @@ export class RecordingSlicesApi {
   ): Promise<{ samples: Float32Array; sampleRate: number; durationMs: number; startMs: number; endMs: number }> {
     const safeStartMs = Math.max(0, startMs)
     const safeEndMs = Math.max(safeStartMs, endMs)
-    const { headerChunk, playable } = await this.#getChunkIndex(session)
+    const { playable } = await this.#getChunkIndex(session)
     if (playable.length === 0) {
       return { samples: new Float32Array(0), sampleRate: 0, durationMs: 0, startMs: safeStartMs, endMs: safeStartMs }
     }
@@ -330,7 +315,7 @@ export class RecordingSlicesApi {
       return { samples: new Float32Array(0), sampleRate: 0, durationMs: 0, startMs: safeStartMs, endMs: safeStartMs }
     }
 
-    // Some browsers emit cumulative MP4 blobs (each chunk contains audio from t=0..current),
+    // Some decoders return a longer buffer than the chunk window implies (e.g. cumulative payloads);
     // while our timing metadata still reflects the intended per-chunk window. In that case,
     // stitch logic must NOT subtract chunk.startOffset; instead we can use one chunk that
     // contains the whole desired range and slice by absolute session offset.
@@ -343,7 +328,7 @@ export class RecordingSlicesApi {
     }> = []
 
     for (const chunk of overlaps) {
-      const buffer = await this.#decodeChunkToBuffer(session, chunk, headerChunk)
+      const buffer = await this.#decodeChunkToBuffer(session, chunk)
       const bufferDurationMs = Math.max(0, buffer.duration * 1000)
       const expectedChunkDurationMs = Math.max(0, chunk.endOffsetMs - chunk.startOffsetMs)
       const isCumulative =
@@ -405,8 +390,7 @@ export class RecordingSlicesApi {
     return { samples: out, sampleRate, durationMs, startMs: safeStartMs, endMs: safeStartMs + durationMs }
   }
 
-  // NOTE: we intentionally avoid decoding the concatenated session blob for range access because
-  // browser decoders can truncate/lie on long fMP4 fragment concatenations. See chunk-based decode above.
+  // NOTE: we decode per-chunk blobs for range access instead of one giant concatenated blob.
 
   async getRangeAudio(session: SessionRecord, startMs: number, endMs: number, _mimeTypeHint?: string | null): Promise<RecordingAudioSlice> {
     const sliced = await this.#decodeRangeToMonoSamples(session, startMs, endMs)

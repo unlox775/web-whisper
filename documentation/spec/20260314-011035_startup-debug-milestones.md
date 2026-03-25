@@ -6,7 +6,7 @@
 
 ## Scope
 
-- Add timestamped milestone logs for: first execution, first load of page, manifest init, listSessions, storageTotals, purgeLegacyMp4, refreshTranscriptionPreviews (and its per-session listSnips), recordings UI ready.
+- Add timestamped milestone logs for: first execution, first load of page, manifest init, listSessions, storageTotals, refreshTranscriptionPreviews (and its per-session listSnips), recordings UI ready.
 - Add milestone logs in the developer/debug panel when loading: loadDeveloperTables (sessions, chunks, chunkVolumes, snips) and loadLogSessions.
 - Logs must be exportable (existing logger persists to IndexedDB; also emit to console with a consistent prefix so user can export and paste).
 - No changes to data purging or storage logic.
@@ -22,7 +22,7 @@
 
 - [x] Create startup log utility with timestamps (or use existing logger with a clear prefix).
 - [x] Instrument main.tsx first execution.
-- [x] Instrument App mount and loadSessions (manifestService.init, purgeLegacyMp4, listSessions, storageTotals, setRecordings, refreshTranscriptionPreviews).
+- [x] Instrument App mount and loadSessions (manifestService.init, listSessions, storageTotals, setRecordings, refreshTranscriptionPreviews).
 - [x] Instrument refreshTranscriptionPreviews (per-session listSnips).
 - [x] Instrument loadDeveloperTables (sessions, chunks, chunkVolumes, snips).
 - [x] Instrument loadLogSessions.

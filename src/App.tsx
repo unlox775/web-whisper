@@ -692,9 +692,6 @@ function App() {
     // Ensure the manifest is usable before any list or summary calls.
     await manifestService.init()
     markStartupMilestone('loadSessions: manifest init done')
-    // Data-loss OK migration: purge legacy MP4 sessions/chunks/volumes.
-    await manifestService.purgeLegacyMp4Sessions()
-    markStartupMilestone('loadSessions: purgeLegacyMp4 done')
     // Reuse or create a single provider instance so verification caching survives reloads.
     const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
     sessionAnalysisProviderRef.current = provider
@@ -840,8 +837,16 @@ function App() {
   }, [])
 
   useEffect(() => {
-    markStartupMilestone('App: reconcileDanglingSessions start')
-    void manifestService.reconcileDanglingSessions().then(() => markStartupMilestone('App: reconcileDanglingSessions done'))
+    const run = () => {
+      markStartupMilestone('App: reconcileDanglingSessions start')
+      void manifestService.reconcileDanglingSessions().then(() => markStartupMilestone('App: reconcileDanglingSessions done'))
+    }
+    if (typeof requestIdleCallback !== 'undefined') {
+      const id = requestIdleCallback(run, { timeout: 8000 })
+      return () => cancelIdleCallback(id)
+    }
+    const t = window.setTimeout(run, 0)
+    return () => window.clearTimeout(t)
   }, [])
 
   useEffect(() => {
@@ -1383,37 +1388,12 @@ function App() {
     selectedRecording?.mimeType,
   ])
 
-  const isHeaderSegment = useCallback((chunk: StoredChunk) => {
-    const mimeType = chunk.blob.type || selectedRecording?.mimeType || ''
-    const isMp4Like = /mp4|m4a/i.test(mimeType)
-    if (!isMp4Like) {
-      return false
-    }
-    const durationMs = Math.max(0, chunk.endMs - chunk.startMs)
-    return chunk.seq === 0 && (durationMs <= 10 || chunk.byteLength < 4096)
-  }, [selectedRecording?.mimeType])
-
-  const headerChunk = useMemo(() => chunkData.find(isHeaderSegment) ?? null, [chunkData, isHeaderSegment])
-
   const playableChunkCount = useMemo(
-    () => chunkData.filter((chunk) => !isHeaderSegment(chunk) && !isChunkAudioPurged(chunk)).length,
-    [chunkData, isChunkAudioPurged, isHeaderSegment],
+    () => chunkData.filter((chunk) => !isChunkAudioPurged(chunk)).length,
+    [chunkData, isChunkAudioPurged],
   )
 
-    const createChunkCompositeBlob = useCallback(
-      (chunk: StoredChunk) => {
-        const mimeType = chunk.blob.type || selectedRecording?.mimeType || 'audio/mp4'
-        if (!headerChunk || headerChunk.id === chunk.id) {
-          return chunk.blob
-        }
-        const isMp4Like = /mp4|m4a/i.test(mimeType)
-        if (!isMp4Like) {
-          return chunk.blob
-        }
-        return new Blob([headerChunk.blob, chunk.blob], { type: mimeType })
-      },
-      [headerChunk, selectedRecording?.mimeType],
-    )
+    const createChunkCompositeBlob = useCallback((chunk: StoredChunk) => chunk.blob, [])
 
     const ensureChunkPlaybackUrl = useCallback(
       (chunk: StoredChunk): string | null => {
@@ -1443,13 +1423,7 @@ function App() {
         const iso = new Date(baseDate).toISOString().replace(/[:.]/g, '-')
         const seqLabel = String(chunk.seq + 1).padStart(2, '0')
         const mimeType = chunk.blob.type || selectedRecording?.mimeType || 'application/octet-stream'
-        const extension = /mpeg/i.test(mimeType)
-          ? 'mp3'
-          : /webm/i.test(mimeType)
-            ? 'webm'
-            : /mp4|m4a/i.test(mimeType)
-              ? 'mp4'
-              : 'bin'
+        const extension = /mpeg/i.test(mimeType) ? 'mp3' : /webm/i.test(mimeType) ? 'webm' : 'bin'
         const link = document.createElement('a')
         link.href = url
         link.download = `${iso}_chunk-${seqLabel}.${extension}`
@@ -2352,21 +2326,17 @@ function App() {
   const preparePlaybackSource = useCallback(
     async (forceReload = false) => {
       if (!selectedRecording) return false
-      const mime = selectedRecording.mimeType ?? 'audio/mp4'
+      const mime = selectedRecording.mimeType ?? 'audio/mpeg'
       const chunks = await manifestService.getChunkData(selectedRecording.id)
       const orderedChunks = [...chunks].sort((a, b) => a.seq - b.seq)
       if (orderedChunks.length === 0) {
         throw new Error('No audio available yet. Keep recording to capture chunks.')
       }
-      const headerChunk = orderedChunks.find((chunk) => isHeaderSegment(chunk)) ?? null
-      const playableChunks = orderedChunks.filter((chunk) => !isHeaderSegment(chunk) && !isChunkAudioPurged(chunk))
+      const playableChunks = orderedChunks.filter((chunk) => !isChunkAudioPurged(chunk))
       if (playableChunks.length === 0) {
         throw new Error('Audio for this recording was purged.')
       }
       const parts: BlobPart[] = []
-      if (headerChunk && /mp4|m4a/i.test(mime)) {
-        parts.push(headerChunk.blob)
-      }
       playableChunks.forEach((chunk) => parts.push(chunk.blob))
       const blob = new Blob(parts, { type: mime })
       await logInfo('Playback source prepared', {
@@ -2391,7 +2361,7 @@ function App() {
       }
       return true
     },
-    [isChunkAudioPurged, isHeaderSegment, selectedRecording],
+    [isChunkAudioPurged, selectedRecording],
   )
 
   useEffect(() => {
@@ -2413,7 +2383,7 @@ function App() {
 
   const handlePlaybackToggle = useCallback(async () => {
     if (!selectedRecording) return
-    const playableNow = chunkData.some((chunk) => !isHeaderSegment(chunk) && !isChunkAudioPurged(chunk))
+    const playableNow = chunkData.some((chunk) => !isChunkAudioPurged(chunk))
     if (!playableNow) {
       const message = 'Audio was purged for this recording and is no longer available.'
       setPlaybackError(message)
@@ -2449,7 +2419,7 @@ function App() {
     } finally {
       setIsLoadingPlayback(false)
     }
-  }, [chunkData, isChunkAudioPurged, isHeaderSegment, preparePlaybackSource, selectedRecording])
+  }, [chunkData, isChunkAudioPurged, preparePlaybackSource, selectedRecording])
 
   const handleCloseDetail = async () => {
     chunkAudioRef.current.forEach((entry) => {
@@ -2801,7 +2771,7 @@ function App() {
 
     // Pull fresh chunk data for diagnostics so we don't race the detail-open effect.
     const chunksForDoctor = await manifestService.getChunkData(selectedRecording.id)
-    const playableChunksForDoctor = chunksForDoctor.filter((chunk) => !isHeaderSegment(chunk))
+    const playableChunksForDoctor = [...chunksForDoctor].sort((a, b) => a.seq - b.seq)
     const baseStartMsCandidate =
       chunksForDoctor.find((chunk) => chunk.seq === 0)?.startMs ??
       playableChunksForDoctor[0]?.startMs ??
@@ -3421,9 +3391,6 @@ function App() {
       }
       setChunkPlayingId(null)
 
-      if (isHeaderSegment(chunk)) {
-        return
-      }
       if (isChunkAudioPurged(chunk)) {
         return
       }
@@ -3480,7 +3447,7 @@ function App() {
         finishPlayback()
       }
     },
-    [chunkPlayingId, ensureChunkPlaybackUrl, isChunkAudioPurged, isHeaderSegment, playbackVolume],
+    [chunkPlayingId, ensureChunkPlaybackUrl, isChunkAudioPurged, playbackVolume],
   )
 
   const handleSnipPlayToggle = useCallback(
@@ -3769,7 +3736,6 @@ function App() {
     const isAbsolute = baseStartMs > ABSOLUTE_THRESHOLD_MS
     const normalize = (value: number) => (isAbsolute ? value - baseStartMs : value)
     const rawSegments = chunkData
-      .filter((chunk) => !isHeaderSegment(chunk))
       .map((chunk) => {
         const startMs = normalize(chunk.startMs)
         const endMs = normalize(chunk.endMs)
@@ -3844,7 +3810,7 @@ function App() {
       playableDurationMs: playCursor,
       playbackMap,
     }
-  }, [chunkData, isChunkAudioPurged, isHeaderSegment, selectedRecording])
+  }, [chunkData, isChunkAudioPurged, selectedRecording])
 
   const hasPlayableAudio = (playbackTimeline?.playableDurationMs ?? 0) > 0
   const playbackDisplayPositionSeconds = useMemo(() => {
@@ -3876,8 +3842,7 @@ function App() {
       })
       .filter((segment) => segment.widthPct > 0)
   }, [playbackTimeline])
-  const hasInitSegment = /mp4|m4a/i.test(captureState.mimeType ?? '') && captureState.chunksRecorded > 0
-  const effectiveChunkCount = Math.max(0, captureState.chunksRecorded - (hasInitSegment ? 1 : 0))
+  const effectiveChunkCount = Math.max(0, captureState.chunksRecorded)
 
   return (
     <div className="app-shell">
@@ -4086,7 +4051,7 @@ function App() {
         {developerMode && captureState.state === 'recording' ? (
           <div className="dev-strip capture-strip" role="status" aria-live="polite">
             <span>
-              Audio: {capturedAudioLabel} / {effectiveChunkCount} seg{hasInitSegment ? ' + init' : ''}
+              Audio: {capturedAudioLabel} / {effectiveChunkCount} seg
             </span>
             <span>Data: {formatDataSize(displayedBytes)}</span>
           </div>
@@ -4358,7 +4323,6 @@ function App() {
                   <p>
                     <strong>Format:</strong> {selectedRecording.mimeType ?? 'pending'} ·{' '}
                     <strong>Chunks:</strong> {playableChunkCount}
-                    {headerChunk ? ' + init' : ''}
                   </p>
                 ) : null}
               </div>
@@ -4978,7 +4942,7 @@ function App() {
                     <div className="detail-slices-header">
                       <h3>
                         {detailSliceMode === 'chunks'
-                          ? `Chunks (${playableChunkCount}${headerChunk ? ' + init' : ''})`
+                          ? `Chunks (${playableChunkCount})`
                           : `Snips (${snipRecords.length})`}{' '}
                         · {selectedRecording.mimeType ?? 'pending'}
                       </h3>
@@ -5013,35 +4977,28 @@ function App() {
                             const durationSeconds = Math.max(0, (chunk.endMs - chunk.startMs) / 1000)
                             const decimalPlaces = durationSeconds < 10 ? 2 : 1
                             const durationLabel = `${durationSeconds.toFixed(decimalPlaces)} s`
-                            const header = isHeaderSegment(chunk)
                             const isChunkPlaying = chunkPlayingId === chunk.id
                             const sequenceLabel = chunk.seq + 1
                             const isPurgedChunk = isChunkAudioPurged(chunk)
-                            const playLabel = header
-                              ? `Chunk ${sequenceLabel} is an init segment without audio`
-                              : isPurgedChunk
-                                ? `Chunk ${sequenceLabel} audio purged`
-                                : isChunkPlaying
-                                  ? `Pause chunk ${sequenceLabel}`
-                                  : `Play chunk ${sequenceLabel}`
+                            const playLabel = isPurgedChunk
+                              ? `Chunk ${sequenceLabel} audio purged`
+                              : isChunkPlaying
+                                ? `Pause chunk ${sequenceLabel}`
+                                : `Play chunk ${sequenceLabel}`
                             return (
-                              <li key={chunk.id} className={`chunk-item ${header ? 'header-chunk' : ''}`}>
+                              <li key={chunk.id} className="chunk-item">
                                 <button
                                   type="button"
                                   className={`chunk-play ${isChunkPlaying ? 'is-playing' : ''}`}
                                   onClick={() => void handleChunkPlayToggle(chunk)}
                                   aria-pressed={isChunkPlaying}
                                   aria-label={playLabel}
-                                  disabled={header || isPurgedChunk}
+                                  disabled={isPurgedChunk}
                                   title={
-                                    header
-                                      ? 'Init segment (no audio payload)'
-                                      : isPurgedChunk
-                                        ? 'Audio purged to stay under the storage cap'
-                                        : undefined
+                                    isPurgedChunk ? 'Audio purged to stay under the storage cap' : undefined
                                   }
                                 >
-                                  {header ? 'NA' : isChunkPlaying ? '⏸' : '▶'}
+                                  {isChunkPlaying ? '⏸' : '▶'}
                                 </button>
                                 <span>#{sequenceLabel}</span>
                                 <span>{durationLabel}</span>
@@ -5051,18 +5008,13 @@ function App() {
                                   className="chunk-download"
                                   onClick={() => handleChunkDownload(chunk)}
                                   aria-label={`Download chunk ${sequenceLabel}`}
-                                  disabled={header || isPurgedChunk}
+                                  disabled={isPurgedChunk}
                                   title={
-                                    header
-                                      ? 'Init segment (typically no downloadable audio)'
-                                      : isPurgedChunk
-                                        ? 'Audio purged to stay under the storage cap'
-                                        : undefined
+                                    isPurgedChunk ? 'Audio purged to stay under the storage cap' : undefined
                                   }
                                 >
                                   ⬇
                                 </button>
-                                {header ? <span className="chunk-flag">init segment</span> : null}
                                 {isPurgedChunk ? <span className="chunk-flag is-purged">purged</span> : null}
                               </li>
                             )
