@@ -617,10 +617,15 @@ function App() {
   }, [isSnipAudioPurged])
 
   const refreshTranscriptionPreviews = useCallback(async (sessions: SessionRecord[]) => {
+    const passT0 = performance.now()
     markStartupMilestone('refreshTranscriptionPreviews: start', { sessionCount: sessions.length })
     try {
       const allSnips = await manifestService.listSnips()
-      markStartupMilestone('refreshTranscriptionPreviews: listSnips done', { snipRows: allSnips.length })
+      const listSnipsMs = Math.round(performance.now() - passT0)
+      markStartupMilestone('refreshTranscriptionPreviews: listSnips done', {
+        snipRows: allSnips.length,
+        listSnipsMs,
+      })
       const snipsBySession = new Map<string, SnipRecord[]>()
       for (const snip of allSnips) {
         let list = snipsBySession.get(snip.sessionId)
@@ -677,6 +682,7 @@ function App() {
       setTranscriptionSnipCounts(nextCounts)
       markStartupMilestone('refreshTranscriptionPreviews: done', {
         previewSessions: Object.keys(next).length,
+        refreshTranscriptionPreviewsMs: Math.round(performance.now() - passT0),
       })
     } catch (error) {
       markStartupMilestone('refreshTranscriptionPreviews: error')

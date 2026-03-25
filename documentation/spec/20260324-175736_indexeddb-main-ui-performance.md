@@ -76,6 +76,7 @@ Improve perceived and actual load time for (1) the main recordings screen after 
 
 ## Edits log
 
+- 2026-03-25: **Transcription preview milestones** — `refreshTranscriptionPreviews` logs `listSnipsMs` (IndexedDB `snips` getAll) and `refreshTranscriptionPreviewsMs` end-to-end so the “Transcription pending…” gap is visible in exports.
 - 2026-03-25: **Legacy MP4 removal (continuation)** — MP3/PCM→MP3-only paths: drop `isHeaderSegment` / init UI from `App.tsx`, simplify `recording-slices.ts` (no fMP4 init concat), remove unused `mimeTypeHint` from `#regenerateMissingVolumes`; `tsc` + `npm run build`.
 - 2026-03-24: **Section C** — `resetStartupMilestoneEpoch` in `startup-milestones.ts`; visibility + bfcache listeners in `App.tsx`; finer `loadSessions` / `refreshTranscriptionPreviews` milestones; `activationMs` on debug panel logs.
 - 2026-03-24: Implemented **recommendation A** (manifest + App + CSS); rebuilt `docs/`; spec converted to checklist + B/C tables.
