@@ -159,3 +159,7 @@ User (2026-03-25): Demand human-readable timeline (t=0, t+…s), no tables, no j
 ---
 
 User (2026-03-25): Screenshots + logs — gap between first line and refreshTranscriptionPreviews at ~5.3s; doctor vs log UI oddity; introspection of what ran in between.
+
+---
+
+User (2026-03-25): Debugging 101 — breadcrumbs before/inside/after every await in loadSessions path; nested debugging; fix compact doctor report to list ALL log messages not last 30.

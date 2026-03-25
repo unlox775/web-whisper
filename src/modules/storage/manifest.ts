@@ -324,12 +324,15 @@ export interface ManifestService {
   finishLogSession(id: string): Promise<void>
   appendLogEntry(entry: Omit<LogEntryRecord, 'id'>): Promise<void>
   listLogSessions(): Promise<LogSessionRecord[]>
+  /** @param limit Max rows (default 250). Pass `Infinity` to load every entry for the session. */
   getLogEntries(sessionId: string, limit?: number): Promise<LogEntryRecord[]>
 }
 
 class IndexedDBManifestService implements ManifestService {
   async init(): Promise<void> {
+    markStartupMilestone('manifest: init: entry')
     await getDB()
+    markStartupMilestone('manifest: init: before return')
   }
 
   async createSession(record: SessionRecord): Promise<void> {
@@ -393,14 +396,23 @@ class IndexedDBManifestService implements ManifestService {
   }
 
   async listSessions(): Promise<SessionRecord[]> {
+    markStartupMilestone('manifest: listSessions: entry')
     const db = await getDB()
+    markStartupMilestone('manifest: listSessions: after getDB')
+    markStartupMilestone('manifest: listSessions: before getAll(sessions)')
+    const getAllT0 = typeof performance !== 'undefined' ? performance.now() : 0
     const sessions = await db.getAll('sessions')
-    return sessions
-      .map((session) => ({
-        ...session,
-        timingStatus: session.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
-      }))
-      .sort((a, b) => b.startedAt - a.startedAt)
+    markStartupMilestone('manifest: listSessions: after getAll(sessions)', {
+      rowCount: sessions.length,
+      awaitMs: typeof performance !== 'undefined' ? Math.round(performance.now() - getAllT0) : undefined,
+    })
+    const mapped = sessions.map((session) => ({
+      ...session,
+      timingStatus: session.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+    }))
+    const sorted = mapped.sort((a, b) => b.startedAt - a.startedAt)
+    markStartupMilestone('manifest: listSessions: before return', { sessionCount: sorted.length })
+    return sorted
   }
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {
@@ -1226,11 +1238,12 @@ class IndexedDBManifestService implements ManifestService {
     return sessions.sort((a, b) => b.startedAt - a.startedAt)
   }
 
-  async getLogEntries(sessionId: string, limit = 250): Promise<LogEntryRecord[]> {
+  async getLogEntries(sessionId: string, limit?: number): Promise<LogEntryRecord[]> {
     const db = await getDB()
     const index = db.transaction('logEntries').store.index('by-session')
     const entries: LogEntryRecord[] = []
-    for (let cursor = await index.openCursor(sessionId, 'prev'); cursor && entries.length < limit; cursor = await cursor.continue()) {
+    const cap = limit === undefined ? 250 : limit
+    for (let cursor = await index.openCursor(sessionId, 'prev'); cursor && entries.length < cap; cursor = await cursor.continue()) {
       entries.push(cursor.value)
     }
     return entries.sort((a, b) => a.timestamp - b.timestamp)

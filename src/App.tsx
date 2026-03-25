@@ -806,6 +806,7 @@ function App() {
       markStartupMilestone('loadSessions: start')
       // Ensure the manifest is usable before any list or summary calls.
       const manifestInitT0 = performance.now()
+      markStartupMilestone('loadSessions: manifest init await started')
       await manifestService.init()
       markStartupMilestone('loadSessions: manifest init done', {
         awaitMs: Math.round(performance.now() - manifestInitT0),
@@ -814,7 +815,7 @@ function App() {
       const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
       sessionAnalysisProviderRef.current = provider
       const listSessionsT0 = performance.now()
-      markStartupMilestone('loadSessions: listSessions await started')
+      markStartupMilestone('loadSessions: about to await listSessions()')
       const sessions = await manifestService.listSessions()
       markStartupMilestone('loadSessions: listSessions done', {
         sessionCount: sessions.length,
@@ -2849,8 +2850,8 @@ function App() {
     addScan('Snip scan', doctorReports?.snipScan)
 
     if (logs.length > 0) {
-      lines.push('Recent logs (last 30):')
-      logs.slice(-30).forEach((entry) => {
+      lines.push(`Logs (full, ${logs.length} lines, oldest first):`)
+      logs.forEach((entry) => {
         const ts = typeof entry.timestamp === 'number' ? new Date(entry.timestamp).toISOString() : ''
         const level = entry.level ?? ''
         const msg = (entry.message ?? '').replace(/\s+/g, ' ').slice(0, 200)
@@ -2860,9 +2861,9 @@ function App() {
     }
 
     let text = lines.join('\n')
-    const MAX = 45_000
+    const MAX = 200_000
     if (text.length > MAX) {
-      text = `${text.slice(0, MAX)}\n\n[TRUNCATED: report exceeded ${MAX} chars]\n`
+      text = `${text.slice(0, MAX)}\n\n[TRUNCATED: report exceeded ${MAX} chars; copy from dev Logs tab for full export]\n`
     }
     return text
   }
@@ -4660,7 +4661,9 @@ function App() {
                               await manifestService.init()
                               const activeLogSession = getActiveLogSession()
                               const logSessionId = activeLogSession?.id ?? null
-                              const logEntriesRaw = logSessionId ? await manifestService.getLogEntries(logSessionId, 400) : []
+                              const logEntriesRaw = logSessionId
+                                ? await manifestService.getLogEntries(logSessionId, Number.POSITIVE_INFINITY)
+                                : []
                               const compactText = buildCompactDoctorReport({
                                 session: selectedRecording,
                                 doctorReports,

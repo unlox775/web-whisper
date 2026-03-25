@@ -111,7 +111,8 @@ Percentages are **not** stable across devices (CPU, disk, DB size). Treat the ta
 
 ## Edits log
 
-- 2026-03-25: **Milestone before `listSessions` await** — `loadSessions: listSessions await started` so the log explicitly names the silent gap (IndexedDB `getAll('sessions')` can take several seconds); `startup-milestones.ts` human string.
+- 2026-03-25: **Milestone before `listSessions` await** — `loadSessions: listSessions await started` (superseded by `loadSessions: about to await listSessions()` + nested `manifest: listSessions:*` breadcrumbs); `startup-milestones.ts` human string.
+- 2026-03-25: **Nested load path + doctor export** — `manifest.init` and `listSessions` emit before/inside/after breadcrumbs; `getLogEntries(..., Infinity)` for compact report; compact report lists **all** log lines (oldest first), 200k char cap; header text updated.
 - 2026-03-25: **Human-first startup log lines** — every milestone gets plain-English copy + `t=nav` seconds + technical id; flush sorts by wall time; `awaitMs` on DB-bound steps; epoch reset message explains tab wake.
 - 2026-03-25: **Startup observability + banner** — `atMs`/`atIso`/`perfNowMs` on milestones; per-preview-chunk `chunk applied`; `loadSessions: bufferTotals queued`; `App: settings hydrated`; `preparePlaybackSource` spans; `mainListSyncLine` banner (session read → preview batches).
 - 2026-03-25: **Preview load UX + chunking** — `manifest.listSnipsForSessions`; `refreshTranscriptionPreviews` processes ready sessions in chunks (`TRANSCRIPTION_PREVIEW_SESSION_CHUNK`), merges state per chunk, `previewRefreshGenRef` cancels stale passes; list cards **Loading preview…** + spinner until hydrated; **no snips yet** copy when `totalSnips===0`; spec table + C1 wording updated.
