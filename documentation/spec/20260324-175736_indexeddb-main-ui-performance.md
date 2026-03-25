@@ -93,7 +93,7 @@ Percentages are **not** stable across devices (CPU, disk, DB size). Treat the ta
 
 ### Code references (C)
 
-- `src/modules/logging/startup-milestones.ts` — `resetStartupMilestoneEpoch`; `markDebugPanelMilestone` adds `activationMs`.
+- `src/modules/logging/startup-milestones.ts` — `resetStartupMilestoneEpoch`; human-first log text `t=X.Xs — … — technicalId`; `navSec` + `atIso` payloads; buffered flush **sorted by `atMs`**; `markDebugPanelMilestone` same pattern; step `awaitMs` on manifest init, `listSessions`, reconcile.
 - `src/App.tsx` — listeners for visibility / bfcache; extra milestones in `loadSessions` and `refreshTranscriptionPreviews`.
 
 ## Acceptance criteria
@@ -111,6 +111,7 @@ Percentages are **not** stable across devices (CPU, disk, DB size). Treat the ta
 
 ## Edits log
 
+- 2026-03-25: **Human-first startup log lines** — every milestone gets plain-English copy + `t=nav` seconds + technical id; flush sorts by wall time; `awaitMs` on DB-bound steps; epoch reset message explains tab wake.
 - 2026-03-25: **Startup observability + banner** — `atMs`/`atIso`/`perfNowMs` on milestones; per-preview-chunk `chunk applied`; `loadSessions: bufferTotals queued`; `App: settings hydrated`; `preparePlaybackSource` spans; `mainListSyncLine` banner (session read → preview batches).
 - 2026-03-25: **Preview load UX + chunking** — `manifest.listSnipsForSessions`; `refreshTranscriptionPreviews` processes ready sessions in chunks (`TRANSCRIPTION_PREVIEW_SESSION_CHUNK`), merges state per chunk, `previewRefreshGenRef` cancels stale passes; list cards **Loading preview…** + spinner until hydrated; **no snips yet** copy when `totalSnips===0`; spec table + C1 wording updated.
 - 2026-03-25: **Spec — startup delay truth table** — documented three dominant blocks (full `snips` getAll, full session list, idle reconcile + IDB contention), why `+NNNms` / buffer flush / overlap obscured costs, and how to use `listSnipsMs` / wall deltas for analysis.

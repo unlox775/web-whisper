@@ -805,13 +805,20 @@ function App() {
     try {
       markStartupMilestone('loadSessions: start')
       // Ensure the manifest is usable before any list or summary calls.
+      const manifestInitT0 = performance.now()
       await manifestService.init()
-      markStartupMilestone('loadSessions: manifest init done')
+      markStartupMilestone('loadSessions: manifest init done', {
+        awaitMs: Math.round(performance.now() - manifestInitT0),
+      })
       // Reuse or create a single provider instance so verification caching survives reloads.
       const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
       sessionAnalysisProviderRef.current = provider
+      const listSessionsT0 = performance.now()
       const sessions = await manifestService.listSessions()
-      markStartupMilestone('loadSessions: listSessions done', { sessionCount: sessions.length })
+      markStartupMilestone('loadSessions: listSessions done', {
+        sessionCount: sessions.length,
+        awaitMs: Math.round(performance.now() - listSessionsT0),
+      })
       const totalBytes = sessions.reduce((sum, session) => sum + (session.totalBytes ?? 0), 0)
       markStartupMilestone('loadSessions: sessionBytesSum done', { totalBytes })
 
@@ -973,8 +980,13 @@ function App() {
 
   useEffect(() => {
     const run = () => {
+      const reconcileT0 = performance.now()
       markStartupMilestone('App: reconcileDanglingSessions start')
-      void manifestService.reconcileDanglingSessions().then(() => markStartupMilestone('App: reconcileDanglingSessions done'))
+      void manifestService.reconcileDanglingSessions().then(() =>
+        markStartupMilestone('App: reconcileDanglingSessions done', {
+          awaitMs: Math.round(performance.now() - reconcileT0),
+        }),
+      )
     }
     if (typeof requestIdleCallback !== 'undefined') {
       const id = requestIdleCallback(run, { timeout: 8000 })

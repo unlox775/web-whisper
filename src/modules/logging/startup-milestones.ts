@@ -1,17 +1,87 @@
 /**
  * Startup milestone logger. Emits to console immediately and buffers for the persisted
  * logger (which isn't ready until after DB init). Call flushStartupMilestonesToLogger()
- * once the logger is ready so buffered milestones appear in the Logs tab.
- * Prefix: [startup] so logs are easy to grep and export.
+ * once the logger has an active session.
+ *
+ * Log lines are **human-first**: seconds since **page navigation** (performance.now),
+ * plain English, then the stable technical id (for grep / code search).
+ * `elapsedMs` in the payload is ms since last **visibility epoch reset** — can jump when
+ * the tab was backgrounded; use `navSec` / `atIso` for real order.
  */
 
 const PREFIX = '[startup]'
+const DEBUG_PREFIX = '[startup] [debug]'
 
 let bootT0: number | null = null
 
 type BufferedMilestone = { msg: string; payload: Record<string, unknown> }
 const buffer: BufferedMilestone[] = []
 let loggerReady = false
+
+/** Stable technical key → short phrase a new user can read. Technical id repeated at end of line. */
+const STARTUP_MILESTONE_HUMAN: Record<string, string> = {
+  'main.tsx: first execution': 'The very first line of app code on this page has run',
+  'main.tsx: registerSW called': 'Offline/update service worker hook is registered',
+  'manifest: getDB openDB start': 'Opening your local Web Whisper database',
+  'manifest: getDB openDB done': 'Local database is open and ready',
+  'App: useEffect mount (first render done)': 'React has mounted — first UI paint pass ran',
+  'App: initializeLogger start': 'Starting the log writer so events can be saved',
+  'App: initializeLogger done': 'Log writer is ready; buffered startup lines will flush to disk',
+  'App: initializeRecordingWakeLock': 'Screen wake-lock for recording is wired up',
+  'App: reconcileDanglingSessions start': 'Checking for recordings left in a bad half-saved state',
+  'App: reconcileDanglingSessions done': 'Half-saved recording check finished',
+  'App: settings hydrated': 'Saved settings (storage limit, keys, etc.) are loaded',
+  'loadSessions: start': 'Loading your recordings list from storage',
+  'loadSessions: manifest init done': 'Storage is ready before reading sessions',
+  'loadSessions: listSessions done': 'Finished reading every session row from the database',
+  'loadSessions: sessionBytesSum done': 'Added up storage bytes from session metadata',
+  'loadSessions: before setRecordings': 'About to hand the session array to the UI',
+  'loadSessions: setRecordings done, recordings list visible': 'Sidebar list should show your recordings now',
+  'loadSessions: bufferTotals queued': 'Updating the Data meter at the top with totals',
+  'refreshTranscriptionPreviews: start': 'Starting to load text snippets for the list',
+  'refreshTranscriptionPreviews: chunk applied': 'Loaded another batch of transcription snippets',
+  'refreshTranscriptionPreviews: all chunks read': 'All snippet batches read from the database',
+  'refreshTranscriptionPreviews: done': 'List snippet loading is complete',
+  'refreshTranscriptionPreviews: error': 'List snippet loading failed',
+  'preparePlaybackSource: start': 'Loading full audio for the recording you opened',
+  'preparePlaybackSource: getChunkData done': 'All audio pieces for this recording are in memory',
+  'preparePlaybackSource: blob built': 'Playback file is stitched; the player can start',
+}
+
+const DEBUG_MILESTONE_HUMAN: Record<string, string> = {
+  'handleOpenDeveloperOverlay: open': 'Developer panel opened',
+  'loadDeveloperTableCounts: start': 'Counting rows in each database table',
+  'loadDeveloperTableCounts: done': 'Table row counts finished',
+  'loadDeveloperTablePage: start': 'Loading one table page for the dev panel',
+  'loadDeveloperTablePage: done': 'Table page load finished',
+  'loadDeveloperTablePage: append': 'Loading more rows for the dev table',
+  'loadLogSessions: start': 'Loading your saved log sessions list',
+  'loadLogSessions: listLogSessions done': 'Log session list read from storage',
+  'loadLogSessions: done': 'Log tab data is ready',
+}
+
+function humanLineForStartup(label: string, details?: Record<string, unknown>): string {
+  let base = STARTUP_MILESTONE_HUMAN[label] ?? label
+  if (label === 'refreshTranscriptionPreviews: chunk applied' && details) {
+    const i = details.chunkIndex
+    const n = details.chunkTotal
+    if (typeof i === 'number' && typeof n === 'number') {
+      base = `${base} (batch ${i} of ${n})`
+    }
+  }
+  return base
+}
+
+function humanLineForDebug(label: string): string {
+  return DEBUG_MILESTONE_HUMAN[label] ?? label
+}
+
+function navSecondsSincePageLoad(): number {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return Math.round((performance.now() / 100)) / 10
+  }
+  return 0
+}
 
 function emitToLogger(msg: string, payload: Record<string, unknown>): void {
   if (!loggerReady) {
@@ -24,17 +94,20 @@ function emitToLogger(msg: string, payload: Record<string, unknown>): void {
 }
 
 /**
- * Resets the `+NNNms` clock so the next milestones measure time since this activation
+ * Resets the `elapsedMs` clock so the next milestones measure time since this activation
  * (e.g. tab visible again after background). Does not clear the buffered logger queue.
  */
 export function resetStartupMilestoneEpoch(reason?: string): void {
   const now = Date.now()
   bootT0 = now
-  const msg = `${PREFIX} activation epoch reset${reason ? ` (${reason})` : ''}`
+  const navSec = navSecondsSincePageLoad()
+  const msg = `${PREFIX} t=${navSec.toFixed(1)}s — Tab woke up or came back from cache; “+ms” counters reset for the next stretch — activation epoch reset`
   const payload: Record<string, unknown> = {
     atMs: now,
     atIso: new Date(now).toISOString(),
+    navSec,
     reason: reason ?? 'unspecified',
+    technical: 'resetStartupMilestoneEpoch',
   }
   console.info(msg, payload)
   emitToLogger(msg, payload)
@@ -46,15 +119,19 @@ export function markStartupMilestone(label: string, details?: Record<string, unk
     bootT0 = atMs
   }
   const elapsedMs = atMs - bootT0
+  const navSec = navSecondsSincePageLoad()
   const perfNowMs = typeof performance !== 'undefined' ? performance.now() : undefined
+  const human = humanLineForStartup(label, details)
+  const msg = `${PREFIX} t=${navSec.toFixed(1)}s — ${human} — ${label}`
   const payload: Record<string, unknown> = {
     ...details,
+    navSec,
     elapsedMs,
     atMs,
     atIso: new Date(atMs).toISOString(),
     ...(perfNowMs !== undefined ? { perfNowMs } : {}),
+    technical: label,
   }
-  const msg = `${PREFIX} +${elapsedMs}ms: ${label}`
   console.info(msg, payload)
   emitToLogger(msg, payload)
 }
@@ -62,23 +139,32 @@ export function markStartupMilestone(label: string, details?: Record<string, unk
 export function markDebugPanelMilestone(label: string, details?: Record<string, unknown>): void {
   const atMs = Date.now()
   const activationMs = bootT0 !== null ? atMs - bootT0 : null
+  const navSec = navSecondsSincePageLoad()
+  const human = humanLineForDebug(label)
+  const msg = `${DEBUG_PREFIX} t=${navSec.toFixed(1)}s — ${human} — ${label}`
   const payload: Record<string, unknown> = {
     ...details,
+    navSec,
     atMs,
     atIso: new Date(atMs).toISOString(),
     activationMs,
+    technical: label,
   }
-  const msg = `${PREFIX} [debug] ${label}`
   console.info(msg, payload)
   emitToLogger(msg, payload)
 }
 
-/** Call once the logger has an active session. Flushes buffered milestones so they show in the Logs tab. */
+/** Call once the logger has an active session. Flushes buffered milestones in true time order. */
 export async function flushStartupMilestonesToLogger(): Promise<void> {
   loggerReady = true
   if (buffer.length === 0) return
   const { logInfo } = await import('./logger')
   const toFlush = buffer.splice(0)
+  toFlush.sort((a, b) => {
+    const am = typeof a.payload.atMs === 'number' ? a.payload.atMs : 0
+    const bm = typeof b.payload.atMs === 'number' ? b.payload.atMs : 0
+    return am - bm
+  })
   for (const { msg, payload } of toFlush) {
     await logInfo(msg, payload)
   }

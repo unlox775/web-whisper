@@ -151,3 +151,7 @@ User (2026-03-25): ~6.8s gap aligns with felt delay; add UI + instrumentation fo
 ---
 
 User (2026-03-25): New doctor compact export (22:46:21–22:46:30Z); describe timeline + where time spent; interaction: wait load → dev panel → logs tab → close → tap recording → doctor → copy report.
+
+---
+
+User (2026-03-25): Demand human-readable timeline (t=0, t+…s), no tables, no jargon-first lines; fix logging so exports make sense; frustrated with registerSW / +6104ms confusion.
