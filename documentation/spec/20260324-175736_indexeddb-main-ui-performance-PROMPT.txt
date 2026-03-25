@@ -135,3 +135,7 @@ All right. I still saw quite a long delay. I want you to explain to me before yo
 ---
 
 Continue please.
+
+---
+
+Web Whisper — Doctor Report (compact) + analysis request (visual delays, slow sections, more debugging + speedups) — see user chat 2026-03-25 for full doctor log and question text.
