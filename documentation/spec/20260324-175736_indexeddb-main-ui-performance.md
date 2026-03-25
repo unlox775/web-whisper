@@ -14,6 +14,39 @@ Improve perceived and actual load time for (1) the main recordings screen after 
 - **Developer overlay (before fix):** ~9 s for loading all tables at once, then ~1 s for `loadLogSessions`. Sidebar counts could appear while the detail pane stayed on “Loading…” until both completed.
 - **Milestone `+NNNms` values** after long backgrounding are elapsed since first boot in that tab; use **wall-clock deltas** between log timestamps for a single navigation.
 
+## Startup delay — what is still slow and why it was hard to see (2026-03-25)
+
+### The three heavy blocks (still present after A-section work)
+
+Work on **A** removed or narrowed several bad paths (dev overlay `getAll`+`arrayBuffer`, full-chunk totals scan, etc.). The **main list** still does **three large IndexedDB-heavy operations** that can each run **multiple seconds** on a big database:
+
+| Block | Code | Why it hurts |
+| --- | --- | --- |
+| **1. All snips for previews** | `refreshTranscriptionPreviews` → `manifestService.listSnips()` with **no** `sessionId` → `snips` store **`getAll()`** | Cost scales with **total snip rows** (often 2k+), not “how many cards fit on screen”. Until this finishes, cards can sit on **“Transcription pending…”** even though the session **titles** already rendered. |
+| **2. All sessions for the list** | `loadSessions` → `listSessions()` | **Every** session row is read for the sidebar. Scales with session count (~100+). |
+| **3. Reconcile “dangling” recordings** | `reconcileDanglingSessions()` (scheduled with **`requestIdleCallback`**, timeout 8s) | **`sessions.getAll()`**, then for each session still **`recording`**, **`chunks` index `getAll(sessionId)`**. Usually few `recording` rows, but the **`sessions` full read** still runs and **runs in parallel** with (1) and (2). |
+
+**Important:** (1)–(3) **overlap in wall time**. IndexedDB is **single-threaded per origin** in practice; concurrent transactions **queue and contend**. So you cannot add “20% + 25% + 30%” from headline `+ms` values and get 75% of a single timeline — the real bottleneck is **which awaits hold the critical path** plus **contention**.
+
+### Why the doctor export still looked confusing
+
+1. **`+NNNms` is not “ms since page load”** — `bootT0` **resets** when the tab becomes visible or on bfcache restore (`resetStartupMilestoneEpoch`). The same export can show **`+8130ms`** on one line and **`+0ms`** on the next **without** meaning the app went backwards in time.
+
+2. **Buffered flush** — milestones logged **before** `flushStartupMilestonesToLogger()` can land in the persisted log with the **same wall-clock time** and **wrong apparent order** relative to true execution order.
+
+3. **Overlapping work** — `loadSessions`, `refreshTranscriptionPreviews`, and `reconcileDanglingSessions` **do not serialize** in one chain. Sorting lines by `+ms` **double-counts** and hides **IDB contention**.
+
+4. **Headline vs payload** — the string **`listSnips done`** alone does not show how long **`await listSnips()`** took. Use the structured fields **`listSnipsMs`** and **`refreshTranscriptionPreviewsMs`** on those milestones (added 2026-03-25) when analyzing exports.
+
+### How to read one boot (practical)
+
+- **Snip read cost:** `refreshTranscriptionPreviews: listSnips done` → **`listSnipsMs`** (dominant part of preview readiness).
+- **End-to-end preview pass:** `refreshTranscriptionPreviews: done` → **`refreshTranscriptionPreviewsMs`** (includes grouping + `setState`).
+- **Session list read:** wall delta from **`loadSessions: start`** to **`loadSessions: listSessions done`** (payload can add `sessionCount`).
+- **Reconcile:** wall delta **`App: reconcileDanglingSessions start`** → **`done`** (often overlaps list + snips).
+
+Percentages are **not** stable across devices (CPU, disk, DB size). Treat the table above as **budget categories**, not fixed ratios.
+
 ## Diagnosis (engineering)
 
 1. **Audio purge reduces blob bytes, not row counts.** Retention replaces eligible chunk blobs with empty blobs and marks snips; **chunk rows, snip rows, and chunkVolume rows largely remain.** The app still pays **IndexedDB read/deserialize** and **main-thread work** proportional to those rows whenever code does `getAll()` or full cursors.
@@ -34,7 +67,7 @@ Improve perceived and actual load time for (1) the main recordings screen after 
 | **A2** | Dev console: one table at a time, page size 200 + “Load more”; chunk rows metadata only, no default `arrayBuffer()` (`getDeveloperTablePage`) | Done |
 | **A3** | Dev console: overlay open does not await `loadLogSessions`; Logs tab uses `developerLogsLoading` | Done |
 | **A4** | Main list: buffer total = **Σ `session.totalBytes`** after `listSessions` (incremental per session on disk) | Done |
-| **A5** | Main list: `refreshTranscriptionPreviews` — single `listSnips()` + group by `sessionId` | Done |
+| **A5** | Main list: `refreshTranscriptionPreviews` — **one** `listSnips()` (full `snips` `getAll` when no `sessionId`) + group by `sessionId`; avoids N-per-session round-trips but **not** O(sessions)-only work | Done |
 
 ### Code references (A)
 
@@ -76,6 +109,7 @@ Improve perceived and actual load time for (1) the main recordings screen after 
 
 ## Edits log
 
+- 2026-03-25: **Spec — startup delay truth table** — documented three dominant blocks (full `snips` getAll, full session list, idle reconcile + IDB contention), why `+NNNms` / buffer flush / overlap obscured costs, and how to use `listSnipsMs` / wall deltas for analysis.
 - 2026-03-25: **Transcription preview milestones** — `refreshTranscriptionPreviews` logs `listSnipsMs` (IndexedDB `snips` getAll) and `refreshTranscriptionPreviewsMs` end-to-end so the “Transcription pending…” gap is visible in exports.
 - 2026-03-25: **Legacy MP4 removal (continuation)** — MP3/PCM→MP3-only paths: drop `isHeaderSegment` / init UI from `App.tsx`, simplify `recording-slices.ts` (no fMP4 init concat), remove unused `mimeTypeHint` from `#regenerateMissingVolumes`; `tsc` + `npm run build`.
 - 2026-03-24: **Section C** — `resetStartupMilestoneEpoch` in `startup-milestones.ts`; visibility + bfcache listeners in `App.tsx`; finer `loadSessions` / `refreshTranscriptionPreviews` milestones; `activationMs` on debug panel logs.
