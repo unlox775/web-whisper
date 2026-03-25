@@ -139,3 +139,7 @@ Continue please.
 ---
 
 Web Whisper — Doctor Report (compact) + analysis request (visual delays, slow sections, more debugging + speedups) — see user chat 2026-03-25 for full doctor log and question text.
+
+---
+
+User (2026-03-25): Ask for a small timeline of actual pauses vs inconclusive gaps; first paint with all rows in loading mode then ~5s until transcription snippets; many intermediate UI updates; buffer/quota wrong (0/200) then later correct for 50MB; dev overlay felt instant—don’t interpret gaps as app time; if log insufficient, only recommend more debugging.
