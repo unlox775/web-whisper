@@ -155,3 +155,7 @@ User (2026-03-25): New doctor compact export (22:46:21–22:46:30Z); describe ti
 ---
 
 User (2026-03-25): Demand human-readable timeline (t=0, t+…s), no tables, no jargon-first lines; fix logging so exports make sense; frustrated with registerSW / +6104ms confusion.
+
+---
+
+User (2026-03-25): Screenshots + logs — gap between first line and refreshTranscriptionPreviews at ~5.3s; doctor vs log UI oddity; introspection of what ran in between.

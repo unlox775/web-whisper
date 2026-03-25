@@ -33,6 +33,8 @@ const STARTUP_MILESTONE_HUMAN: Record<string, string> = {
   'App: settings hydrated': 'Saved settings (storage limit, keys, etc.) are loaded',
   'loadSessions: start': 'Loading your recordings list from storage',
   'loadSessions: manifest init done': 'Storage is ready before reading sessions',
+  'loadSessions: listSessions await started':
+    'Reading the full sessions table from IndexedDB (next log may be a few seconds later on a big library)',
   'loadSessions: listSessions done': 'Finished reading every session row from the database',
   'loadSessions: sessionBytesSum done': 'Added up storage bytes from session metadata',
   'loadSessions: before setRecordings': 'About to hand the session array to the UI',

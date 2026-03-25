@@ -814,6 +814,7 @@ function App() {
       const provider = sessionAnalysisProviderRef.current ?? new SessionAnalysisProvider()
       sessionAnalysisProviderRef.current = provider
       const listSessionsT0 = performance.now()
+      markStartupMilestone('loadSessions: listSessions await started')
       const sessions = await manifestService.listSessions()
       markStartupMilestone('loadSessions: listSessions done', {
         sessionCount: sessions.length,
