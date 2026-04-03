@@ -1,0 +1,3 @@
+I think the last two things of significance done on this repository where first to just revert changes. I did on  to prepare the Apple App Store app, which is not yet ready for  so I reverted it but then since then I think I have just been doing some  as to why the  is so slow. Can you also revert that as well that’s all I want you to do for now is just to give me a branch that is before both of those changes because they have both destabilized things and I want to remove them from the main branch until I get them   stable on an alternate branch for now but all I want you to do is back to the stable point before those two bodies of work
+
+Reminder to commit and push if appropriate.
