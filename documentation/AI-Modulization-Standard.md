@@ -1,86 +1,98 @@
 # AI Modulization Standard
 
-This standard exists to keep AI-assisted software development honest. It defines how a project describes itself, how it exposes its internal behavior for debugging, and how it measures whether the current implementation actually matches the intended architecture. The point is not to produce polished documentation for its own sake. The point is to produce a repeatable discipline that keeps complexity from becoming invisible and keeps the user’s core value path protected as the system evolves.
+This standard exists to keep AI-assisted software development grounded in architectural truth rather than momentum. It is designed for teams that move quickly, use AI heavily, and still want systems that remain understandable after many iterations. Its purpose is to make structure explicit, make debugging operational, and make refactoring accountable. The goal is not documentation aesthetics; the goal is durable clarity.
 
-The spirit behind this document is simple: if an application cannot clearly explain what it is trying to do, what parts are responsible for doing it, and how a human can observe those parts in motion, then the application is fragile even when it appears to work. AI can generate large amounts of code quickly, but speed without structural clarity creates hidden debt. This standard is meant to prevent that pattern.
+The central idea is that software quality should be observable in three ways at all times: by reading the flow narrative, by reading module contracts, and by reading runtime evidence. If any one of those three is weak, the system becomes guess-driven. When all three are strong, teams can evolve the product without constant fear that hidden couplings and invisible behavior will accumulate.
 
-This document is intentionally portable. It should be usable across projects, products, stacks, and teams. It should not depend on current file names, current framework fashions, or a temporary folder layout. Any repository adopting this standard should be able to copy it, adapt the language to its domain, and immediately begin producing higher-quality architecture and debugging artifacts.
+This document is intentionally portable. It should work across projects and stacks. It should not be coupled to where code currently lives. It should describe what must remain true even when implementations are reorganized. In practical use, this standard is read first, then used to produce and maintain three evergreen companion documents: Flows and Parts, AI-to-Human Visibility, and Recommended Refactors.
 
-## Core commitments
+## Non-negotiable pillars
 
-At minimum, every project using this standard is making a few commitments that do not change from sprint to sprint. First, it commits to explicit boundaries between major front-end parts and back-end modules. Second, it commits to describing user value through concrete flows rather than vague feature summaries. Third, it commits to a built-in visibility layer so that humans can inspect system behavior during real failures. Fourth, it commits to performance-safe observability, meaning debug power does not become a silent tax on normal users. Finally, it commits to continuous adherence scoring, so refactoring is measured against standards rather than driven by taste.
+- Every major front-end part and back-end module must have explicit ownership, clear boundaries, and a stable contract that other parts are expected to respect.
+- Application architecture must be explained in ubiquitous domain language first, then implementation details can be layered underneath where useful.
+- One critical flow and at least one secondary flow must be clearly described as complete value journeys, not fragmented technical snippets.
+- Visibility and debugging must be designed in from the start, not bolted on after failures appear in production.
+- Instrumentation must be safe by default, with negligible overhead and no surprise behavior drift when debug mode is disabled.
+- Refactoring priorities must be tied to adherence gaps against standards, not only intuition or convenience.
 
-Those commitments are small enough to remember but deep enough to shape architecture decisions. If a design choice makes the boundaries blurrier, makes flows harder to explain, makes debugging less concrete, or adds hidden overhead to normal operation, it should be treated as a quality regression regardless of short-term convenience.
+Those pillars are small enough to remember and broad enough to guide decisions. When a change weakens boundary clarity, flow clarity, or observability safety, it should be treated as architectural regression even if it appears to improve short-term delivery speed.
 
-## Why flow-first matters
+## Flow-first architecture as the anchor
 
-Most architecture documents drift into static inventories of components and technologies. That is useful but incomplete. Users do not experience applications as component catalogs; users experience journeys. A reliable architecture must therefore be readable as a story of value delivery. The flow-first requirement in this standard forces teams to ask, “If this one path breaks, what value is lost?” and “What sequence of behaviors proves the app is doing its essential job?”
+Most software drift begins when systems are described as inventories rather than journeys. Users do not experience repositories; users experience outcomes over time. For that reason, this standard insists on flow-first architecture communication. A critical flow is the main path that justifies the product. A secondary flow is meaningful additional value that users rely on regularly. A tertiary flow often covers operations and diagnostics, which become central once the app is under load or in active maintenance.
 
-The standard requires at least one critical flow and at least one secondary flow, with tertiary or additional flows when the product domain needs them. A critical flow is not merely a happy path; it is the primary reason the product exists. A secondary flow is not decorative either; it represents meaningful additional value that users realistically depend on. A tertiary flow often captures operational reliability concerns, such as diagnostics and maintenance interactions, that become crucial at scale.
+Flow narratives should be concise, readable, and complete enough that an engineer can map them to behavior without reverse-engineering the entire codebase. They should identify the major front-end part involved, the major back-end module involved, and why that step matters to user value. They should avoid becoming file-path narration. If implementation is reorganized, the flow document should still describe the truth of the product.
 
-Flow descriptions must remain in ubiquitous language. They should talk in terms users and domain experts can recognize. They should not collapse into “function A calls function B” narration. Implementation details can and should exist elsewhere, but flow truth should survive implementation reshuffles. A good test is this: if a team reorganizes directories next week, the flow document should still read as true without major surgery.
+## Module boundaries as a maintainability discipline
 
-## Why module boundaries matter
+In AI-assisted development, boundary erosion happens quietly. A module starts with a narrow purpose, then absorbs orchestration logic, then acquires ad-hoc dependencies, and eventually becomes a “do everything” surface. This standard exists to stop that drift early. Module clarity is not merely a clean-code preference; it is a scaling requirement for human understanding and AI correctness.
 
-In practice, weak boundaries are one of the fastest ways for AI-generated codebases to become difficult to maintain. A system can begin with clean intentions and still drift into a sprawling orchestration file or hidden cross-calls between domains. This standard treats boundary clarity as a first-class quality property, not an optional cleanup task.
+Each major module should be able to answer four stable questions: what it owns, what it exposes, what it depends on, and what it does not own. Back-end modules should align with business or use-case domains, while shared infrastructure should remain infrastructure rather than becoming accidental domain owners. This prevents hidden coupling and keeps interfaces meaningful.
 
-A module boundary is meaningful only when responsibility is explicit. Each major part or module should be able to answer four questions: what it owns, what it exposes, what it is allowed to depend on, and what it is explicitly not responsible for. Back-end modules should map to business or use-case domains, not only technical implementation layers. Shared plumbing still exists and is expected, but plumbing must support domains, not dissolve them.
+When boundaries are clear, diagnostics improves automatically. A failure in a flow step can be mapped quickly to a likely contract boundary. That shortens incident resolution loops and lowers the cognitive burden for both humans and AI assistants.
 
-There is also a social value to boundary clarity. It gives humans and AI a stable mental map. It reduces accidental coupling. It makes refactors less scary. And it turns debugging from archaeology into diagnosis, because when an issue appears in a flow step, you can quickly identify the likely module contracts involved.
+## Visibility philosophy: a guided factory tour
 
-## The visibility philosophy: a human tour of the factory
+A reliable system should be explainable while it is running, not only after static code review. This standard treats observability as the ability to give a human a guided factory tour: where data entered, what transformed it, where state was persisted, what paused, what failed, and what eventually reached the user.
 
-A key premise of this standard is that working software is not enough if nobody can see how it is working. In a healthy system, a human should be able to walk through the runtime like a factory tour: where data enters, where it transforms, where it is persisted, where it is delayed, where it fails, and where it exits as user value.
+That is why every major part and module needs an explicit visibility posture. In developer mode, humans should be able to enable targeted instrumentation rather than flooding the entire app with logs. They should be able to inspect key persisted objects in both summary and raw forms. They should be able to filter event noise by module and concern. And they should be able to export focused diagnostics for AI collaboration.
 
-That visibility cannot depend on ad-hoc console logs added in panic mode. It must be designed as an intentional layer. Every major front-end part and back-end module should be instrumentable. A user in developer mode should be able to toggle visibility in a targeted way. When a human is chasing a problem in one flow, they should not be forced to read noise from unrelated parts.
+This is not only about logs. It is about navigable evidence. A meaningful visibility layer tells a coherent story of behavior across time, and does so in a way that can be reused across debugging sessions rather than rebuilt from scratch for each incident.
 
-The visibility layer also needs object-level inspectability. The most practical debugging questions are often object questions: what exactly was stored, what state was expected, what state actually appeared, and how that changed over time. The standard therefore expects both simplified object views and raw object views. Simplified views support fast scanning on constrained screens; raw views preserve full fidelity for deep diagnosis.
+## Performance-safe observability by default
 
-## Performance-safe observability is non-negotiable
+Debug power that degrades normal user experience is not acceptable architecture. The default mode for observability must be low overhead, low intrusion, and functionally transparent. If instrumentation is disabled, user-facing behavior should remain stable and performance should remain effectively unaffected.
 
-Instrumentation that degrades normal user experience undermines trust in the architecture itself. For that reason, this standard insists that observability be safe by default. When debug mode is off, overhead should be effectively negligible. When debug mode is on, overhead may increase, but the increase should be intentional, bounded, and visible to the operator.
+When instrumentation is enabled, some overhead is expected. However, that overhead should be intentional, bounded, and scoped to selected modules whenever possible. Debug mode should not silently mutate business behavior. Visual debug overlays may occasionally be useful, but they should be explicit tools, not unavoidable side effects.
 
-Equally important, debug mode should not unpredictably change product behavior. Teams sometimes add visual debug artifacts directly into user flows; occasionally that is useful, but it must be a deliberate exception, not the default posture. The standard’s default expectation is behavioral invariance with observability toggled: same functional flow, different evidence density.
+Observability failures must also be isolated from core value delivery. If log persistence fails, the product should still perform its primary function. Instrumentation supports the system; it should not become a hidden dependency that can break core workflows.
 
-Failure isolation also matters. If logging persistence fails, critical product flow should continue. Observability is a support system, not the core business engine. A design that allows instrumentation failure to break user value fails this standard.
+## Required document lifecycle
 
-## The three-document operating model
+- Read this standard first and confirm that product purpose has not shifted in a way that changes flow priorities.
+- Produce or update Flows and Parts as the implementation-agnostic source of value journeys and module intent.
+- Produce or update AI-to-Human Visibility as the source of instrumentation, object inspection, filtering, and export expectations.
+- Produce or update Recommended Refactors as an adherence report that scores current reality against the first two documents.
+- Implement code changes and then re-score adherence so architectural claims remain evidence-based.
 
-This standard is meant to drive a recurring cycle, not a one-time audit. The cycle begins with this standard itself, which defines the principles and quality bar. It then produces three evergreen documents with distinct responsibilities.
+The three companion documents have distinct jobs. Flows and Parts defines architectural intent in domain language. AI-to-Human Visibility defines what evidence exists and how humans can use it. Recommended Refactors defines the gap between intended architecture and current implementation. Keeping those roles distinct prevents confusion between strategy, telemetry design, and execution backlog.
 
-The first is **Flows and Parts**. Its role is architectural intent in domain language. It defines critical and secondary flows, the major parts and modules involved, and the relationship between user value and system behavior. It should be stable under implementation movement.
+## Adherence over wish-listing
 
-The second is **AI-to-Human Visibility**. Its role is operational inspectability. It defines what can be instrumented, what events matter, how noisy each class of events is expected to be, what objects can be inspected, and how evidence is filtered and exported.
+A recurring failure pattern in technical planning is converting every observation into an unstructured backlog. This standard rejects that approach. The refactor document must be an adherence report. Each key criterion should be rated Yes, Partial, or No with clear evidence and a next action when not yet Yes. Broad grades such as A through F can be used for fast communication, but they should never replace criterion-level evidence.
 
-The third is **Recommended Refactors**. Its role is adherence accounting. It should not be an unstructured wishlist. It should explicitly compare current implementation reality to the standards and the two companion docs, then report gaps, evidence, impact, and next action.
+The purpose of scoring is not bureaucracy. The purpose is to stop debates that have no shared frame. When two engineers disagree about readiness, the system should be able to point to flow coverage, boundary clarity, visibility completeness, and performance-safe instrumentation evidence. That turns architecture quality from opinion into testable posture.
 
-Once these documents are aligned, code changes proceed. After code changes, adherence is reviewed again. Over time, this cycle should tighten the system until most major criteria remain green and the refactor document transitions from heavy correction toward maintenance-level updates.
+Healthy systems eventually show long runs of Yes on core criteria, with temporary Partial scores only during active transitions. At that stage, the refactor document should explicitly acknowledge high adherence rather than pretending there is always major correction work left.
 
-## Litmus thinking over checklist theater
+## High-value litmus signals
 
-This standard does include litmus checks, but litmus checks are meant to improve judgment, not replace it. A team should be able to ask: can a new engineer understand the critical flow quickly, can we toggle visibility where we need it, can we inspect key objects without guesswork, can we isolate noisy modules in logs, and can we prove our primary value path still works after refactors? If the answer is unclear, the score should not be inflated.
+- New contributors can explain the critical flow and name the responsible parts/modules without reading a large volume of code first.
+- Flow documents remain valid after implementation reorganization because they are written in domain language rather than file-location language.
+- Developer mode exposes selective instrumentation controls for front-end parts and back-end modules instead of all-or-nothing logging.
+- Key persisted objects are inspectable in both quick summary and raw detail formats during real debugging sessions.
+- Log review supports filtering that isolates one noisy module without destroying overall sequence understanding.
+- Diagnostics can be copied or exported in bounded form that AI tools can consume without token explosion.
+- With debug mode off, observability overhead remains negligible and user-facing behavior remains stable.
+- Critical and secondary flows are verifiable with automated or defined repeatable manual protocols.
 
-The recommended scoring language is simple: **Yes**, **Partial**, or **No** per criterion, and an overall grade such as A through F for broad communication. What matters is not the letter itself; what matters is whether the score is evidence-based and whether it drives concrete gap closure. “Partial” should always be accompanied by why it is partial and what action would make it “Yes.”
+## What this standard is designed to prevent
 
-A healthy project will eventually show long stretches of stable “Yes” on core criteria, with only occasional “Partial” during active transitions. At that point, the refactor narrative should explicitly acknowledge high adherence rather than pretending there is always massive work left.
+The failures this standard targets are familiar: architectures collapsing into single orchestration surfaces, domain terms being replaced by implementation trivia, logging becoming either uselessly noisy or too sparse to diagnose, and refactor conversations drifting into preference arguments. The standard prevents these outcomes by enforcing one loop: state the intended flows and module boundaries, state how behavior is observed, measure adherence, close gaps, and repeat.
 
-## What this standard prevents
-
-The main failures this standard is designed to prevent are predictable. It prevents architecture from collapsing into one giant orchestration surface. It prevents domain truth from being confused with current folder layout. It prevents logging from becoming either unusably noisy or too sparse to diagnose production behavior. It prevents debug tooling from being treated as an emergency patch rather than a product capability. And it prevents endless refactoring rhetoric without measurable adherence progress.
-
-In short, it prevents the gap between “the app seems to work today” and “the app is understandable, observable, and resilient over time.”
+In other words, it reduces the gap between “the app works right now” and “the app is understandable, diagnosable, and maintainable under continuous AI-assisted change.”
 
 ## Practical adoption posture
 
-A project does not need perfection on day one to adopt this standard. The right adoption posture is incremental and honest. Start by writing a clean critical flow and one secondary flow in ubiquitous language. Define major parts and modules clearly enough that ownership and contracts are discussable. Create a visibility document that reflects real operational needs, not idealized observability fantasy. Then score adherence with candor and pick the smallest set of refactors that unlock multiple standards criteria at once.
+Projects do not need perfect architecture on day one to use this standard. Start with one clean critical flow, one meaningful secondary flow, and explicit module naming in ubiquitous language. Define the visibility layer at a practical level: what can be toggled, what can be inspected, what can be filtered, and how diagnostics can be shared. Then score adherence honestly and prioritize gap-closing actions that improve multiple criteria at once.
 
-As maturity grows, improve instrumentation granularity, strengthen filterable diagnostics, formalize object inspection patterns, and add verification paths for critical and secondary flows. Where full automation is not realistic, define repeatable manual or browser-level protocols so reliability claims remain testable.
+As maturity increases, tighten event schemas, strengthen module-level toggles, formalize object inspection UX, and improve flow verification coverage. Where full automation is not realistic, define stable manual protocols so quality claims remain falsifiable.
 
-The ultimate objective is not documentation volume; it is operational clarity. When humans can explain the architecture in domain language, when AI can reason from structured evidence, when flows can be validated, and when debugging is a first-class experience that does not punish normal users, this standard is doing its job.
+The point is steady convergence. Over time, the standards and the system should reinforce each other: clearer flows produce better instrumentation, better instrumentation reveals better refactor priorities, and better refactors preserve clearer flows.
 
 ## Definition of success
 
-This standard is successful when the architecture can be explained without hand-waving, when flow behavior can be validated without folklore, and when failures can be diagnosed without invasive ad-hoc instrumentation. It is successful when module boundaries remain legible across refactors, when the visibility layer helps instead of harming performance, and when the refactor conversation becomes objective because adherence is visible.
+This standard is successful when architecture can be explained without hand-waving, when runtime behavior can be diagnosed without emergency instrumentation, and when refactor priorities are driven by adherence evidence instead of intuition alone. It is successful when module boundaries remain legible through change, when debugging capability does not tax normal users, and when teams can confidently evolve the product without losing structural integrity.
 
-Most importantly, it is successful when the system remains maintainable under continuous AI-assisted change. If the product can evolve while staying understandable, debuggable, and contract-driven, then the standard is not just documented; it is alive.
+Most importantly, it is successful when the standard remains alive: continuously consulted, continuously reflected in the three companion documents, and continuously validated against real system behavior.
 
