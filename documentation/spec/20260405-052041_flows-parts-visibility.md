@@ -13,14 +13,21 @@ Create three repository-specific documentation artifacts:
 
 Also enforce collaboration discipline by appending the full raw user prompt to the active prompt log before any edits.
 
+## Prompt summary (iteration 2)
+
+Add a reusable, project-agnostic **AI Modulization Standard** document that captures the detailed philosophy from the original long prompt and governs how the three evergreen docs are created and maintained.
+
+Update the existing three docs so they align with that standard:
+- Keep **flows-and-parts** ideal-state and ubiquitous-language focused (not tied to current file placement).
+- Keep **AI-to-human visibility** explicit about developer-mode toggles, inspectability, event expectations, and low-overhead behavior when debug mode is off.
+- Reframe **recommended refactors** around litmus tests and yes/no adherence scoring against the standard.
+
 ## Planning notes
 
-- The app is a React PWA with a single large UI shell (`src/App.tsx`) and modular services in `src/modules/*`.
-- Existing docs already describe architecture and modules, but not in the explicit "critical path + parts + visibility-tour" framing requested.
-- The new documents should:
-  - Use ubiquitous language for user-facing flows and system parts.
-  - Clearly separate front-end components, domain back-end modules, and environmental harnesses.
-  - Translate current logging/developer capabilities into an explicit AI-human observability model.
+- Existing docs and source mapping gave enough context for a first pass, but the second pass needs a stronger standards-first framing.
+- The new standard must be generic and portable across repositories.
+- The three evergreen docs should be produced *from* that standard and then iteratively updated as app purpose or debugging learnings evolve.
+- Refactor tracking should reflect adherence to standards, not just an engineering wish list.
 - No code behavior should change in this iteration.
 
 ## Acceptance criteria
@@ -39,6 +46,9 @@ Also enforce collaboration discipline by appending the full raw user prompt to t
   - [x] Log review/copy strategy and filtering model
 - [x] `documentation/recommended-refactors.md` created with prioritized refactor recommendations tied to the first two docs.
 - [x] No application source code modified.
+- [x] Second user prompt appended verbatim to the same active branch prompt log.
+- [x] Generic standards doc added and aligned with existing documentation set.
+- [x] Existing three docs updated to conform to the new standard requirements (file-agnostic flow/parts, visibility tenets, litmus-style refactor adherence).
 
 ## Todo checklist
 
@@ -48,6 +58,10 @@ Also enforce collaboration discipline by appending the full raw user prompt to t
 - [x] Inspect architecture and code modules for accurate naming/contracts.
 - [x] Author three documentation files in `documentation/`.
 - [x] Verify changed files are documentation-only.
+- [x] Append second user prompt to active prompt log before second edit pass.
+- [x] Add `AI Modulization Standard` document.
+- [x] Refactor the three docs to comply with that standard and remove file-location coupling from flows-and-parts.
+- [x] Reframe refactor doc around standards litmus tests and yes/no adherence.
 
 ## ✅ Done
 
@@ -59,24 +73,30 @@ Also enforce collaboration discipline by appending the full raw user prompt to t
   - `documentation/flows-and-parts.md`
   - `documentation/ai-to-human-visibility.md`
   - `documentation/recommended-refactors.md`
+- Appended second prompt for this follow-up standards pass:
+  - `documentation/spec/20260405-052041_flows-parts-visibility-PROMPT.txt`
+- Added reusable standards anchor doc:
+  - `documentation/AI-Modulization-Standard.md`
+- Refactored evergreen docs to standards-driven, implementation-agnostic format:
+  - `documentation/flows-and-parts.md`
+  - `documentation/ai-to-human-visibility.md`
+  - `documentation/recommended-refactors.md`
 
 ## 🚧 In progress / placeholders
 
-- None in this documentation pass.
+- None.
 
 ## ⏭️ Next actions / dependencies
 
-- Review wording and terminology with the project owner, then standardize this document structure across other repositories.
-- If approved, follow up with implementation work for:
-  - Per-module visibility toggles and instrumentation registry.
-  - UI decomposition of `App.tsx`.
-  - End-to-end critical-path integration tests.
+- After owner approval, apply the same standards package in other repositories.
+- Optionally add a lightweight checklist template file that can be copied into future repos alongside the standard.
 
 ## Summary of edits (what / where / why)
 
-- **What:** Added three new architecture-and-observability planning documents and a new spec/prompt pair.
+- **What (iteration 1):** Added three new architecture-and-observability planning documents and a new spec/prompt pair.
+- **What (iteration 2):** Added a reusable AI modulization standard doc and refactored the three evergreen docs to align with it.
 - **Where:** `documentation/` and `documentation/spec/`.
-- **Why:** To encode critical user-value paths, module contracts, and AI-human debugging/visibility strategy in a reusable, explicit format.
+- **Why:** To encode both the *standard itself* and project-specific adherence artifacts in a stable, repeatable workflow.
 
 ## Self-evaluation against acceptance criteria
 
@@ -88,3 +108,5 @@ Also enforce collaboration discipline by appending the full raw user prompt to t
 | Visibility strategy documented | Pass | Includes telemetry events, object browsing, log sessions, filters, and export flow. |
 | Refactor recommendations documented | Pass | Prioritized roadmap tied directly to the two new docs. |
 | Runtime code unchanged | Pass | Documentation-only file additions. |
+| Follow-up prompt appended before second-pass edits | Pass | Prompt log was appended before standards refactor edits. |
+| Standards doc + standards alignment pass | Pass | Added generic standard and aligned all three evergreen docs to it. |

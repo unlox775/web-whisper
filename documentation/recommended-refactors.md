@@ -1,172 +1,148 @@
 # Recommended Refactors
 
-This document proposes implementation refactors to make the architecture and observability targets in:
+This document is a living adherence report against:
 
+- `documentation/AI-Modulization-Standard.md`
 - `documentation/flows-and-parts.md`
 - `documentation/ai-to-human-visibility.md`
 
-real and maintainable in code.
+It tracks whether the implementation follows the standard, what value each gap affects, and what refactors are required to converge.
 
 ---
 
-## 1) Refactor goals
+## 1) How to use this document
 
-1. Make core user-value flows explicit and testable end-to-end.
-2. Strengthen separation between front-end orchestration and domain modules.
-3. Add a disciplined, low-noise visibility layer that supports both human debugging and AI-assisted support.
-4. Keep performance stable while improving diagnostics.
+This document should be updated in each iteration loop:
 
----
+1. Re-check standards and litmus tests.
+2. Mark each criterion `Yes`, `Partial`, or `No`.
+3. Record evidence and user impact.
+4. Update or close corresponding refactor actions.
 
-## 2) Priority roadmap
-
-## P0 - Foundation (highest leverage, lowest product risk)
-
-### R1. Create a centralized visibility registry
-- **Problem:** Visibility behavior is currently scattered across startup milestones, ad-hoc logs, and UI handlers.
-- **Refactor:** Add a single `visibilityRegistry` module that defines:
-  - module keys (front-end + domain modules)
-  - default enabled/disabled states
-  - level presets (`minimal`, `critical-path`, `verbose`)
-  - helper methods: `isEnabled(moduleKey)`, `emit(event)`
-- **Suggested location:** `src/modules/logging/visibility-registry.ts`
-- **Outcome:** One contract for instrumentation toggles and consistent behavior.
-
-### R2. Standardize telemetry event envelopes
-- **Problem:** Event payload shapes vary by emitter, making filtering and AI analysis inconsistent.
-- **Refactor:** Introduce a typed event envelope and mapper:
-  - `eventId`, `module`, `phase`, `severity`, `atMs`, `atIso`, `sessionId?`, `details`
-- **Suggested location:** `src/modules/logging/visibility-events.ts`
-- **Outcome:** Stable, machine-readable logs and easier export filtering.
-
-### R3. Add module/event filtering in Developer Console logs tab
-- **Problem:** Log review is chronological only; no quick hide/show by module or event family.
-- **Refactor:** Extend logs UI with filters:
-  - module
-  - severity
-  - event family (`ui`, `capture`, `storage`, `analysis`, `playback`, `transcription`)
-  - phase (`start`, `success`, `error`)
-- **Outcome:** Faster isolation of noisy modules and tighter "factory tour" debugging.
-
-### R4. Extract startup orchestration from `App.tsx`
-- **Problem:** Startup logic and milestone orchestration are embedded in a very large component.
-- **Refactor:** Create `useAppBootstrap` hook returning:
-  - hydrated settings
-  - recordings + preview hydration state
-  - main sync banner state
-  - bootstrap errors
-- **Outcome:** Cleaner critical-flow readability and easier critical-path integration tests.
+When all important criteria are `Yes`, this document should explicitly state that the system is near ideal and mostly in maintenance mode.
 
 ---
 
-## P1 - Critical-flow resilience and maintainability
+## 2) Adherence scoreboard (litmus-driven)
 
-### R5. Introduce explicit flow orchestrators
-- **Problem:** Critical, secondary, and tertiary flows are implicit across many callbacks.
-- **Refactor:** Add orchestration hooks/services:
-  - `useCaptureFlow`
-  - `useTranscriptionFlow`
-  - `useDebugFlow`
-- **Outcome:** Each flow gets explicit lifecycle states and instrumentation boundaries.
+Status key:
 
-### R6. Split `App.tsx` into major UI parts
-- **Problem:** One large file couples list/detail/settings/dev tools and increases regression risk.
-- **Refactor:** Extract components:
-  - `CapturePanel`
-  - `SessionList`
-  - `SessionDetailPanel`
-  - `SettingsDialog`
-  - `DeveloperOverlay`
-  - `DoctorPanel` (subcomponent of detail)
-- **Outcome:** Easier ownership boundaries and per-component visibility toggles.
+- **Yes**: Standard is met with stable evidence.
+- **Partial**: Some structure exists but misses required guarantees.
+- **No**: Standard not implemented or not operationally usable.
 
-### R7. Add integration tests for the primary critical path
-- **Problem:** No single automated test proves "record -> persist -> open -> play -> transcribe" still works.
-- **Refactor:** Add integration suite with mocked media + transcription:
-  - start recording
-  - generate chunk persistence
-  - stop + session ready
-  - open detail + playback source preparation
-  - snip transcription result persisted
-- **Suggested location:** `test/integration/critical-flow.test.ts`
-- **Outcome:** Guardrail against regressions during refactors.
-
-### R8. Add integration tests for secondary and tertiary flows
-- **Secondary test:** retry failed transcription for existing session.
-- **Tertiary test:** open dev overlay, inspect logs/tables, produce compact report.
-- **Outcome:** Coverage for maintenance and observability workflows, not just happy-path capture.
+| Litmus criterion | Status | Why it matters | Current evidence | Gap summary |
+| --- | --- | --- | --- | --- |
+| Flow document is implementation-agnostic | **Partial** | Keeps architecture docs stable across refactors | Flows doc now rewritten toward ideal-state language | Needs sustained discipline in future edits |
+| Critical/secondary/tertiary flows are explicit | **Yes** | Protects primary and secondary user value | Flows are explicitly defined as user stories | Need automated verification coverage expansion |
+| Front-end parts and back-end modules clearly separated | **Partial** | Prevents architecture sprawl and hidden coupling | Domains are named and separated in docs | Runtime architecture still has concentrated orchestration |
+| Major modules have explicit contracts | **Partial** | Enables safe refactoring and AI maintainability | Contracts exist in many services | Contract clarity inconsistent across all modules |
+| Debug mode and visibility layer are explicit | **Partial** | Enables repeatable diagnostics | Developer mode + logs + table views exist | Per-module toggle model not fully implemented |
+| Module-level visibility toggles available | **No** | Core requirement of standard observability | No universal toggle registry for all parts/modules | Needs centralized visibility registry and UI |
+| Persisted object browsing (summary + raw) | **Partial** | Reduces debugging time and ambiguity | Object/table browsing exists | Summary-vs-raw UX consistency needs improvement |
+| Log sessions persist and are reviewable | **Yes** | Supports post-run diagnostics | Session-scoped logs are persisted and navigable | Add stronger filtering and export controls |
+| Log filtering by module/event family/severity | **Partial** | Allows isolation of noisy components | Basic log browsing exists | Missing robust multi-dimension filters |
+| Copy/export diagnostics for AI | **Yes** | Enables AI-assisted debugging loops | Compact report export exists | Add profile-based export modes |
+| Off-mode observability has minimal cost | **Partial** | Prevents debug harness from harming UX | Existing logging is mostly bounded | Need formal benchmark and stricter gating for all modules |
+| Debug toggles do not alter normal UX behavior | **Partial** | Prevents user-facing regressions | Current dev mode mostly isolated | Need policy-level enforcement + tests |
+| Critical flow verification | **Partial** | Prevents regressions in core value path | Manual confidence and scattered checks | Add a dedicated end-to-end critical flow suite |
+| Secondary flow verification | **Partial** | Protects high-value recovery workflows | Some behavior tested indirectly | Add explicit retry/recovery integration tests |
+| Tertiary (debug) flow verification | **No** | Ensures diagnostics tooling itself is reliable | No complete debug-flow test protocol yet | Add automated/manual protocol and acceptance criteria |
 
 ---
 
-## P2 - Observability depth and AI-support readiness
+## 3) Priority refactor actions
 
-### R9. Introduce flow-aware log presets ("factory tours")
-- **Problem:** Users and AI still must manually infer which events matter for each flow.
-- **Refactor:** Add saved filter presets:
-  - `Critical Capture Tour`
-  - `Transcription Recovery Tour`
-  - `Developer Diagnostics Tour`
-- **Outcome:** One-click guided traces aligned to documented flows.
+## P0 - Standards compliance foundation
 
-### R10. Add structured export profiles
-- **Problem:** Copy export is useful but not configurable enough for different debugging scopes.
-- **Refactor:** Add export modes:
-  - `Compact` (AI chat)
-  - `Detailed` (engineering deep dive)
-  - `Critical Path Only`
-- **Outcome:** Better signal-to-noise in shared logs.
+### RF-01: Build centralized visibility registry and toggle model
+- **Addresses:** module-level toggles, debug control consistency, off-mode gating.
+- **Deliverables:**
+  - canonical list of instrumentable front-end parts and back-end modules
+  - toggle state model and defaults
+  - helpers for guarded event emission
+- **Success condition:** every major part/module has explicit on/off visibility control.
 
-### R11. Add optional persisted-object "inspect card" schema
-- **Problem:** Raw JSON is accurate but cognitively heavy on mobile.
-- **Refactor:** For sessions/chunks/snips, provide:
-  - concise summary card
-  - expand-to-raw JSON
-- **Outcome:** Faster human inspection without losing full object transparency.
+### RF-02: Standardize telemetry envelope across modules
+- **Addresses:** inconsistent event shape and poor filtering.
+- **Deliverables:**
+  - typed event schema (module, eventId, phase, severity, timestamps, session context)
+  - migration of key emitters to schema
+- **Success condition:** logs are machine-filterable and comparable across modules.
 
----
-
-## 3) Domain module boundary refinements
-
-### M1. Separate "domain storage APIs" from "developer inspection APIs"
-- **Current issue:** `manifestService` owns both core runtime behavior and dev-table inspection methods.
-- **Refactor:** Keep core methods in manifest service; move dev inspection methods into a dedicated `debugStorageInspector`.
-- **Benefit:** Cleaner production contract and reduced accidental coupling.
-
-### M2. Add explicit `TranscriptionQueue` implementation or remove queue placeholders
-- **Current issue:** `enqueue/cancel` are stubs while direct `transcribeAudio` is used.
-- **Refactor options:**
-  - implement queue semantics with persisted jobs; or
-  - simplify interface to only supported methods for now.
-- **Benefit:** Contract clarity and fewer misleading code paths.
-
-### M3. Decide lifecycle for `upload` and `telemetry` stubs
-- **Current issue:** Modules exist but are effectively placeholders.
-- **Refactor options:**
-  - mark as experimental in docs and isolate from main exports; or
-  - implement minimal production path.
-- **Benefit:** Cleaner parts map and less ambiguity about supported flows.
+### RF-03: Add robust log filtering controls in diagnostics UI
+- **Addresses:** noisy timeline analysis and weak isolation.
+- **Deliverables:**
+  - filters for module, family, severity, phase
+  - saved filter presets for common flow tours
+- **Success condition:** users can isolate one flow/module without manual scanning.
 
 ---
 
-## 4) Performance-safe instrumentation practices
+## P1 - Flow reliability and module separation
 
-Use these constraints while implementing visibility features:
+### RF-04: Decompose orchestration into flow-centric boundaries
+- **Addresses:** concentration of orchestration and hidden coupling.
+- **Deliverables:**
+  - explicit flow orchestration units for capture, transcription recovery, diagnostics
+  - clear boundaries between UI composition and domain execution
+- **Success condition:** flow logic is explicit, testable, and not monolithic.
 
-- Keep default instrumentation lightweight.
-- Emit high-frequency events only in verbose or sampled mode.
-- Do not serialize large arrays/blobs unless explicitly requested.
-- Ensure logging failures do not block user operations.
-- Prefer count/size/duration summaries over full payload dumps.
+### RF-05: Introduce critical-flow integration verification
+- **Addresses:** regression risk in core user value path.
+- **Deliverables:**
+  - repeatable test path: start -> persist -> stop -> open -> playback -> transcript
+  - deterministic pass/fail outcomes
+- **Success condition:** critical flow is continuously verifiable.
+
+### RF-06: Add secondary and tertiary flow verification protocols
+- **Addresses:** weak assurance for recovery/debug experiences.
+- **Deliverables:**
+  - secondary flow test/protocol (retry and convergence)
+  - tertiary flow test/protocol (diagnostics visibility and export path)
+- **Success condition:** non-primary but high-value flows are reliably verifiable.
 
 ---
 
-## 5) Proposed implementation sequence
+## P2 - Observability maturity and ergonomics
 
-1. R1 + R2 (registry + event envelope).
-2. R3 (log filters in dev overlay).
-3. R4 + R6 (bootstrap extraction + component split).
-4. R7 + R8 (critical/secondary/tertiary integration tests).
-5. R9 + R10 + R11 (tour presets + export profiles + inspect cards).
-6. M1/M2/M3 as contract-hardening cleanup.
+### RF-07: Add persisted-object inspector UX standards
+- **Addresses:** raw JSON usability limitations.
+- **Deliverables:**
+  - consistent summary cards + expand-to-raw views for key objects
+  - object-centric drill-down patterns
+- **Success condition:** mobile-friendly, low-friction object inspection.
 
-This sequence minimizes regression risk while delivering immediate debugging value early.
+### RF-08: Add export profiles for AI collaboration
+- **Addresses:** one-size export limitations.
+- **Deliverables:**
+  - compact / detailed / critical-flow-only export profiles
+  - bounded payload strategies for large sessions
+- **Success condition:** right-sized evidence sharing for different debugging contexts.
+
+### RF-09: Add observability performance guardrails
+- **Addresses:** uncertainty around instrumentation cost and behavior drift.
+- **Deliverables:**
+  - benchmark/checklist for debug-off overhead
+  - tests for behavior invariance when toggles change
+- **Success condition:** visibility layer remains safe by default.
+
+---
+
+## 4) Current grade and target
+
+- **Current overall adherence grade:** **C (Partial)**
+- **Target grade:** **A/B range** via RF-01 through RF-06 completion first, then RF-07 through RF-09.
+
+The highest-value movement is to complete the P0 set first, then lock in flow verification in P1.
+
+---
+
+## 5) Notes for future updates
+
+When this document is updated:
+
+1. Keep scoring objective and evidence-based.
+2. Prefer closing gaps that unlock multiple litmus criteria.
+3. Remove completed actions from "active gaps" and record them in completion history.
+4. If all critical criteria become `Yes`, state that adherence is near ideal and move to maintenance posture.

@@ -1,286 +1,284 @@
 # AI-to-Human Visibility Layer
 
-This document defines a practical visibility strategy for Web Whisper: how humans (and AI assistants) can inspect what the app is doing without guessing, while keeping user-facing behavior clean.
+This document defines the target debugging and observability experience for the application in domain terms. It describes how humans and AI assistants should inspect behavior safely and effectively without depending on current file layout.
 
-It uses the same ubiquitous language defined in `documentation/flows-and-parts.md`.
+It is governed by:
 
-## 1) Visibility goals
+- `documentation/AI-Modulization-Standard.md`
+- `documentation/flows-and-parts.md`
 
-1. **Tourability:** A human should be able to "walk the factory floor" for a chosen flow and see key transitions and payload shape at each step.
-2. **Targeted instrumentation:** Logging should be turnable on/off by module/concern, not all-or-nothing.
-3. **Stable persisted evidence:** Logs and object snapshots should survive reloads in session-scoped history.
-4. **Low-noise defaults:** Observability should not overwhelm users or flood logs in normal mode.
-5. **AI-ready export:** Captured diagnostics should be copyable into AI chat with bounded token footprint.
+---
 
-## 2) Current baseline in this repository
+## 1) Document contract
 
-The project already has a strong starting point:
+This document must answer, for each major part/module:
 
-- Structured log sessions persisted in IndexedDB (`logSessions`, `logEntries` via `manifestService`).
-- Startup and debug milestones with human-first phrasing (`startup-milestones.ts`).
-- Developer overlay (bug icon) with:
-  - IndexedDB table browsing (`sessions`, `chunks`, `chunkVolumes`, `snips`)
-  - Log session browsing
-- Doctor diagnostics export with compact report generation.
+1. What can be instrumented?
+2. What events are emitted?
+3. How noisy are those events?
+4. What persisted objects can be inspected?
+5. How can evidence be filtered and exported for AI collaboration?
 
-What is not yet formalized is **per-module visibility control**, **consistent event schemas per module**, and **flow-oriented log filtering aligned to critical paths**.
+It should remain valid even if implementation structure changes.
+
+---
+
+## 2) Visibility goals
+
+1. **Tourability:** A human can walk the critical, secondary, and tertiary flows and see what happened step by step.
+2. **Targeted control:** Visibility can be enabled per front-end part and per back-end module.
+3. **Persistent evidence:** Logs and object snapshots survive reloads and can be reviewed by session.
+4. **Noise discipline:** Default mode remains low-noise; high-detail modes are explicit.
+5. **AI handoff readiness:** Diagnostics can be copied/exported in bounded, structured form.
+6. **Performance safety:** With debug visibility off, instrumentation overhead is negligible.
+
+---
 
 ## 3) Visibility control model (target)
 
-Define a single runtime config object:
+Define a unified visibility profile:
 
 ```ts
-type VisibilityConfig = {
+type VisibilityProfile = {
   enabled: boolean
   level: 'minimal' | 'standard' | 'verbose'
-  frontEnd: Record<FrontendPartKey, boolean>
-  domainModules: Record<DomainModuleKey, boolean>
-  includePayloadSamples: boolean
+  frontEndParts: Record<string, boolean>
+  backEndModules: Record<string, boolean>
+  payloadMode: 'summary' | 'sampled' | 'full'
 }
 ```
 
-### 3.1 Activation
+### 3.1 Activation rules
 
-- **Default:** off for normal users.
-- **Developer mode on:** visibility controls become available.
-- **Per-part/per-module toggles:** allow enabling only relevant modules for a bug.
+- Default user mode: visibility off.
+- Developer/debug mode: visibility controls become available.
+- Users can toggle individual parts/modules without enabling full-system verbosity.
 
-### 3.2 Non-goals
+### 3.2 Safety rules
 
-- Do not inject noisy debug text directly into normal user UI flows.
-- Do not block user flows on visibility failures.
+- Visibility failures never block core user flows.
+- Enabling visibility should not inject noisy UI changes into normal screens by default.
+- Sensitive values (keys/tokens/secrets) must never be emitted.
 
-## 4) Telemetry contract guidelines
+---
 
-Every instrumented event should include:
+## 4) Telemetry event contract
 
-- `eventId` (stable string)
-- `module` (frontend part or domain module)
+Every event should use a stable envelope:
+
+- `eventId` (stable identifier)
+- `moduleKey` (part/module source)
+- `family` (`ui`, `capture`, `storage`, `analysis`, `playback`, `transcription`, `settings`, `logging`)
 - `phase` (`start`, `success`, `error`, `cancel`)
-- `sessionId` when available
-- `atMs` + `atIso`
-- `elapsedMs` for phase duration when relevant
-- concise, purpose-driven fields (not full raw payloads unless explicitly sampled)
+- `severity` (`debug`, `info`, `warn`, `error`)
+- `sessionId` when relevant
+- `atMs`, `atIso`
+- `elapsedMs` when timing spans are meaningful
+- concise `details` payload
 
-Avoid generic logs like "method called/returned"; prefer intent-rich events:
+Prefer intent-rich events over generic method traces:
 
-- "session-list hydration completed"
-- "snip preview batch loaded"
-- "retention purged N chunks"
+- good: `session-list.hydration.completed`
+- poor: `listSessions called`
 
-## 5) Module-level telemetry map
+---
 
-Estimated event frequency is for an average app launch + one record interaction. This is used to prevent accidental log-noise explosions.
+## 5) Module-level visibility map
 
-### 5.1 Front-end telemetry
+Event frequencies are approximate and used to control noise.
 
-#### `AppShell` (`src/App.tsx`)
-- **Events**
-  - `ui.bootstrap.start`
-  - `ui.settings.hydrated`
-  - `ui.sessionList.visible`
-  - `ui.mainSyncBanner.shown/hidden`
-- **Expected count**
-  - 3-10 per launch.
+## 5.1 Front-end parts
 
-#### `CaptureControls` (start/stop section)
-- **Events**
-  - `ui.capture.toggle.clicked`
-  - `ui.capture.starting.cancelled`
-  - `ui.capture.error.displayed`
-- **Expected count**
-  - 1-5 per capture attempt.
+### A) Application Shell
+- **Key events**
+  - bootstrap start/done
+  - settings hydration done
+  - main list visibility achieved
+- **Expected frequency**
+  - low per app activation (about 3-10)
 
-#### `SessionList`
-- **Events**
-  - `ui.sessionList.render.start`
-  - `ui.sessionList.render.done`
-  - `ui.sessionCard.opened`
-  - `ui.sessionCard.retryTranscription.clicked`
-- **Expected count**
-  - 1 render pass + card-level interactions; can grow with pagination.
+### B) Capture Experience
+- **Key events**
+  - capture toggle requested
+  - capture start transition
+  - capture stop transition
+  - capture error surfaced
+- **Expected frequency**
+  - low/medium per session
 
-#### `DetailPanel` + `TranscriptionPanel`
-- **Events**
-  - `ui.detail.opened`
-  - `ui.playback.toggle`
-  - `ui.transcription.retryAll.clicked`
-  - `ui.snip.transcribe.clicked`
-- **Expected count**
-  - 10-100 depending on interaction depth.
+### C) Session List Experience
+- **Key events**
+  - session list data hydration start/done
+  - card open action
+  - retry action requested
+- **Expected frequency**
+  - medium, depends on list size and interaction depth
 
-#### `DeveloperOverlay`
-- **Events**
-  - `ui.devOverlay.opened`
-  - `ui.devOverlay.mode.changed`
-  - `ui.devOverlay.table.pageLoaded`
-  - `ui.devOverlay.logs.sessionSelected`
-- **Expected count**
-  - 5-30 per debug session.
+### D) Session Detail Experience
+- **Key events**
+  - detail opened/closed
+  - playback prepare start/done
+  - snip interaction and retry actions
+- **Expected frequency**
+  - medium/high in active debugging sessions
 
-### 5.2 Domain-module telemetry
+### E) Settings/Mode Experience
+- **Key events**
+  - setting updated
+  - developer mode changed
+- **Expected frequency**
+  - low
 
-#### `SessionStorage` (`manifestService`)
-- **Events**
-  - `storage.init.start/done`
-  - `storage.sessions.list.start/done`
-  - `storage.snips.batchRead.start/done`
-  - `storage.retention.run`
-  - `storage.verifyTimings.result`
-- **Expected count**
-  - 5-200 depending on chunk count and preview batching.
-- **Payload guidance**
-  - Include counts, durations, and status flags.
-  - Avoid serializing whole row arrays in normal logging.
+### F) Diagnostics Experience
+- **Key events**
+  - diagnostics panel open
+  - diagnostics run start/done
+  - report export
+- **Expected frequency**
+  - low/medium
 
-#### `CapturePipeline` (`captureController`)
-- **Events**
-  - `capture.start.requested`
-  - `capture.stream.acquired`
-  - `capture.chunk.encoded`
-  - `capture.chunk.persisted`
-  - `capture.stop.completed`
-- **Expected count**
-  - `chunk.*` scales linearly with recording length (high-frequency class).
-- **Payload guidance**
-  - Keep per-chunk payload compact (seq, bytes, ms ranges).
-  - Sample full diagnostics only on error.
+## 5.2 Back-end modules
 
-#### `SessionAnalysis` (`SessionAnalysisProvider`, analysis funcs)
-- **Events**
-  - `analysis.prepare.start/done`
-  - `analysis.verifyTimings.triggered`
-  - `analysis.snips.generated`
-- **Expected count**
-  - 1-10 per opened session.
+### 1) Capture Domain
+- **Key events**
+  - capture requested
+  - stream acquired
+  - chunk encoded/persisted
+  - capture finalized
+- **Noise note**
+  - chunk-level events can be high-frequency; summarize in non-verbose mode.
 
-#### `PlaybackSlicing` (`recordingSlicesApi`)
-- **Events**
-  - `playback.prepareSource.start/done`
-  - `playback.range.decode.start/done`
-  - `playback.range.decode.error`
-- **Expected count**
-  - 1-50 per detail session (depends on snip playback).
+### 2) Session Storage Domain
+- **Key events**
+  - storage init
+  - list/read/write operations
+  - retention pass and verification outcomes
+- **Noise note**
+  - avoid logging full object arrays by default.
 
-#### `TranscriptionClient` (`transcriptionService`)
-- **Events**
-  - `transcription.key.validation.start/done`
-  - `transcription.snip.request.start/done/error`
-  - `transcription.retry.batch.start/done`
-- **Expected count**
-  - 1-100 depending on snip count/retries.
-- **Payload guidance**
-  - Never log API keys.
-  - Log response status, latency, snippet length counts.
+### 3) Analysis Domain
+- **Key events**
+  - analysis preparation start/done
+  - timing verification outcomes
+  - snip derivation outcomes
+- **Noise note**
+  - typically medium frequency per opened session.
 
-#### `SettingsStore`
-- **Events**
-  - `settings.loaded`
-  - `settings.updated`
-- **Expected count**
-  - low (1-10).
+### 4) Playback Slicing Domain
+- **Key events**
+  - playback source prep start/done
+  - range decode start/done/error
+- **Noise note**
+  - interaction dependent; can spike during diagnostics scans.
 
-#### `AppLogger`
-- **Events**
-  - `logger.session.started/ended`
-  - `logger.write.failed`
-  - `logger.globalError.captured`
-- **Expected count**
-  - low/medium; error spikes indicate issues.
+### 5) Transcription Domain
+- **Key events**
+  - credentials validation
+  - request start/done/error
+  - retry batch outcomes
+- **Noise note**
+  - medium/high with many snips; summarize retries.
+
+### 6) Settings Domain
+- **Key events**
+  - load/update events
+- **Noise note**
+  - low frequency.
+
+### 7) Logging/Visibility Domain
+- **Key events**
+  - log session start/end
+  - write failure warnings
+  - global error capture summary
+- **Noise note**
+  - low unless systemic errors occur.
+
+---
 
 ## 6) Persisted object visibility strategy
 
-Humans most often need to inspect raw persisted objects and their lifecycle state. Current/target strategy:
+Humans and AI assistants need both quick summaries and full raw access.
 
-### 6.1 `SessionRecord` visibility
-- **Simplified list view:** status, startedAt, duration, chunkCount, totalBytes, timingStatus.
-- **Raw view:** full JSON per selected session.
-- **Key debugging questions answered**
-  - Is session still `recording` unexpectedly?
-  - Are duration/bytes/timingStatus coherent?
+### 6.1 Sessions
+- **Summary fields:** status, start/end posture, duration, size, timing integrity state.
+- **Raw view:** full serialized record.
+- **Questions answered:** Is session coherent and complete?
 
-### 6.2 `ChunkRecord`/`StoredChunk` visibility
-- **Simplified list view:** seq, start/end, byteLength, purged flag, blob metadata.
-- **Raw view:** JSON with binary omitted marker.
-- **Key debugging questions answered**
-  - Are timings monotonic?
-  - Are purged chunks correctly represented?
+### 6.2 Chunks
+- **Summary fields:** sequence, time range, byte size, purge state.
+- **Raw view:** full metadata with binary payload omitted by default.
+- **Questions answered:** Are chunk ranges monotonic and retention-consistent?
 
-### 6.3 `ChunkVolumeProfileRecord` visibility
-- **Simplified list view:** frame count, duration, average/max normalized, frames preview.
-- **Raw view:** full JSON including frames array.
-- **Key debugging questions answered**
-  - Do profiles exist for all needed chunks?
-  - Are durations inflated or missing?
+### 6.3 Analysis Profiles
+- **Summary fields:** frame count, duration, average/peak measures.
+- **Raw view:** full profile including frame arrays.
+- **Questions answered:** Are analysis inputs complete and plausible?
 
-### 6.4 `SnipRecord` visibility
-- **Simplified list view:** index, start/end/duration, transcription present/error, purged status.
-- **Raw view:** full JSON including transcription segments.
-- **Key debugging questions answered**
-  - Why is preview empty?
-  - Which snips are retryable?
+### 6.4 Snips
+- **Summary fields:** index, time range, transcript/error state, purge state.
+- **Raw view:** full snip + transcript payload.
+- **Questions answered:** Why is preview missing/partial? What is retryable?
 
-### 6.5 `LogSessionRecord` + `LogEntryRecord` visibility
-- **Simplified list view:** session timestamps and entry counts.
-- **Raw view:** selected entry JSON detail.
-- **Key debugging questions answered**
-  - Which phase consumed time?
-  - Which module emitted errors?
+### 6.5 Logs
+- **Summary fields:** session range, entry count, severity distribution.
+- **Raw view:** full event entries.
+- **Questions answered:** Which phase/module consumed time or failed?
 
-## 7) Log viewer behavior expectations
+---
+
+## 7) Log viewer requirements
 
 ### 7.1 Session model
-- Each app run/activation should map to one log session.
-- Past sessions must remain selectable.
+- Log history must be session-scoped and reviewable after reload.
 
-### 7.2 Filtering
-Add filter controls to hide/show by:
-- module
-- event family (capture/storage/analysis/playback/transcription/ui)
-- severity
-- phase (`start/success/error`)
+### 7.2 Filtering model
+- Required filters:
+  - module/part
+  - family
+  - severity
+  - phase
+- Users should be able to hide noisy modules without losing other context.
 
-This is critical for "I enabled three modules, now hide the noisy one" workflows.
+### 7.3 Noise controls
+- Presets: `Minimal`, `Critical Flow`, `Verbose`.
+- Throttling/sampling for repetitive high-frequency events in non-verbose modes.
 
-### 7.3 Noise control
-- Offer presets: `Minimal`, `CriticalPath`, `Verbose`.
-- Throttle repeated high-frequency events (e.g., per chunk) unless verbose mode is on.
+---
 
-## 8) AI-friendly log export model
+## 8) AI collaboration/export model
 
-### 8.1 Copy-first export (required)
-- Export selected log session + active filters.
-- Include summary header:
-  - selected modules
-  - time range
-  - event counts by severity
-- Truncate/summarize large arrays by default.
+### 8.1 Required: copy-first export
+- Export selected session plus active filters.
+- Include compact summary header (time range, selected modules, event totals).
+- Truncate large payloads unless explicitly expanded.
 
-### 8.2 Retrieval-oriented export (future)
-- Optional endpoint/storage integration for secure AI retrieval.
-- Not required for current local-only architecture, but design should not block it.
+### 8.2 Recommended: profile-based export
+- `Compact` (chat-friendly)
+- `Detailed` (engineering deep-dive)
+- `Critical Flow Only` (triage-focused)
 
-## 9) Flow-driven "factory tour" playbooks
+### 8.3 Future: secure retrieval model
+- Optional remote retrieval can be added later, but local copy/export must always remain available.
 
-For each main flow, provide a small guided trace sequence:
+---
 
-- **Critical flow tour:** launch -> start capture -> chunk persisted -> stop -> session ready -> open detail -> playback.
-- **Secondary flow tour:** open ready session -> load snips -> send snip transcription -> preview refresh.
-- **Tertiary flow tour:** developer overlay -> inspect tables -> inspect logs -> export compact report.
+## 9) Flow-oriented visibility tours
 
-These tours should correspond to saved log filters/presets in future implementation.
+Visibility should support guided tours aligned to major flows:
 
-## 10) Implementation notes for this repository
+- **Critical flow tour:** bootstrap -> capture -> persistence -> finalize -> playback -> transcription.
+- **Secondary flow tour:** historical session selection -> snip status -> retries -> transcript convergence.
+- **Tertiary flow tour:** debug mode -> object inspection -> filtered logs -> report export.
 
-Existing pieces that already satisfy parts of this document:
+These tours should map to saved filter presets where possible.
 
-- `startup-milestones.ts` human-readable milestone framework.
-- `manifestService` persisted log session model.
-- developer overlay tables/logs and compact doctor report export.
+---
 
-Gaps to close (planned in `documentation/recommended-refactors.md`):
+## 10) Litmus checks for this document
 
-- centralized visibility registry + per-module toggles
-- normalized telemetry event schema
-- log filtering by module/event family
-- flow-presets for guided debugging
+1. Are all major parts/modules instrumentable?
+2. Are event frequencies and noise risks described?
+3. Can humans inspect key persisted objects in summary + raw form?
+4. Can logs be filtered to isolate one failing flow?
+5. Is export practical for AI collaboration without unbounded payloads?
+6. Does off-mode instrumentation remain negligible?

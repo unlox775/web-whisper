@@ -1,159 +1,195 @@
 # Flows and Parts
 
-This document defines the primary user flows and the major system parts for Web Whisper, using a domain-language style that applies to both product decisions and engineering conversations.
+This document defines the application's target flows and major parts using ubiquitous language and ideal-state architecture intent. It should remain valid even if implementation files are reorganized.
 
-## 1) Ubiquitous language (shared terms)
+The standards baseline for this document is defined in:
 
-- **Session**: One recording run from Start to Stop, stored as a durable object.
-- **Chunk**: A persisted MP3 segment produced during capture.
-- **Snip**: A derived speech segment used for transcription and focused playback.
-- **Transcription Preview**: Short list-card text built from snip transcripts.
-- **Detail View**: The session drawer where playback, snips, transcription, and diagnostics live.
-- **Developer Console**: The in-app debug panel for IndexedDB and logs.
-- **Doctor Report**: Diagnostics output for integrity/performance troubleshooting.
-- **Retention Pass**: Storage-cap enforcement that can purge chunk/snip audio payloads.
+- `documentation/AI-Modulization-Standard.md`
 
 ---
 
-## 2) Critical flow (primary value path)
+## 1) Document contract
 
-### Critical flow: **Capture a session and obtain usable transcript text**
+This document is intentionally:
 
-1. **Open and hydrate the shell.**  
-   The user lands on the main app shell and sees capture controls, data usage, and session list state. Front-end work is driven by `App.tsx` startup effects; back-end touchpoints include `manifestService.init`, `settingsStore`, and startup logging milestones.
+- **domain-first** (what the system does for users)
+- **implementation-agnostic** (not tied to current file layout)
+- **evergreen** (updated when product purpose or domain model changes)
 
-2. **Start recording.**  
-   The user taps Start recording from the capture panel and sees a warm-up/starting state transition into active recording. The front-end dispatches to `captureController.start`, which acquires microphone access and initializes audio graph and chunking state.
+This document is intentionally not:
 
-3. **Capture and persist chunks continuously.**  
-   While recording, UI duration/chunk indicators update and data remains durable even on interruption risk. Back-end modules `captureController`, `manifestService.appendChunk`, and `computeChunkVolumeProfile` persist chunk/audio metadata and analysis-ready volume profiles for every produced chunk.
-
-4. **Stop recording and reconcile session status.**  
-   The user taps Stop and expects a complete, replayable session object. The front-end confirms transition back to idle; `captureController.stop` flushes pending data, updates session totals/status via `manifestService.updateSession`, and records lifecycle logs.
-
-5. **Refresh list card and transcript preview state.**  
-   The recordings list updates with status, size, duration, and preview text. The front-end list card renderer in `App.tsx` triggers async preview hydration; back-end read path is `manifestService.listSessions` plus `listSnipsForSessions` and transcription preview reduction.
-
-6. **Open session detail and validate playback.**  
-   The user opens a session card and expects timeline/playback to work immediately if audio exists. Front-end detail overlay binds to chunk/snip playback controls; back-end slice construction runs through `recordingSlicesApi` and `manifestService.getChunkData`/range decoding.
-
-7. **Run transcription on snips.**  
-   The user retries or runs transcription and expects snippets plus aggregate transcript text to appear. Front-end actions call snip transcription handlers; back-end calls `recordingSlicesApi.getRangeAudio`, `transcriptionService.transcribeAudio`, and `manifestService.updateSnipTranscription`.
-
-8. **Copy/use resulting transcript.**  
-   The user selects transcript text from detail and uses it externally. Front-end presents consolidated snip transcript text and retry metadata; back-end dependency is primarily persisted snip transcription objects in IndexedDB and related state synchronization.
+- a code map of where logic currently lives
+- a temporary snapshot of current technical debt
 
 ---
 
-## 3) Secondary flow
+## 2) Ubiquitous language
 
-### Secondary flow: **Review historical sessions and recover from partial transcription**
-
-1. **Scan session history rapidly.**  
-   The user browses many stored sessions in the list and identifies a target by date/duration/status. Front-end relies on list rendering and status pills; back-end reads `sessions` plus preview/snip aggregates from `manifestService`.
-
-2. **Open detail and inspect snip-level outcomes.**  
-   The user enters detail mode and checks which snips are transcribed, failed, or purged. Front-end slice mode toggles and snip rows are the main UI; back-end calls `recordingSlicesApi.listSnips` and persisted snip records.
-
-3. **Retry failed snips only.**  
-   The user retries failed-but-eligible snips instead of redoing everything. Front-end enables targeted retry actions and progress status; back-end uses transcription service calls and `updateSnipTranscription` patching per snip.
-
-4. **Export/copy corrected transcript.**  
-   After retries, the user copies updated full text and continues workflow externally. Front-end text aggregation and copy affordances complete the experience; back-end contribution is normalized snip transcription storage and retrieval consistency.
+- **Session**: A full recording lifecycle from user start to user stop.
+- **Chunk**: A durable audio segment written during a session.
+- **Snip**: A meaningful subrange of a session used for targeted playback and transcription.
+- **Transcript**: Text output derived from one or more snips.
+- **Capture Flow**: The lifecycle that transforms microphone input into durable session artifacts.
+- **Review Flow**: The lifecycle where users inspect and recover value from stored sessions.
+- **Diagnostics Flow**: The lifecycle where humans inspect system behavior and evidence.
+- **Developer Mode**: Explicit mode that unlocks debugging controls and visibility tools.
+- **Visibility Layer**: The instrumentation and inspection surfaces that let humans and AI observe system internals safely.
 
 ---
 
-## 4) Tertiary flow
+## 3) Critical flow (primary value path)
 
-### Tertiary flow: **Debug a startup/performance or data-integrity issue**
+### Critical flow: **Capture audio and produce usable text**
 
-1. **Enable developer mode and open debugging surfaces.**  
-   The user opens Settings, enables developer mode, and accesses the bug icon panel. Front-end exposes developer UI paths; back-end remains unchanged but debug read paths become available for logs and table inspection.
+1. **Enter capture-ready state.**  
+   The user opens the app and sees an immediately understandable capture-ready interface with current storage posture and prior session context. The application loads enough state to begin recording confidently while preparing asynchronous detail hydration in the background.
 
-2. **Inspect storage tables and log sessions.**  
-   The user checks table counts/pages and then switches to persisted log sessions for timeline inspection. Front-end uses developer overlay tabs with pagination; back-end calls `getDeveloperTableCounts`, `getDeveloperTablePage`, and `listLogSessions/getLogEntries`.
+2. **Start session capture.**  
+   The user starts a new session and receives immediate state feedback that capture is beginning. The system acquires recording input, initializes capture lifecycle state, and begins durable progression from live signal to persisted artifacts.
 
-3. **Run doctor diagnostics in session detail.**  
-   The user runs integrity scans and receives summarized findings. Front-end doctor panel orchestrates selected tests and copy/export actions; back-end touches `recordingSlicesApi`, analysis data, and full log retrieval for compact doctor report generation.
+3. **Persist recording artifacts continuously.**  
+   While capture is active, the system repeatedly transforms live audio into durable chunk artifacts and associated metadata needed for timeline continuity and downstream analysis. The user sees a stable in-progress experience rather than transient or fragile buffering behavior.
 
-4. **Copy compact report into AI chat.**  
-   The user exports a copyable report for remote troubleshooting. Front-end provides clipboard/manual-select fallback; back-end provides structured log and diagnostic data from persisted stores suitable for AI-assisted analysis.
+4. **Stop capture and finalize session integrity.**  
+   The user stops recording and expects a complete, coherent session object. The system flushes pending data, reconciles session summary values, and marks session state so that playback and transcription operations can proceed with predictable semantics.
 
----
+5. **Hydrate user-facing session summary.**  
+   The session list reflects updated duration, size, readiness, and text preview posture. The user can immediately identify whether the new session is actionable, still processing, or needs intervention.
 
-## 5) Parts catalog
+6. **Open session detail and verify replayability.**  
+   The user opens the session and expects playback behavior aligned with recorded timeline semantics, including edge cases such as partial purge states. The system resolves slices and timeline data needed for reliable replay and interaction.
 
-## 5.1 Front-end parts (major components)
+7. **Generate or retry transcript output.**  
+   The user triggers transcription work and receives progress, success, or failure states at snip/session level. The system stores transcript artifacts durably and keeps retryability explicit when recoverable failures occur.
 
-### A) App Shell (`src/App.tsx`)
-- **Role:** Top-level orchestrator for startup hydration, recording lifecycle UI, list/detail states, settings, and developer overlays.
-- **Major subparts:** Header/data card, capture controls, session list, detail overlay, settings dialog, developer console, doctor panel.
-- **Main contracts it calls:** `captureController`, `manifestService`, `recordingSlicesApi`, `transcriptionService`, `settingsStore`, logger/startup milestones.
-
-### B) Recording Analysis Graph (`src/components/RecordingAnalysisGraph.tsx`)
-- **Role:** Visual histogram/timeline for quiet regions, boundaries, and playback position.
-- **Major subparts:** Scrollable SVG graph, threshold/boundary overlays, segment summaries.
-- **Main contract:** Receives computed `SessionAnalysis` from the app; no persistence writes.
-
-### C) Settings Dialog (within `App.tsx`)
-- **Role:** Configure Groq key, developer mode, and storage cap.
-- **Main contracts:** `settingsStore.set/get/subscribe`, `validateGroqApiKey`.
-
-### D) Developer Console (within `App.tsx`)
-- **Role:** Inspect IndexedDB rows and persisted log sessions.
-- **Main contracts:** `manifestService.getDeveloperTableCounts`, `getDeveloperTablePage`, `listLogSessions`, `getLogEntries`.
-
-### E) Doctor Diagnostics Panel (within detail flow)
-- **Role:** Run checks and generate compact troubleshooting reports.
-- **Main contracts:** `recordingSlicesApi` inspection methods, `manifestService` reads, logger accessors.
-
-## 5.2 Back-end domain modules (business/use-case modules)
-
-### 1) Capture module (`src/modules/capture/controller.ts`)
-- **Owns:** Audio capture lifecycle and MP3 chunk production.
-- **Primary contract methods:** `start`, `stop`, `flushPending`, `subscribe`, `getDiagnostics`.
-- **Core objects:** Capture state snapshot, chunk sequence/timing, microphone stream/audio graph lifecycle.
-
-### 2) Manifest/storage module (`src/modules/storage/manifest.ts`)
-- **Owns:** Durable persistence and indexed access over sessions/chunks/chunkVolumes/snips/logs.
-- **Primary contract methods:** `createSession`, `appendChunk`, `listSessions`, `getChunkData`, `listSnips`, `listSnipsForSessions`, `updateSnipTranscription`, `applyRetentionPolicy`, `verifySessionChunkTimings`, developer/log table APIs.
-- **Core objects:** `SessionRecord`, `StoredChunk`, `ChunkVolumeProfileRecord`, `SnipRecord`, `LogSessionRecord`, `LogEntryRecord`.
-
-### 3) Analysis provider module (`src/modules/analysis/session-analysis-provider.ts`)
-- **Owns:** Timing verification orchestration, volume timeline assembly, analysis caching.
-- **Primary contract methods:** `ensureTimings`, `prepareAnalysisForSession`.
-- **Core objects:** Verified timing result, frame timeline, computed `SessionAnalysis`.
-
-### 4) Playback slicing module (`src/modules/playback/recording-slices.ts`)
-- **Owns:** Chunk and time-range audio extraction for playback/download/transcription.
-- **Primary contract methods:** `listChunks`, `listSnips`, `getChunkAudio`, `getRangeAudio`, `inspectRange`, `getSnipAudio`.
-- **Core objects:** `RecordingAudioSlice`, range inspection metrics, decoded mono sample slices.
-
-### 5) Transcription module (`src/modules/transcription/service.ts`)
-- **Owns:** Groq Whisper integration and result normalization.
-- **Primary contract methods:** `transcribeAudio`, `validateGroqApiKey` (exported helper); queue/cancel are placeholders.
-- **Core objects:** `TranscriptionAudioRequest/Result`, normalized segment tuples.
-
-### 6) Settings module (`src/modules/settings/store.ts`)
-- **Owns:** Local persistent user settings and subscriptions.
-- **Primary contract methods:** `get`, `set`, `subscribe`.
-- **Core objects:** `RecorderSettings`.
-
-## 5.3 Environmental harnesses (shared plumbing)
-
-These are cross-cutting services that many modules depend on, but they are not user-value flows by themselves:
-
-- **IndexedDB engine (`idb`)**: Physical storage runtime used by manifest service.
-- **Browser audio runtime (`getUserMedia`, `AudioContext`, decoding)**: Capture/playback primitives.
-- **LocalStorage**: Settings persistence substrate for `settingsStore`.
-- **Structured logger + startup milestones**: Session-scoped logging and boot diagnostics (`logger.ts`, `startup-milestones.ts`).
-- **Platform network/fetch layer**: Outbound requests for transcription API calls.
+8. **Consume transcript value.**  
+   The user can read, copy, and use transcript text externally. At this point, the core promise of the application is fulfilled: durable capture converted into usable textual value.
 
 ---
 
-## 6) Flow-to-parts coverage check
+## 4) Secondary flow
 
-- Critical path touches all core domain modules except upload/telemetry stubs.
-- Secondary path emphasizes read-heavy consistency and retry semantics.
-- Tertiary path validates observability and debug ergonomics, which are required for reliable AI-assisted maintenance.
-- Remaining module stubs (`upload`, `telemetry`) are intentionally outside current critical user value and should remain classified as future/adjacent flows.
+### Secondary flow: **Recover value from historical sessions**
+
+1. **Locate target session quickly.**  
+   The user scans historical sessions by date, duration, readiness, and outcome cues to identify where attention is needed.
+
+2. **Inspect snip-level outcome quality.**  
+   The user opens detail and sees which portions are complete, partial, failed, or unavailable due to retention policy.
+
+3. **Retry only the needed work.**  
+   The user retries failed or incomplete transcript segments instead of repeating the full pipeline.
+
+4. **Converge to usable transcript state.**  
+   The session transitions to a satisfactory text state and the user resumes normal downstream usage.
+
+---
+
+## 5) Tertiary flow
+
+### Tertiary flow: **Diagnose behavior and performance with evidence**
+
+1. **Enter explicit debug posture.**  
+   The user enables developer/debug mode and accesses visibility controls.
+
+2. **Inspect persisted objects and event timeline.**  
+   The user reviews key domain objects and session-scoped logs to understand what happened, where, and in what sequence.
+
+3. **Filter noise and isolate relevant modules.**  
+   The user narrows visibility to the parts/modules involved in the failing flow.
+
+4. **Export focused diagnostics for AI collaboration.**  
+   The user copies structured evidence to AI tooling for guided remediation.
+
+---
+
+## 6) Parts catalog (ideal architecture roles)
+
+## 6.1 Front-end parts
+
+### A) Application Shell
+- **Role:** Entry experience, global state wiring, mode transitions, and flow orchestration.
+- **Responsibilities:** Startup hydration posture, high-level routing/panel composition, global notices.
+- **Contract posture:** Calls domain modules only through stable contracts.
+
+### B) Capture Experience
+- **Role:** Start/stop lifecycle interaction and live capture status communication.
+- **Responsibilities:** User intent entry for capture, in-progress state display, safe cancellation messaging.
+
+### C) Session List Experience
+- **Role:** Historical session browsing and quick action entry.
+- **Responsibilities:** Session status rendering, preview text posture, action affordances for open/retry/delete.
+
+### D) Session Detail Experience
+- **Role:** Deep interaction with one session.
+- **Responsibilities:** Playback controls, snip navigation, transcript consumption, localized diagnostics entry.
+
+### E) Settings and Mode Experience
+- **Role:** Runtime policy/config controls for users and developers.
+- **Responsibilities:** Service credentials posture, storage policy controls, developer mode gating.
+
+### F) Diagnostics Experience
+- **Role:** Human-operable debugging surfaces.
+- **Responsibilities:** Module toggles, object browsers, log filters, report export actions.
+
+## 6.2 Back-end domain modules
+
+### 1) Capture Domain Module
+- **Owns:** Recording lifecycle and durable chunk production.
+- **Core contracts:** start, stop, flush, lifecycle status stream, diagnostics snapshot.
+
+### 2) Session Storage Domain Module
+- **Owns:** Durable session/chunk/snip/log object stores and lifecycle-safe mutations.
+- **Core contracts:** create/update/list/read domain objects, retention enforcement, verification passes.
+
+### 3) Analysis Domain Module
+- **Owns:** Timeline and segmentation reasoning required for snip derivation and quality checks.
+- **Core contracts:** prepare analysis, verify timing assumptions, produce segment proposals.
+
+### 4) Playback Slicing Domain Module
+- **Owns:** Deterministic reconstruction of replayable session or subrange audio.
+- **Core contracts:** resolve chunks/snips/ranges for playback, inspection, and export.
+
+### 5) Transcription Domain Module
+- **Owns:** External transcription request lifecycle and normalized transcript artifacts.
+- **Core contracts:** validate credentials, submit transcription requests, normalize/store outcomes.
+
+### 6) Settings Domain Module
+- **Owns:** User/developer runtime preferences and policy state.
+- **Core contracts:** get/set/subscribe for configuration.
+
+### 7) Logging and Visibility Domain Module
+- **Owns:** Session-scoped event persistence and observability contract.
+- **Core contracts:** start/end log session, append structured events, retrieve/filter/export evidence.
+
+## 6.3 Environmental harnesses (cross-cutting plumbing)
+
+- persistent storage engine
+- browser/media runtime
+- local preference storage substrate
+- network transport substrate
+- feature/mode gating substrate
+
+These harnesses are dependencies used by domain modules; they are not themselves user-value domains.
+
+---
+
+## 7) Flow-to-parts matrix (intent-level)
+
+- Critical flow should touch Capture, Session Storage, Playback Slicing, and Transcription domains through explicit contracts.
+- Secondary flow should emphasize Session Storage + Transcription recovery semantics with clear user-level state transitions.
+- Tertiary flow should rely on Logging/Visibility plus object browsing to make failures explainable.
+
+---
+
+## 8) Litmus checks for this document
+
+Use these checks whenever this document is updated:
+
+1. **Agnosticity check:** Does the doc avoid binding architecture truth to current file layout?
+2. **Flow completeness check:** Does the critical flow represent full primary user value?
+3. **Secondary value check:** Does at least one secondary flow represent meaningful additional value?
+4. **Boundary check:** Are front-end parts and back-end domains clearly separated?
+5. **Language check:** Would a new contributor understand this without opening code?
+
+If any check fails, update this doc before or alongside implementation refactors.
