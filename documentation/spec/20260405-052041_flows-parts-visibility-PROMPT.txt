@@ -5,3 +5,7 @@ No, I hate that you are making the AI  standard document nearly 100% ordered and
 You moron, I said 1:4 ratio. lists-words:paragraph-words. 
 
 now you have 100% paragraphs!
+
+I updated the standard, pull your branch. 
+
+Please expand your per-module ai human visibility docs accordingly, even using a “This is a factory tour of the NN module, here is the history and context…” style to be an entertaining but not patronizing tour guide, go in depth, at least 800 words per module file tour.

@@ -39,6 +39,7 @@ Status key:
 | Major modules have explicit contracts | **Partial** | Enables safe refactoring and AI maintainability | Contracts exist in many services | Contract clarity inconsistent across all modules |
 | Debug mode and visibility layer are explicit | **Partial** | Enables repeatable diagnostics | Developer mode + logs + table views exist | Per-module toggle model not fully implemented |
 | Module-level visibility toggles available | **No** | Core requirement of standard observability | No universal toggle registry for all parts/modules | Needs centralized visibility registry and UI |
+| Per-module narrative factory tours exist | **Yes** | Makes visibility operational, not just index-level | `documentation/ai-human-visibility/` now contains module-level deep tours + index | Keep tours synchronized with behavior changes |
 | Persisted object browsing (summary + raw) | **Partial** | Reduces debugging time and ambiguity | Object/table browsing exists | Summary-vs-raw UX consistency needs improvement |
 | Log sessions persist and are reviewable | **Yes** | Supports post-run diagnostics | Session-scoped logs are persisted and navigable | Add stronger filtering and export controls |
 | Log filtering by module/event family/severity | **Partial** | Allows isolation of noisy components | Basic log browsing exists | Missing robust multi-dimension filters |
@@ -76,6 +77,13 @@ Status key:
   - filters for module, family, severity, phase
   - saved filter presets for common flow tours
 - **Success condition:** users can isolate one flow/module without manual scanning.
+
+### RF-03b: Keep module tour docs synchronized with implementation
+- **Addresses:** drift between visibility stories and runtime behavior.
+- **Deliverables:**
+  - module-tour update trigger in documentation workflow
+  - quick checklist per module tour (`mechanism`, `signals`, `healthy sequence`, `failure cues`)
+- **Success condition:** module tours remain trusted operational guides, not stale prose.
 
 ---
 

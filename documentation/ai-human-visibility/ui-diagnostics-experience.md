@@ -1,0 +1,48 @@
+# Factory Tour: UI Diagnostics Experience (`ui.diagnostics-experience`)
+
+This is the factory tour for the diagnostics experience: the set of interfaces and interactions that let a human step out of normal product usage and intentionally inspect the machinery. In many systems this surface is treated as optional, but in this standard it is a first-class citizen because it is the bridge between “I feel that something is wrong” and “I can show exact evidence of what is wrong.” When this module is healthy, the rest of the observability architecture becomes practical. When this module is weak, even excellent instrumentation in backend modules remains inaccessible to the humans who need it.
+
+The diagnostics experience begins from a shift in intent. A user is no longer trying to capture or consume value directly. They are trying to understand behavior. That intent shift matters because it changes what “good UX” means. In normal product mode, users prefer minimal detail and low cognitive load. In diagnostics mode, users prefer clarity over polish, structure over visual simplicity, and direct inspectability over abstraction. The UI diagnostics module has to respect that difference while still remaining usable on constrained devices and under stressful conditions.
+
+Historically, many products provide a single “developer screen” that dumps raw data, which technically satisfies transparency but fails operationally because the human cannot navigate it. This module’s design posture is different: diagnostics should feel like a guided inspection corridor with clear stations. One station answers “what data exists.” Another answers “what happened over time.” Another answers “what changed when I performed this action.” Another answers “how do I export this evidence to AI or another engineer.” The module should not force the human to invent workflow; the workflow should be encoded into the UI.
+
+The entrypoint for diagnostics is typically gated by developer mode, which is a deliberate product decision rather than a hidden trick. That gate serves two purposes. First, it keeps normal users from accidentally entering high-density interfaces that are irrelevant to everyday tasks. Second, it marks diagnostics as intentional and auditable: if a session includes debug behavior, there should be a clear state transition where debugging was enabled. That transition itself can be logged as a helpful contextual event for later analysis.
+
+Once the diagnostics surface opens, the first responsibility of this module is orientation. The human should quickly understand which inspection mode they are in and what evidence class they are viewing. A clean mental model is “tables mode” for persisted object inspection and “logs mode” for temporal sequence inspection. If the module merges these without clear separation, users lose track of whether they are debugging state shape or event timeline, and conclusions become less reliable.
+
+In tables mode, this module does not need to present every field immediately. It should present quick summaries first, then allow expansion into raw views. The summary layer should be tuned to the diagnostic questions users actually ask. For example, users often ask whether records exist, whether counts are plausible, whether sizes look right, and whether statuses are coherent. They do not begin by asking to inspect all nested arrays. So the first visual pass should be high signal. Raw JSON should remain one click away, never hidden, but not forced by default.
+
+In logs mode, the key challenge is temporal legibility. Logs that are technically complete but visually chaotic are functionally broken. This module should prioritize clear ordering, concise event presentation, and easy selection of log sessions. A session selector with explicit timestamps is a foundational control because many debugging attempts require comparing one run against another. The human should be able to jump among sessions without losing orientation about which session is currently active.
+
+Filtering is where this module either succeeds or fails as a practical tool. Without filtering, even high-quality telemetry can become noise. With filtering, the same telemetry becomes a powerful narrative instrument. This module should support filter pivots aligned to the standards: module key, event family, severity, and phase. The user should be able to hide a noisy family while preserving sequence context from critical modules. Good filtering does not fragment the story; it simplifies the story without falsifying it.
+
+The diagnostics experience must also support iterative debugging behavior. Humans rarely inspect once and finish. They inspect, adjust toggles, reproduce an action, inspect again, and compare. The module should make this loop fast. Controls should not require deep navigation each time. Export actions should preserve active filters and current session context. If reproduction loops are slow, users stop collecting high-quality evidence and fallback to guesses.
+
+Another important responsibility is diagnostics-run orchestration. In this project’s ecosystem, there is a “doctor” style diagnostics flow that performs targeted checks and can produce compact reports. This UI module should treat such checks as guided procedures with explicit start, progress, completion, and failure states. If a check fails, failure should be visible as a data point, not as a silent dead end. If checks are cancellable, cancellation should be explicit so analysts do not misread partial results as complete scans.
+
+The export path is the final station in this factory tour. Diagnostics that cannot be shared quickly are diagnostics that often go unused. This module should let users export compact evidence for AI chat while preserving enough context for meaningful analysis: active session, selected filters, event count summary, and key anomalies. Export should prefer bounded payloads by default, with optional deeper profiles when needed. The goal is to allow rapid handoff without overwhelming the receiver.
+
+Because this module sits at the boundary between user and system internals, it also has responsibility for safety and trust. It should avoid exposing secrets. It should make redaction expectations clear. It should avoid destructive actions in the primary inspection path. And it should ensure that opening diagnostics does not significantly perturb normal application behavior. A debugger that changes system behavior too much can create observer effects that invalidate debugging conclusions.
+
+This module’s observability itself matters. If diagnostics UI load is slow, that slowness should be measurable. If log queries are heavy, that cost should be visible. If table pagination stalls, it should produce explicit diagnostics events. In other words, the diagnostics module is not exempt from standards—it is itself a module that should be observable with the same discipline it provides to others.
+
+### Why this module is tricky
+
+The diagnostics experience is tricky because it has to balance two competing needs: breadth and precision. Breadth means exposing many kinds of evidence. Precision means not overwhelming users with irrelevant detail. Achieving both requires thoughtful information architecture and strong defaults. It is also tricky because diagnostics users are often under pressure; poor interaction design is magnified in stressful contexts.
+
+Another complexity is that diagnostics work is inherently cross-module. This UI module does not own capture, storage, playback, or transcription behavior, but it must present evidence from all of them coherently. That makes schema consistency and naming discipline critical. If each backend module emits events with different conventions, this module becomes cluttered with special-case rendering logic and users lose confidence in interpretation.
+
+### Signals to watch
+
+Key signals for this module include diagnostics-open events, mode-switch events, table-query duration, table-page load size, log-session load duration, filter-application events, diagnostics-run start/done/error, and report-export events. These signals help detect whether the diagnostics corridor itself is healthy and whether users can complete inspection loops efficiently.
+
+### Healthy sequence example
+
+A healthy sequence starts when developer mode is enabled and diagnostics opens quickly. The user selects tables mode, sees counts promptly, loads a target table page, and confirms object posture. Then they switch to logs mode, select the relevant session, apply module and severity filters, and inspect a clean event timeline. Finally, they run a targeted diagnostics check, review the result summary, and export a compact report with preserved filters. Each transition is explicit and responsive.
+
+### Failure cues and likely causes
+
+If diagnostics opens slowly, likely causes include oversized eager queries or expensive rendering in default mode. If logs mode feels noisy despite filtering, likely causes include inconsistent event schemas or missing module tagging. If exports are huge and unusable, likely causes include missing payload bounds or absent profile policies. If users repeatedly abandon diagnostics and return with vague bug reports, likely causes include poor orientation, weak filter ergonomics, or unclear object summaries.
+
+The success condition for this module is straightforward: a human who is not deeply familiar with internals can still gather and share high-quality evidence in a single focused session. When that happens reliably, the diagnostics module is doing what this standard expects.
+
