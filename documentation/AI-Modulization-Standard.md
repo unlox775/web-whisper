@@ -1,4 +1,4 @@
-# AI Modulization Standard
+# AI  Modulization Standard
 
 This standard exists to keep AI-assisted software development grounded in architectural truth rather than momentum. It is designed for teams that move quickly, use AI heavily, and still want systems that remain understandable after many iterations. Its purpose is to make structure explicit, make debugging operational, and make refactoring accountable. The goal is not documentation aesthetics; the goal is durable clarity.
 
@@ -29,6 +29,26 @@ In AI-assisted development, boundary erosion happens quietly. A module starts wi
 
 Each major module should be able to answer four stable questions: what it owns, what it exposes, what it depends on, and what it does not own. Back-end modules should align with business or use-case domains, while shared infrastructure should remain infrastructure rather than becoming accidental domain owners. This prevents hidden coupling and keeps interfaces meaningful.
 
+### Mandatory module classes and naming
+
+All module docs and telemetry should use an explicit two-class naming scheme:
+
+- `ui.<moduleName>` for front-end/UI modules
+- `backend.<moduleName>` for back-end modules
+
+Avoid ambiguous prefixes like `domain.*` in final-facing architecture docs, because they blur the concrete UI-vs-backend split this standard requires.
+
+### Hard separation rule (UI vs backend)
+
+- **UI modules** may own pixels, viewport math, DOM measurements, scrollTop, event listeners, and rendering orchestration.
+- **Backend modules** must be UI-agnostic and testable without a browser runtime. Backend contracts should not require pixel units, DOM elements, or browser layout APIs.
+
+If a module currently mixes both concerns, the architecture docs must:
+
+1. explicitly mark it as mixed,
+2. define the target split (`ui.*` wrapper + `backend.*` core), and
+3. track that split as an adherence gap in Recommended Refactors.
+
 When boundaries are clear, diagnostics improves automatically. A failure in a flow step can be mapped quickly to a likely contract boundary. That shortens incident resolution loops and lowers the cognitive burden for both humans and AI assistants.
 
 ## Visibility philosophy: a guided factory tour
@@ -38,6 +58,60 @@ A reliable system should be explainable while it is running, not only after stat
 That is why every major part and module needs an explicit visibility posture. In developer mode, humans should be able to enable targeted instrumentation rather than flooding the entire app with logs. They should be able to inspect key persisted objects in both summary and raw forms. They should be able to filter event noise by module and concern. And they should be able to export focused diagnostics for AI collaboration.
 
 This is not only about logs. It is about navigable evidence. A meaningful visibility layer tells a coherent story of behavior across time, and does so in a way that can be reused across debugging sessions rather than rebuilt from scratch for each incident.
+
+## Mechanism narrative requirement (the "why this is tricky" section)
+
+A module visibility section is incomplete if it only lists event names in a table. Tables are useful indexes, but they are not the explanation. Every major front-end part and back-end module must include a short mechanism narrative that teaches a new contributor how and why the module works.
+
+That narrative should answer:
+
+- What dynamic behavior makes this module non-trivial?
+- What control loop, thresholds, or sequencing rules does it rely on?
+- What state transitions are expected in healthy operation?
+- What failure patterns are likely and why?
+
+This requirement exists because AI-generated docs often degrade into event inventories detached from system intent. The standard requires that documentation "sell the mechanism" first, then map instrumentation to that mechanism.
+
+### Depth requirement (non-negotiable)
+
+A module visibility document fails this standard if it is only a short paragraph plus a list of signal names. Every module document (UI and backend) must contain:
+
+- complete runtime story of how that module is entered, does work, and exits
+- concrete trigger actions a human can perform
+- expected event timeline tied to those actions
+- interpretation guidance for healthy vs unhealthy sequences
+
+Complex modules (like infinite readers, synchronization engines, or caching controllers) must include numeric walkthrough examples and not just conceptual text.
+
+### Required subsection shape per module
+
+For each module in AI-to-Human Visibility, include:
+
+1. **Mechanism story**  
+   A concise narrative in domain language describing what the module is actively doing over time.
+2. **Why this is tricky**  
+   The dynamic or stateful constraints that create debugging risk.
+3. **Signals to watch**  
+   The exact events/metrics and how they correlate to state transitions.
+4. **Healthy sequence example**  
+   A short expected event timeline for normal operation.
+5. **Failure cues and likely causes**  
+   What abnormal sequences mean and where to inspect next.
+
+Without all five, observability remains descriptive but not operational.
+
+## Example expectation: infinite reader scroller
+
+For a reader module with infinite scrolling, the mechanism story should not stop at "loads previous/next chapter while scrolling." It should explain:
+
+- The viewport-relative buffer policy (for example, maintain minimum off-screen context above and below).
+- How threshold checks trigger append/prepend decisions.
+- Why content measurement must occur after insertion (actual pixel height depends on runtime layout and text wrapping).
+- Why scroll position compensation is needed when prepending/removing content above the viewport.
+- How chapter boundaries can cross book boundaries seamlessly within a work.
+- What terminal boundary means (end of the work, not merely end of a book).
+
+Then the events should be interpreted through that story (for example, buffer-state evaluations, chapter-load attempts/success/failures, trim decisions, blocked progress, boundary events). The goal is that a human can determine from logs whether the control loop is healthy, oscillating, starved, or failing.
 
 ## Performance-safe observability by default
 
@@ -51,11 +125,20 @@ Observability failures must also be isolated from core value delivery. If log pe
 
 - Read this standard first and confirm that product purpose has not shifted in a way that changes flow priorities.
 - Produce or update Flows and Parts as the implementation-agnostic source of value journeys and module intent.
-- Produce or update AI-to-Human Visibility as the source of instrumentation, object inspection, filtering, and export expectations.
+- Produce or update AI-to-Human Visibility as a **folder of module stories** (not a single summary page), with one document per major module plus an index README.
 - Produce or update Recommended Refactors as an adherence report that scores current reality against the first two documents.
 - Implement code changes and then re-score adherence so architectural claims remain evidence-based.
 
 The three companion documents have distinct jobs. Flows and Parts defines architectural intent in domain language. AI-to-Human Visibility defines what evidence exists and how humans can use it. Recommended Refactors defines the gap between intended architecture and current implementation. Keeping those roles distinct prevents confusion between strategy, telemetry design, and execution backlog.
+
+### Folder requirement for AI-to-Human Visibility
+
+The AI-to-Human Visibility artifact must be structured as:
+
+- `documentation/ai-human-visibility/README.md` — goals, envelope contract, how to read/use logs.
+- `documentation/ai-human-visibility/<module-id>.md` — one deep narrative per major module/part.
+
+This prevents shallow, table-only writeups and forces mechanism-level explanation where complexity is highest.
 
 ## Adherence over wish-listing
 
@@ -95,4 +178,3 @@ The point is steady convergence. Over time, the standards and the system should 
 This standard is successful when architecture can be explained without hand-waving, when runtime behavior can be diagnosed without emergency instrumentation, and when refactor priorities are driven by adherence evidence instead of intuition alone. It is successful when module boundaries remain legible through change, when debugging capability does not tax normal users, and when teams can confidently evolve the product without losing structural integrity.
 
 Most importantly, it is successful when the standard remains alive: continuously consulted, continuously reflected in the three companion documents, and continuously validated against real system behavior.
-
