@@ -5576,6 +5576,12 @@ function App() {
                       onChange={(event) => void handleStorageLimitChange(event.target.value)}
                     />
                   </label>
+                  {developerMode ? (
+                    <div className="settings-labs">
+                      <span>Labs:</span>
+                      <a href="./recordings-list-v2-lab.html">Recordings list V2</a>
+                    </div>
+                  ) : null}
                 </section>
               </div>
             </div>

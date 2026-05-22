@@ -82,6 +82,14 @@ export type DeveloperTableCounts = {
   snips: number
 }
 
+export type SessionListPage = {
+  sessions: SessionRecord[]
+  totalCount: number
+  offset: number
+  limit: number
+  hasMore: boolean
+}
+
 export interface SessionTimingVerificationResult {
   sessionId: string
   status: ChunkTimingStatus
@@ -292,6 +300,7 @@ export interface ManifestService {
   updateSession(id: string, patch: Partial<SessionRecord>): Promise<SessionRecord | null>
   appendChunk(entry: Omit<StoredChunk, 'blob' | 'byteLength' | 'createdAt'>, blob: Blob): Promise<void>
   listSessions(): Promise<SessionRecord[]>
+  listSessionsPage(offset: number, limit: number): Promise<SessionListPage>
   getSession(sessionId: string): Promise<SessionRecord | null>
   getChunkMetadata(sessionId: string): Promise<ChunkRecord[]>
   getChunkData(sessionId: string): Promise<StoredChunk[]>
@@ -437,6 +446,41 @@ class IndexedDBManifestService implements ManifestService {
       listSessionsTotalMs: typeof performance !== 'undefined' ? Math.round(performance.now() - lsT0) : undefined,
     })
     return sorted
+  }
+
+  async listSessionsPage(offset: number, limit: number): Promise<SessionListPage> {
+    const safeOffset = Math.max(0, Math.floor(offset))
+    const safeLimit = Math.max(1, Math.floor(limit))
+    const db = await getDB()
+    const tx = db.transaction('sessions', 'readonly')
+    const store = tx.objectStore('sessions')
+    const index = store.index('by-updated')
+    const totalCount = await store.count()
+    const sessions: SessionRecord[] = []
+
+    let cursor = await index.openCursor(null, 'prev')
+    if (cursor && safeOffset > 0) {
+      cursor = await cursor.advance(safeOffset)
+    }
+
+    while (cursor && sessions.length < safeLimit) {
+      const session = cursor.value
+      sessions.push({
+        ...session,
+        timingStatus: session.timingStatus ?? DEFAULT_CHUNK_TIMING_STATUS,
+      })
+      cursor = await cursor.continue()
+    }
+
+    await tx.done
+
+    return {
+      sessions,
+      totalCount,
+      offset: safeOffset,
+      limit: safeLimit,
+      hasMore: safeOffset + sessions.length < totalCount,
+    }
   }
 
   async getSession(sessionId: string): Promise<SessionRecord | null> {

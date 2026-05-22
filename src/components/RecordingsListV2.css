@@ -1,0 +1,292 @@
+.recordings-lab-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+  padding: 1rem;
+  background:
+    radial-gradient(circle at top left, rgba(34, 211, 238, 0.18), transparent 34rem),
+    #020617;
+  color: #e2e8f0;
+}
+
+.recordings-lab-preview,
+.recordings-lab-telemetry {
+  min-height: 0;
+}
+
+.recordings-lab-preview {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.9rem;
+  border-radius: 1.3rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(2, 6, 23, 0.66);
+  padding: 1rem;
+  box-shadow: 0 18px 80px rgba(0, 0, 0, 0.38);
+}
+
+.recordings-lab-preview-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.recordings-lab-preview-header h1 {
+  margin: 0.15rem 0 0;
+  font-size: clamp(1.4rem, 4vw, 2.2rem);
+}
+
+.recordings-lab-preview-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+
+.recordings-lab-home-link {
+  border-radius: 999px;
+  border: 1px solid rgba(94, 234, 212, 0.32);
+  background: rgba(15, 23, 42, 0.68);
+  color: #a5f3fc;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.recordings-lab-home-link:hover {
+  border-color: rgba(94, 234, 212, 0.68);
+  color: #ecfeff;
+}
+
+.recordings-lab-eyebrow {
+  margin: 0;
+  color: #67e8f9;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.recordings-lab-mini-stat {
+  min-width: 8.5rem;
+  border: 1px solid rgba(94, 234, 212, 0.18);
+  border-radius: 1rem;
+  padding: 0.75rem 0.85rem;
+  background: rgba(15, 23, 42, 0.72);
+  text-align: right;
+}
+
+.recordings-lab-mini-stat span {
+  display: block;
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #f8fafc;
+}
+
+.recordings-lab-mini-stat small {
+  color: #94a3b8;
+}
+
+.recordings-lab-error {
+  margin: 0;
+  border: 1px solid rgba(248, 113, 113, 0.32);
+  border-radius: 0.9rem;
+  padding: 0.7rem 0.8rem;
+  background: rgba(127, 29, 29, 0.25);
+  color: #fecaca;
+}
+
+.recordings-v2-scroller {
+  min-height: 0;
+  overflow-y: auto;
+  border-radius: 1.1rem;
+  border: 1px solid rgba(94, 234, 212, 0.12);
+  background: rgba(15, 23, 42, 0.46);
+}
+
+.recordings-v2-runway {
+  position: relative;
+  min-height: 100%;
+}
+
+.recordings-v2-window {
+  position: absolute;
+  inset-inline: 0;
+  top: 0;
+  padding: 0.65rem;
+}
+
+.recordings-v2-row {
+  padding-bottom: 0.55rem;
+}
+
+.recordings-v2-row .session-card {
+  height: calc(100% - 0.55rem);
+  overflow: hidden;
+}
+
+.recordings-v2-skeleton {
+  cursor: default;
+}
+
+.recordings-v2-skeleton span {
+  display: block;
+  height: 0.85rem;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(148, 163, 184, 0.14), rgba(148, 163, 184, 0.32), rgba(148, 163, 184, 0.14));
+  background-size: 180% 100%;
+  animation: recordingsV2Skeleton 1.2s ease-in-out infinite;
+}
+
+.recordings-v2-skeleton span:first-child {
+  width: 42%;
+}
+
+.recordings-v2-skeleton span:last-child {
+  width: 76%;
+}
+
+@keyframes recordingsV2Skeleton {
+  to {
+    background-position: -180% 0;
+  }
+}
+
+.recordings-lab-telemetry {
+  display: grid;
+  grid-template-rows: auto auto minmax(8rem, 0.9fr) minmax(12rem, 1.1fr);
+  gap: 0.75rem;
+  border-radius: 0.35rem;
+  background: #f8fafc;
+  color: #111827;
+  padding: 0.75rem;
+  box-shadow: 0 18px 70px rgba(15, 23, 42, 0.28);
+}
+
+.recordings-lab-panel {
+  min-height: 0;
+  border-radius: 0.28rem;
+  border: 1px solid #d1d5db;
+  background: #ffffff;
+  padding: 0.85rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.recordings-lab-panel h2 {
+  margin: 0 0 0.6rem;
+  font-size: 0.82rem;
+  color: #1f2937;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.recordings-lab-telemetry .recordings-lab-eyebrow {
+  color: #1d4ed8;
+}
+
+.recordings-lab-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.75rem;
+}
+
+.recordings-lab-metric {
+  border-radius: 0.25rem;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  padding: 0.65rem;
+}
+
+.recordings-lab-metric span {
+  display: block;
+  color: #6b7280;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+}
+
+.recordings-lab-metric strong {
+  display: block;
+  margin-top: 0.25rem;
+  color: #111827;
+  font-size: 0.95rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.recordings-lab-mono {
+  margin: 0;
+  color: #1e40af;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.recordings-lab-call-list,
+.recordings-lab-event-list {
+  min-height: 0;
+  max-height: 100%;
+  overflow: auto;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.recordings-lab-call,
+.recordings-lab-event {
+  border-radius: 0.25rem;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  padding: 0.55rem 0.65rem;
+}
+
+.recordings-lab-call strong,
+.recordings-lab-event strong {
+  display: block;
+  color: #111827;
+  font-size: 0.78rem;
+}
+
+.recordings-lab-call span,
+.recordings-lab-event span {
+  display: block;
+  margin-top: 0.2rem;
+  color: #4b5563;
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.recordings-lab-event {
+  display: grid;
+  grid-template-columns: 4.6rem minmax(0, 1fr);
+  gap: 0.55rem;
+}
+
+.recordings-lab-event time {
+  color: #2563eb;
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.recordings-lab-muted {
+  margin: 0;
+  color: #6b7280;
+  font-size: 0.82rem;
+}
+
+@media (max-width: 900px) {
+  .recordings-lab-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .recordings-lab-telemetry {
+    grid-template-rows: auto;
+  }
+
+  .recordings-lab-preview-header,
+  .recordings-lab-preview-actions {
+    flex-direction: column;
+  }
+}

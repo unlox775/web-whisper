@@ -2112,6 +2112,33 @@ body {
   gap: 0.6rem;
 }
 
+.settings-labs {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #94a3b8;
+  font-size: 0.78rem;
+}
+
+.settings-labs span {
+  color: #cbd5f5;
+  font-weight: 700;
+}
+
+.settings-labs a {
+  border-radius: 999px;
+  border: 1px solid rgba(94, 234, 212, 0.28);
+  background: rgba(94, 234, 212, 0.08);
+  color: #5eead4;
+  padding: 0.22rem 0.55rem;
+  text-decoration: none;
+  font-weight: 700;
+}
+
+.settings-labs a:hover {
+  border-color: rgba(94, 234, 212, 0.58);
+}
+
 .dev-overlay {
   position: fixed;
   inset: 0;

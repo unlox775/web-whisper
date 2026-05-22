@@ -1,23 +1,42 @@
-.PHONY: run-local help
+.PHONY: build run-local run-recordings-list-lab bounce bounce-lab help
 
 # Default port for Vite dev server
 PORT ?= 5173
 URL := http://localhost:$(PORT)
+APP_URL := $(URL)
+RECORDINGS_LIST_LAB_URL := $(URL)/recordings-list-v2-lab.html
 
 help:
 	@echo "Available targets:"
-	@echo "  make run-local  - Build to docs/, start dev server, and open in browser"
+	@echo "  make build                   - Install deps if needed and build to docs/"
+	@echo "  make run-local               - Build, start dev server, and open main app"
+	@echo "  make run-recordings-list-lab - Build, start dev server, and open recordings list V2 lab"
+	@echo "  make bounce                  - Alias for make run-local"
+	@echo "  make bounce-lab              - Alias for make run-recordings-list-lab"
 
-run-local:
-	@echo "Killing any existing servers on port $(PORT)..."
-	@lsof -ti:$(PORT) | xargs kill -9 2>/dev/null || true
-	@sleep 0.5
+build:
 	@if [ ! -d "node_modules" ]; then \
 		echo "Installing dependencies..."; \
 		npm install; \
 	fi
 	@echo "Building project to docs/..."
 	@npm run build
+
+run-local:
+	@$(MAKE) _bounce OPEN_URL="$(APP_URL)"
+
+run-recordings-list-lab:
+	@$(MAKE) _bounce OPEN_URL="$(RECORDINGS_LIST_LAB_URL)"
+
+bounce: run-local
+
+bounce-lab: run-recordings-list-lab
+
+_bounce:
+	@echo "Killing any existing servers on port $(PORT)..."
+	@lsof -ti:$(PORT) | xargs kill -9 2>/dev/null || true
+	@sleep 0.5
+	@$(MAKE) build
 	@echo "Starting dev server..."
 	@bash -c 'trap "kill -9 \$$SERVER_PID 2>/dev/null; lsof -ti:$(PORT) | xargs kill -9 2>/dev/null || true; exit" INT TERM; \
 	./node_modules/.bin/vite --port $(PORT) & \
@@ -28,8 +47,8 @@ run-local:
 		if lsof -ti:$(PORT) > /dev/null 2>&1; then \
 			echo "Server is ready!"; \
 			sleep 0.5; \
-			echo "Opening browser at $(URL)..."; \
-			open $(URL) 2>/dev/null || xdg-open $(URL) 2>/dev/null || start $(URL) 2>/dev/null || echo "Please open $(URL) manually"; \
+			echo "Opening browser at $(OPEN_URL)..."; \
+			open $(OPEN_URL) 2>/dev/null || xdg-open $(OPEN_URL) 2>/dev/null || start $(OPEN_URL) 2>/dev/null || echo "Please open $(OPEN_URL) manually"; \
 			echo "Dev server is running (PID: $$SERVER_PID). Press Ctrl+C to stop."; \
 			wait $$SERVER_PID; \
 			exit 0; \
