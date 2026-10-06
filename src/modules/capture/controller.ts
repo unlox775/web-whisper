@@ -363,9 +363,9 @@ class PcmMp3CaptureController implements CaptureController {
       chunkEndMs,
     })
 
-    this.#persistQueue = this.#persistQueue
-      .then(() =>
-        manifestService.appendChunk(
+    const appendChunkWithRetry = async () => {
+      try {
+        await manifestService.appendChunk(
           {
             id: chunkId,
             sessionId,
@@ -375,8 +375,28 @@ class PcmMp3CaptureController implements CaptureController {
             verifiedAudioMsec: null,
           },
           blob,
-        ),
-      )
+        )
+      } catch (firstError) {
+        // Single retry after brief delay (likely transaction conflict with retention)
+        await new Promise<void>((resolve) => setTimeout(resolve, 50))
+        await manifestService.appendChunk(
+          {
+            id: chunkId,
+            sessionId,
+            seq,
+            startMs: chunkStartMs,
+            endMs: chunkEndMs,
+            verifiedAudioMsec: null,
+          },
+          blob,
+        )
+        // If retry succeeds, log the recovery; if it throws, outer catch will handle it
+        await logInfo('Chunk persist retry succeeded', { sessionId, seq })
+      }
+    }
+
+    this.#persistQueue = this.#persistQueue
+      .then(() => appendChunkWithRetry())
       .then(async () => {
         this.#setState({
           lastChunkAt: chunkEndMs,
@@ -417,7 +437,7 @@ class PcmMp3CaptureController implements CaptureController {
         // CRITICAL: catch persist failures so one error doesn't kill the entire queue.
         // Without this, a transaction conflict with retention can silently stop all
         // subsequent chunk processing, causing the pipeline stall observed in incident.
-        await logError('Chunk persist chain failed', {
+        await logError('Chunk persist chain failed (after retry)', {
           sessionId,
           seq,
           error: error instanceof Error ? error.message : String(error),

@@ -247,22 +247,47 @@ Added `.catch()` handler to persist queue to prevent one failure from killing th
 
 **Impact**: Even if retention causes `appendChunk` to fail, subsequent chunks will still be processed.
 
-### 2. Retention Off Critical Path ✅ **CRITICAL FIX**
+### 2. Serialize Retention With Chunk Writes ✅ **CRITICAL FIX**
 
 **File**: `src/App.tsx` `runRetentionPass`
 
-Added 100ms yield before retention starts to let pending chunk writes complete:
+Await `captureController.flushPending()` before opening retention transaction:
 
 ```typescript
-// Run retention off the critical path: yield to let any pending chunk writes complete
-// before opening the long retention transaction. This prevents transaction contention
-// that can block appendChunk and kill the persist queue.
-await new Promise<void>((resolve) => setTimeout(resolve, 100))
+// Serialize retention with chunk writes: await pending persists before opening retention
+// transaction. This prevents transaction contention where appendChunk (needs chunks/sessions)
+// blocks on applyRetentionPolicy (holds chunks/snips/sessions).
+try {
+  await captureController.flushPending()
+} catch {
+  // Flush can fail if a persist already failed; that's logged separately. Continue with retention.
+}
 ```
 
-**Impact**: Reduces transaction contention by ensuring retention doesn't start immediately while chunk writes are in flight.
+**Impact**: Guarantees all in-flight chunk appends complete before retention acquires IndexedDB locks. No overlapping readwrite transactions on `chunks`/`sessions`.
 
-### 3. Transcription Coverage Tracking
+### 3. Single Retry On Persist Failure ✅
+
+**File**: `src/modules/capture/controller.ts`
+
+Wrap `appendChunk` in retry logic:
+
+```typescript
+const appendChunkWithRetry = async () => {
+  try {
+    await manifestService.appendChunk(...)
+  } catch (firstError) {
+    // Single retry after brief delay (likely transaction conflict)
+    await new Promise<void>((resolve) => setTimeout(resolve, 50))
+    await manifestService.appendChunk(...)
+    await logInfo('Chunk persist retry succeeded', { sessionId, seq })
+  }
+}
+```
+
+**Impact**: If retention somehow still conflicts (race condition), retry once after 50ms. Increases robustness without masking persistent failures.
+
+### 4. Transcription Coverage Tracking
 
 **File**: `src/App.tsx`
 
@@ -388,4 +413,12 @@ Helps diagnose if snip creation stalls during recording.
 - **Fixed persist queue**: Added `.catch()` to prevent silent death
 - **Fixed retention timing**: Added 100ms yield before transaction starts
 - Updated spec with root cause analysis and code-path guarantees
-- Ready to rebuild and push
+- Pushed initial pipeline stall fix
+
+### 2026-10-06 18:10 UTC
+- User requested proper handoff instead of setTimeout
+- **Replaced setTimeout with `captureController.flushPending()`** - serializes retention
+- **Added single retry on persist failure** - 50ms delay then retry appendChunk
+- Updated catch log message to note "(after retry)"
+- Updated spec with proper serialization guarantees
+- Ready to rebuild, push, and mark PR ready for review

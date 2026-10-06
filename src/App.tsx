@@ -1056,10 +1056,15 @@ function App() {
     retentionInFlightRef.current = true
     lastRetentionAtRef.current = now
     
-    // Run retention off the critical path: yield to let any pending chunk writes complete
-    // before opening the long retention transaction. This prevents transaction contention
-    // that can block appendChunk and kill the persist queue.
-    await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    // Serialize retention with chunk writes: await pending persists before opening retention
+    // transaction. This prevents transaction contention where appendChunk (needs chunks/sessions)
+    // blocks on applyRetentionPolicy (holds chunks/snips/sessions), which would cause
+    // appendChunk to fail and poison the persist queue.
+    try {
+      await captureController.flushPending()
+    } catch {
+      // Flush can fail if a persist already failed; that's logged separately. Continue with retention.
+    }
     
     try {
       await manifestService.init()
