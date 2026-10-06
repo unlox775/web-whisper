@@ -413,6 +413,17 @@ class PcmMp3CaptureController implements CaptureController {
           })
         }
       })
+      .catch(async (error) => {
+        // CRITICAL: catch persist failures so one error doesn't kill the entire queue.
+        // Without this, a transaction conflict with retention can silently stop all
+        // subsequent chunk processing, causing the pipeline stall observed in incident.
+        await logError('Chunk persist chain failed', {
+          sessionId,
+          seq,
+          error: error instanceof Error ? error.message : String(error),
+        })
+        // Don't rethrow - allow queue to continue with next chunk
+      })
   }
 
   async stop(): Promise<void> {

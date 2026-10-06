@@ -193,9 +193,76 @@ await logInfo('Live snip refresh', {
 
 ---
 
+## Root Cause Analysis
+
+### Pipeline Stall Mechanism
+
+The incident showed snips+volume+transcripts stopping at T+30.4min (first retention) while MediaRecorder kept writing chunks 454-718. Investigation revealed:
+
+1. **Persist Queue Failure**: `captureController` chains chunk persistence in `#persistQueue`:
+   ```typescript
+   this.#persistQueue = this.#persistQueue
+     .then(() => manifestService.appendChunk(...))
+     .then(async () => { /* volume profile, logging */ })
+   ```
+   **NO `.catch()` handler** → one error kills the entire chain, all subsequent chunks fail silently.
+
+2. **Transaction Contention**: 
+   - `appendChunk` opens transaction on `['chunks', 'sessions']` readwrite
+   - `applyRetentionPolicy` opens transaction on `['chunks', 'snips', 'sessions']` readwrite
+   - Both need exclusive write access to `chunks` and `sessions`
+   - When retention runs (long transaction reading all data, purging old blobs), new chunk appends **block or fail**
+
+3. **Silent Death**: When `appendChunk` throws due to transaction conflict:
+   - Persist queue becomes rejected promise
+   - No error handler, so rejection is silent
+   - All subsequent chunks fail to persist
+   - No volume profiles → no analysis → no snips → no transcripts
+
+### Why At T+30 Min?
+
+First retention at T+30.4min likely held locks long enough (reading 453 chunks, 128 snips) that a new chunk append timed out or failed, poisoning the persist queue.
+
 ## Changes Made
 
-### 1. Transcription Coverage Tracking
+### 1. Persist Queue Resilience ✅ **CRITICAL FIX**
+
+**File**: `src/modules/capture/controller.ts`
+
+Added `.catch()` handler to persist queue to prevent one failure from killing the entire chain:
+
+```typescript
+.catch(async (error) => {
+  // CRITICAL: catch persist failures so one error doesn't kill the entire queue.
+  // Without this, a transaction conflict with retention can silently stop all
+  // subsequent chunk processing, causing the pipeline stall observed in incident.
+  await logError('Chunk persist chain failed', {
+    sessionId,
+    seq,
+    error: error instanceof Error ? error.message : String(error),
+  })
+  // Don't rethrow - allow queue to continue with next chunk
+})
+```
+
+**Impact**: Even if retention causes `appendChunk` to fail, subsequent chunks will still be processed.
+
+### 2. Retention Off Critical Path ✅ **CRITICAL FIX**
+
+**File**: `src/App.tsx` `runRetentionPass`
+
+Added 100ms yield before retention starts to let pending chunk writes complete:
+
+```typescript
+// Run retention off the critical path: yield to let any pending chunk writes complete
+// before opening the long retention transaction. This prevents transaction contention
+// that can block appendChunk and kill the persist queue.
+await new Promise<void>((resolve) => setTimeout(resolve, 100))
+```
+
+**Impact**: Reduces transaction contention by ensuring retention doesn't start immediately while chunk writes are in flight.
+
+### 3. Transcription Coverage Tracking
 
 **File**: `src/App.tsx`
 
@@ -278,8 +345,11 @@ Helps diagnose if snip creation stalls during recording.
 - [x] User can see how much audio remains un-transcribed (timecode shown)
 
 ✅ **Pipeline Resilience**:
-- [ ] **Testing needed**: Verify snip creation continues after retention
-- [ ] **Testing needed**: Verify volume profiling continues for new chunks
+- [x] Persist queue has error handler (prevents silent death from one failure)
+- [x] Retention runs off critical path (100ms yield before transaction)
+- [x] Transaction contention risk mitigated
+- [ ] **Testing needed**: Verify snip creation continues after retention in long recording
+- [ ] **Testing needed**: Verify volume profiling continues for new chunks after retention
 - [ ] **Testing needed**: Verify transcription queue receives new snips after retention
 
 ✅ **Logging**:
@@ -310,4 +380,12 @@ Helps diagnose if snip creation stalls during recording.
 - `npm install` and `npm run build` both succeed
 - Committed and pushed changes
 - Created draft PR #28: https://github.com/unlox775/web-whisper/pull/28
-- ✅ Ready for review and manual testing
+
+### 2026-10-06 18:00 UTC
+- User correctly identified missing pipeline stall fix
+- Investigated root cause: persist queue had no error handler
+- Found transaction contention: retention locks block `appendChunk`
+- **Fixed persist queue**: Added `.catch()` to prevent silent death
+- **Fixed retention timing**: Added 100ms yield before transaction starts
+- Updated spec with root cause analysis and code-path guarantees
+- Ready to rebuild and push

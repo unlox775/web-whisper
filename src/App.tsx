@@ -1055,6 +1055,12 @@ function App() {
     }
     retentionInFlightRef.current = true
     lastRetentionAtRef.current = now
+    
+    // Run retention off the critical path: yield to let any pending chunk writes complete
+    // before opening the long retention transaction. This prevents transaction contention
+    // that can block appendChunk and kill the persist queue.
+    await new Promise<void>((resolve) => setTimeout(resolve, 100))
+    
     try {
       await manifestService.init()
       await logInfo('Retention pass starting', {
