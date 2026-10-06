@@ -1,3 +1,5 @@
+export type LogLevel = 'off' | 'error' | 'warn' | 'info' | 'debug'
+
 export interface RecorderSettings {
   pauseSensitivity: number
   minPauseMs: number
@@ -9,6 +11,7 @@ export interface RecorderSettings {
   transcriptionOnboardingDismissed: boolean
   developerMode: boolean
   storageLimitBytes: number
+  logLevels: Record<string, LogLevel>
 }
 
 export interface SettingsStore {
@@ -29,12 +32,30 @@ const defaultSettings: RecorderSettings = {
   transcriptionOnboardingDismissed: false,
   developerMode: false,
   storageLimitBytes: 200 * MB,
+  logLevels: {
+    app: 'info',
+    capture: 'info',
+    analysis: 'info',
+    transcription: 'info',
+    storage: 'info',
+    settings: 'info',
+    playback: 'info',
+    upload: 'info',
+    telemetry: 'info',
+  },
 }
 
 const STORAGE_KEY = 'durable-recorder-settings'
 
 function normalizeSettings(parsed: Partial<RecorderSettings> | null): RecorderSettings {
-  const merged: RecorderSettings = { ...defaultSettings, ...parsed }
+  const merged: RecorderSettings = { 
+    ...defaultSettings, 
+    ...parsed,
+    logLevels: {
+      ...defaultSettings.logLevels,
+      ...(parsed?.logLevels || {})
+    }
+  }
   const hasOnboardingDismissed = parsed && typeof parsed.transcriptionOnboardingDismissed === 'boolean'
   if (!hasOnboardingDismissed) {
     merged.transcriptionOnboardingDismissed = false
