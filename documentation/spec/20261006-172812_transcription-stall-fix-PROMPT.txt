@@ -1,0 +1,20 @@
+Fix a real product bug in https://github.com/unlox775/web-whisper.
+
+## Bug
+After a long recording, the UI reports that all snips have been transcribed / transcription is complete, but the transcript and snip list stop around ~30 minutes while the session is ~48 minutes and audio chunks continue after that point. Dave's screenshots (attached) show snip #128 ending at 30:02→30:12 ("Please.") on a 47m 52s session. FINDINGS.md (attached) explains the underlying incident: at T+30.4 min storage retention purged early audio AND the live snip/VAD/transcript pipeline stalled, while MediaRecorder kept writing healthy MP3s through the end (chunks 265–718 retained).
+
+So there are really two correctness problems to fix in this PR:
+
+1. **Status lie**: any UI/state that claims "all snips transcribed" / 100% transcription complete must account for **un-snipped / un-transcribed audio still present** after the last snip. If there is retained chunk audio past the last snip end time (or past last transcribed coverage), do NOT show complete/success for the whole session. Surface something accurate like "transcription incomplete" / remaining duration / remaining chunks.
+
+2. **Live pipeline stall at retention**: when `applyRetentionPolicy` runs during an active recording and purges old transcribed blobs, **snip creation + transcription + volume profiling must keep running** for new chunks. Retention must not block or kill the analysis path. Prefer running retention off the critical path (debounced/async) and never skip analyzing newly written chunks because a purge just happened. Add durable logs around retention start/result and analysis stall/skip if logging helpers exist.
+
+## Out of scope for this PR
+- The separate durable-logging / debug-export feature already launched as another agent — don't duplicate that whole feature here.
+- Do not try to recover Dave's historical purged 0–17.7 min audio.
+- Optional stretch (only if small): a "re-transcribe remaining audio" affordance for sessions with retained audio past last snip — nice but not required if it expands scope too much; correctness of status + not stalling live analysis is required.
+
+## Process
+Follow AGENTS.md: append this prompt to documentation/spec prompt log, write/update a living spec, `npm install` then `npm run build`. Open a **draft PR** with verification notes and screenshots/proof if you can.
+
+Investigate the real code paths for snip coverage, transcription status, and retention; treat the hypotheses above as non-binding. Done when build is green, status cannot claim complete while untranscribed retained audio remains, and retention during record does not stop new snips/transcripts.
