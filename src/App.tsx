@@ -331,7 +331,7 @@ function App() {
   const [transcriptionPreviews, setTranscriptionPreviews] = useState<Record<string, string>>({})
   const [transcriptionErrorCounts, setTranscriptionErrorCounts] = useState<Record<string, number>>({})
   const [transcriptionSnipCounts, setTranscriptionSnipCounts] = useState<
-    Record<string, { transcribedCount: number; total: number; purgedCount: number; retryableCount: number }>
+    Record<string, { transcribedCount: number; total: number; purgedCount: number; retryableCount: number; lastSnipEndMs: number; hasUncoveredAudio: boolean }>
   >({})
   const [retryingSessionIds, setRetryingSessionIds] = useState<Record<string, boolean>>({})
   const [transcriptionInProgress, setTranscriptionInProgress] = useState<Record<string, boolean>>({})
@@ -576,13 +576,17 @@ function App() {
     [],
   )
 
-  const updateTranscriptionPreviewForSession = useCallback((sessionId: string, snips: SnipRecord[]) => {
+  const updateTranscriptionPreviewForSession = useCallback((sessionId: string, snips: SnipRecord[], session?: SessionRecord) => {
     const preview = buildTranscriptionPreview(snips)
     const errorCount = snips.filter((snip) => Boolean(snip.transcriptionError)).length
     const transcribedCount = snips.filter((snip) => getSnipTranscriptionText(snip).length > 0).length
     const purgedCount = snips.filter((snip) => isSnipAudioPurged(snip)).length
     const total = snips.length
     const retryableCount = Math.max(0, total - purgedCount)
+    const lastSnipEndMs = snips.length > 0 ? Math.max(...snips.map(s => s.endMs)) : 0
+    const sessionDurationMs = session?.durationMs ?? 0
+    const COVERAGE_GAP_THRESHOLD_MS = 5000
+    const hasUncoveredAudio = sessionDurationMs > lastSnipEndMs + COVERAGE_GAP_THRESHOLD_MS
     setTranscriptionPreviews((prev) => {
       if (!preview) {
         if (!(sessionId in prev)) return prev
@@ -604,14 +608,16 @@ function App() {
       return { ...prev, [sessionId]: errorCount }
     })
     setTranscriptionSnipCounts((prev) => {
-      const entry = { transcribedCount, total, purgedCount, retryableCount }
+      const entry = { transcribedCount, total, purgedCount, retryableCount, lastSnipEndMs, hasUncoveredAudio }
       const current = prev[sessionId]
       if (
         current &&
         current.transcribedCount === entry.transcribedCount &&
         current.total === entry.total &&
         current.purgedCount === entry.purgedCount &&
-        current.retryableCount === entry.retryableCount
+        current.retryableCount === entry.retryableCount &&
+        current.lastSnipEndMs === entry.lastSnipEndMs &&
+        current.hasUncoveredAudio === entry.hasUncoveredAudio
       ) {
         return prev
       }
@@ -787,13 +793,17 @@ function App() {
         })
         setTranscriptionSnipCounts((prev) => {
           const next = { ...prev }
+          const COVERAGE_GAP_THRESHOLD_MS = 5000
           for (const session of slice) {
             const snips = snipsMap.get(session.id) ?? []
             const transcribedCount = snips.filter((snip) => getSnipTranscriptionText(snip).length > 0).length
             const purgedCount = snips.filter((snip) => isSnipAudioPurged(snip)).length
             const total = snips.length
             const retryableCount = Math.max(0, total - purgedCount)
-            next[session.id] = { transcribedCount, total, purgedCount, retryableCount }
+            const lastSnipEndMs = snips.length > 0 ? Math.max(...snips.map(s => s.endMs)) : 0
+            const sessionDurationMs = session.durationMs ?? 0
+            const hasUncoveredAudio = sessionDurationMs > lastSnipEndMs + COVERAGE_GAP_THRESHOLD_MS
+            next[session.id] = { transcribedCount, total, purgedCount, retryableCount, lastSnipEndMs, hasUncoveredAudio }
           }
           return next
         })
@@ -850,7 +860,7 @@ function App() {
 
       const trimSnipT0 = performance.now()
       setTranscriptionSnipCounts((prev) => {
-        const next: Record<string, { transcribedCount: number; total: number; purgedCount: number; retryableCount: number }> =
+        const next: Record<string, { transcribedCount: number; total: number; purgedCount: number; retryableCount: number; lastSnipEndMs: number; hasUncoveredAudio: boolean }> =
           {}
         for (const id of activeIds) {
           if (prev[id] !== undefined) next[id] = prev[id]
@@ -1047,6 +1057,12 @@ function App() {
     lastRetentionAtRef.current = now
     try {
       await manifestService.init()
+      await logInfo('Retention pass starting', {
+        reason: options?.reason ?? 'scheduled',
+        limitBytes: storageLimitBytes,
+        sessionId: captureState.sessionId ?? null,
+        chunkCount: captureState.chunksRecorded,
+      })
       const result = await manifestService.applyRetentionPolicy({ limitBytes: storageLimitBytes, now })
       if (result.purgedChunkIds.length > 0) {
         await logInfo('Storage retention purged audio', {
@@ -1056,6 +1072,12 @@ function App() {
           purgedChunks: result.purgedChunkIds.length,
           purgedSnips: result.purgedSnipIds.length,
           reason: options?.reason ?? (shouldDebounce ? 'debounced' : 'manual'),
+        })
+      } else {
+        await logInfo('Retention pass complete (no purge needed)', {
+          beforeBytes: result.beforeBytes,
+          limitBytes: result.limitBytes,
+          reason: options?.reason ?? 'scheduled',
         })
       }
       if (result.afterBytes > result.limitBytes) {
@@ -1546,6 +1568,10 @@ function App() {
     const texts = snipRecords.map((snip) => getSnipTranscriptionText(snip)).filter((text) => text.length > 0)
     const errorCount = snipRecords.filter((snip) => Boolean(snip.transcriptionError)).length
     const purgedCount = snipRecords.filter((snip) => isSnipAudioPurged(snip)).length
+    const lastSnipEndMs = snipRecords.length > 0 ? Math.max(...snipRecords.map(s => s.endMs)) : 0
+    const sessionDurationMs = selectedRecording?.durationMs ?? 0
+    const COVERAGE_GAP_THRESHOLD_MS = 5000
+    const hasUncoveredAudio = sessionDurationMs > lastSnipEndMs + COVERAGE_GAP_THRESHOLD_MS
     return {
       text: texts.join(' ').trim(),
       transcribedCount: texts.length,
@@ -1553,8 +1579,11 @@ function App() {
       total: snipRecords.length,
       purgedCount,
       retryableCount: Math.max(0, snipRecords.length - purgedCount),
+      lastSnipEndMs,
+      hasUncoveredAudio,
+      sessionDurationMs,
     }
-  }, [isSnipAudioPurged, snipRecords])
+  }, [isSnipAudioPurged, snipRecords, selectedRecording?.durationMs])
 
   useEffect(() => {
     if (!selectedRecording) {
@@ -1566,9 +1595,9 @@ function App() {
 
   useEffect(() => {
     if (selectedRecording?.id) {
-      updateTranscriptionPreviewForSession(selectedRecording.id, snipRecords)
+      updateTranscriptionPreviewForSession(selectedRecording.id, snipRecords, selectedRecording)
     }
-  }, [selectedRecording?.id, snipRecords, updateTranscriptionPreviewForSession])
+  }, [selectedRecording, snipRecords, updateTranscriptionPreviewForSession])
 
   useEffect(() => {
     if (!selectedRecording?.id) {
@@ -2256,6 +2285,17 @@ function App() {
         if (cancelled) {
           return
         }
+        const lastSnipEndMs = snips.length > 0 ? Math.max(...snips.map(s => s.endMs)) : 0
+        const sessionDurationMs = session.durationMs ?? 0
+        const coverageGapMs = Math.max(0, sessionDurationMs - lastSnipEndMs)
+        await logInfo('Live snip refresh', {
+          sessionId,
+          snipCount: snips.length,
+          lastSnipEndMs,
+          sessionDurationMs,
+          coverageGapMs,
+          chunkCount: session.chunkCount,
+        })
         setLiveSnipRecords(snips)
         if (selectedRecording?.id === sessionId) {
           const [metadata] = await Promise.all([manifestService.getChunkData(sessionId)])
@@ -4412,6 +4452,7 @@ function App() {
               const totalSnips = transcriptionCounts?.total ?? 0
               const purgedSnips = transcriptionCounts?.purgedCount ?? 0
               const retryableSnips = transcriptionCounts?.retryableCount ?? Math.max(0, totalSnips - purgedSnips)
+              const hasUncoveredAudio = transcriptionCounts?.hasUncoveredAudio ?? false
               const hasTranscript = transcribedCount > 0
               const hasTranscriptionError = canTranscribe && transcriptionErrorCount > 0
               const previewHydrated =
@@ -4421,6 +4462,8 @@ function App() {
               const isRetrying = Boolean(retryingSessionIds[session.id])
               const isTranscribing = canTranscribe && !isActiveRecording && Boolean(transcriptionInProgress[session.id] || isRetrying)
               const canRetryTranscription = canTranscribe && retryableSnips > 0
+              const allSnipsTranscribed = totalSnips > 0 && transcribedCount === totalSnips && !hasTranscriptionError
+              const transcriptionIncomplete = allSnipsTranscribed && hasUncoveredAudio
               const displayStatus: SessionDisplayStatus =
                 session.status === 'error'
                   ? 'error'
@@ -4428,11 +4471,13 @@ function App() {
                     ? 'recording'
                     : isTranscribing
                       ? 'transcribing'
-                      : hasTranscriptionError && hasSnips
-                        ? hasTranscript
-                          ? 'partial'
-                          : 'untranscribed'
-                        : session.status
+                      : transcriptionIncomplete
+                        ? 'partial'
+                        : hasTranscriptionError && hasSnips
+                          ? hasTranscript
+                            ? 'partial'
+                            : 'untranscribed'
+                          : session.status
               const statusMeta = STATUS_META[displayStatus]
               const hasAudio =
                 session.chunkCount > 0 && session.totalBytes > 0 && (session.durationMs ?? 0) > 0
@@ -4454,23 +4499,25 @@ function App() {
                   ? errorNotes
                   : session.status === 'ready' && canTranscribe && !previewHydrated
                     ? 'Loading preview…'
-                  : isTranscribing
+                    : isTranscribing
                     ? 'Finishing transcription...'
-                    : transcriptionPreview
-                      ? transcriptionPreview
-                      : purgedSnips > 0 && !hasTranscriptionError
-                        ? `Audio purged for ${purgedSnips} snip${purgedSnips === 1 ? '' : 's'}.`
-                      : hasTranscriptionError
-                        ? hasTranscript
-                          ? `Partially transcribed (${transcribedCount}/${totalSnips})`
-                          : 'Transcription failed for all snips.'
-                        : !canTranscribe
-                          ? hasGroqKey
-                            ? 'Recording complete. Waiting for a valid Groq key.'
-                            : 'Recording complete.'
-                        : totalSnips === 0 && previewHydrated
-                          ? 'No snips yet for this recording.'
-                          : 'Transcription pending...'
+                    : transcriptionIncomplete
+                      ? `Transcription incomplete: ${totalSnips} snips transcribed, but more audio exists beyond ${formatTimecode(Math.floor((transcriptionCounts?.lastSnipEndMs ?? 0) / 1000))}.`
+                      : transcriptionPreview
+                        ? transcriptionPreview
+                        : purgedSnips > 0 && !hasTranscriptionError
+                          ? `Audio purged for ${purgedSnips} snip${purgedSnips === 1 ? '' : 's'}.`
+                        : hasTranscriptionError
+                          ? hasTranscript
+                            ? `Partially transcribed (${transcribedCount}/${totalSnips})`
+                            : 'Transcription failed for all snips.'
+                          : !canTranscribe
+                            ? hasGroqKey
+                              ? 'Recording complete. Waiting for a valid Groq key.'
+                              : 'Recording complete.'
+                          : totalSnips === 0 && previewHydrated
+                            ? 'No snips yet for this recording.'
+                            : 'Transcription pending...'
               return (
                 <li key={session.id}>
                   <article
@@ -4796,6 +4843,9 @@ function App() {
                   {snipRecords.length > 0 && (canTranscribe || snipTranscriptionSummary.transcribedCount > 0) ? (
                     <p className="detail-transcription-meta">
                       Transcribed {snipTranscriptionSummary.transcribedCount} of {snipTranscriptionSummary.total} snips.
+                      {snipTranscriptionSummary.hasUncoveredAudio && snipTranscriptionSummary.transcribedCount === snipTranscriptionSummary.total ? (
+                        <> ⚠️ More audio exists beyond {formatTimecode(Math.floor(snipTranscriptionSummary.lastSnipEndMs / 1000))} (session {formatTimecode(Math.floor(snipTranscriptionSummary.sessionDurationMs / 1000))}).</>
+                      ) : null}
                     </p>
                   ) : null}
                   {canTranscribe && snipTranscriptionSummary.errorCount > 0 ? (
