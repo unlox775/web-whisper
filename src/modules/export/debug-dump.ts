@@ -1,12 +1,7 @@
 import { manifestService } from '../storage/manifest'
 import { settingsStore } from '../settings/store'
 
-export interface DebugDumpOptions {
-  sessionId: string
-  includeChunks?: boolean
-}
-
-export interface SessionExportData {
+export interface DebugDumpData {
   manifest: {
     session: unknown
     chunks: unknown[]
@@ -15,9 +10,6 @@ export interface SessionExportData {
   transcripts: Array<{ snipId: string; transcription: unknown }>
   volumeProfile: unknown[]
   logs: unknown[]
-}
-
-export interface DebugDumpData extends SessionExportData {
   settings: {
     storageLimitBytes: number
     logLevels: Record<string, string>
@@ -39,64 +31,6 @@ function downloadBlob(blob: Blob, filename: string): void {
   link.click()
   document.body.removeChild(link)
   URL.revokeObjectURL(url)
-}
-
-export async function exportSessionWithLogs(sessionId: string): Promise<void> {
-  const session = await manifestService.getSession(sessionId)
-  if (!session) {
-    throw new Error(`Session ${sessionId} not found`)
-  }
-
-  const chunks = await manifestService.getChunkMetadata(sessionId)
-  const snips = await manifestService.listSnips(sessionId)
-  const volumeProfiles = await manifestService.listChunkVolumeProfiles(sessionId)
-  
-  const sessionStartTime = session.startedAt
-  const sessionEndTime = session.updatedAt
-  const logs = await manifestService.getLogEntriesInTimeRange(sessionStartTime, sessionEndTime)
-
-  const exportData: SessionExportData = {
-    manifest: {
-      session,
-      chunks: chunks.map((c) => ({
-        id: c.id,
-        seq: c.seq,
-        startMs: c.startMs,
-        endMs: c.endMs,
-        byteLength: c.byteLength,
-        audioPurgedAt: c.audioPurgedAt || null,
-      })),
-    },
-    snips: snips.map((s) => ({
-      id: s.id,
-      index: s.index,
-      startMs: s.startMs,
-      endMs: s.endMs,
-      durationMs: s.durationMs,
-      breakReason: s.breakReason,
-      audioPurgedAt: s.audioPurgedAt || null,
-      hasTranscription: !!s.transcription,
-    })),
-    transcripts: snips
-      .filter((s) => s.transcription)
-      .map((s) => ({
-        snipId: s.id,
-        transcription: s.transcription,
-      })),
-    volumeProfile: volumeProfiles,
-    logs: logs.map((l) => ({
-      packageId: l.packageId,
-      timestamp: l.timestamp,
-      level: l.level,
-      message: l.message,
-      details: l.details,
-    })),
-  }
-
-  const json = JSON.stringify(exportData, null, 2)
-  const blob = new Blob([json], { type: 'application/json' })
-  const timestamp = new Date(session.startedAt).toISOString().replace(/[:.]/g, '-')
-  downloadBlob(blob, `session-${timestamp}-export.json`)
 }
 
 export async function createDebugDump(sessionId: string): Promise<void> {

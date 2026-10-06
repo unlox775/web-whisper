@@ -54,13 +54,13 @@ export class PackageLogger {
       return
     }
 
-    const resolved: LogPayload = typeof payload === 'string' 
-      ? { message: payload } 
-      : payload()
-
     if (!this.logSessionId) {
       return
     }
+
+    const resolved: LogPayload = typeof payload === 'string' 
+      ? { message: payload } 
+      : payload()
 
     try {
       await manifestService.appendLogEntry({
