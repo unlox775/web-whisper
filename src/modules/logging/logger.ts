@@ -1,4 +1,7 @@
 import { manifestService, type LogEntryRecord, type LogSessionRecord } from '../storage/manifest'
+import { createPackageLogger, setAllLoggersSession } from './package-logger'
+
+const appLogger = createPackageLogger('app')
 
 type LogLevel = LogEntryRecord['level']
 
@@ -24,7 +27,8 @@ let activeSession: LogSessionRecord | null = null
 export async function initializeLogger(): Promise<LogSessionRecord> {
   if (!activeSession) {
     activeSession = await manifestService.createLogSession()
-    await logInfo('Logger initialised')
+    setAllLoggersSession(activeSession.id)
+    await appLogger.info('Logger initialised')
   }
   startGlobalErrorCapture()
   return activeSession
@@ -32,9 +36,10 @@ export async function initializeLogger(): Promise<LogSessionRecord> {
 
 export async function shutdownLogger(): Promise<void> {
   if (activeSession) {
-    await logInfo('Logger shutting down')
+    await appLogger.info('Logger shutting down')
     await manifestService.finishLogSession(activeSession.id)
     activeSession = null
+    setAllLoggersSession(null)
   }
   stopGlobalErrorCapture()
 }
@@ -44,6 +49,7 @@ export async function log(level: LogLevel, message: string, details?: Record<str
   try {
     await manifestService.appendLogEntry({
       sessionId: activeSession.id,
+      packageId: 'app',
       timestamp: Date.now(),
       level,
       message,

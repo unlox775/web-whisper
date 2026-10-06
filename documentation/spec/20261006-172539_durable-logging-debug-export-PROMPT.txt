@@ -1,0 +1,39 @@
+Build two related product improvements in unlox775/web-whisper (public PWA). Open a draft PR with proof. Follow AGENTS.md: append user prompts to documentation/spec prompt log, write/update a living spec under documentation/spec/, run `npm install` then `npm run build` after material changes.
+
+## Context (why)
+Dave recorded a ~48 min session that hit the 50 MB storage cap. Retention purged early audio; live snip/transcript stalled at the same moment. He exported everything manually and still had no logs in the zip. Diagnosis notes are attached as FINDINGS.md under uploads/ — use them for motivation and for what a good debug dump should contain. Do NOT re-litigate that incident as a separate bugfix in this PR unless a small retention-path log line clearly helps future diagnosis.
+
+## Feature 1 — Durable per-package logging
+There is already `src/modules/logging/logger.ts` that persists via `manifestService.appendLogEntry` / log sessions in IndexedDB. Extend that system; do not invent a second IndexedDB database or a parallel storage stack.
+
+Requirements:
+1. **Package-scoped loggers** for the existing modules (at least: capture, analysis, transcription, storage, settings, playback, upload, telemetry, logging/app). Each package emits under its own package id.
+2. **Levels**: something like `off | error | warn | info | debug` (or equivalent low/medium/high/debug — pick clear names and stick to them). Per-package level is configurable in **Advanced settings**.
+3. **Lazy payloads**: the hot API must gate on an in-memory level check BEFORE building the payload. Preferred shape:
+   `logger.debug('msg', () => ({ huge: serialize(...) }))`
+   or `logger.debug(() => ({ message, details }))`
+   Do NOT require callers to build expensive details when the level is below threshold. Eager string-only helpers can remain for trivial messages.
+4. **Durable**: logs survive tab close (IndexedDB via existing storage/manifest). Not session-memory-only.
+5. **Retention**: logs count toward the same storage-limit budget as audio/other blobs. Prefer **age-based deletion** for logs (oldest first / max age), so they auto-thin under the cap without needing a separate datastore package. Integrate with `applyRetentionPolicy` (or adjacent) so one retention pass can free log bytes too. Do not purge active recording audio incorrectly while doing this.
+6. **Settings UI**: Advanced settings shows each package's log level control and a **bare number for current stored log bytes** for that package (and maybe a total). Keep it compact and readable on mobile.
+7. **Wire real call sites** in a few high-value paths (recording start/stop, chunk write, retention pass start/result including purged counts, snip/transcript success/fail) so the logger is actually useful — not just scaffolding.
+
+## Feature 2 — Easier export / debugging
+1. Session export (the zip Dave used) must include **logs** scoped to that recording session / overlapping time window (document the exact rule in the spec).
+2. Add a clear **Debug dump** (or equivalent) action that one-click packages what we needed for the Oct 6 incident: session metadata, chunk manifest (incl. purged markers / sizes), snips, transcripts, volume profile if present, **logs**, settings snapshot (storage limit, per-package log levels), and storage usage summary (sessions/chunks/bytes). Prefer one zip download. Keep labels plain so a non-dev can find the button (Settings/Developer or session detail — choose the best existing surface).
+3. If IndexedDB already has log tables that were never exported, fix that gap.
+
+## Constraints
+- Stay inside existing module boundaries (`src/modules/...`). Small UI in settings / session surfaces is fine.
+- Mobile-friendly; don't break capture performance. Level checks must be cheap.
+- Tests for: level gating (lazy fn not called when disabled), log persistence round-trip, age retention freeing bytes under cap, export/debug dump includes logs.
+- Draft PR with description + how to verify in the UI.
+
+## Done when
+- Spec + prompt log updated
+- Build green
+- Draft PR open with verification notes
+- Logger lazy API + per-package settings with sizes work
+- Session export and debug dump include durable logs
+
+Investigate the current logger/storage/export code and implement the best fit; treat the API sketch above as guidance, not a line-by-line prescription.

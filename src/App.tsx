@@ -23,7 +23,8 @@ import {
 } from './modules/storage/manifest'
 import { SessionAnalysisProvider } from './modules/analysis/session-analysis-provider'
 import { recordingSlicesApi, type RecordingAudioSlice } from './modules/playback/recording-slices'
-import { settingsStore, type RecorderSettings } from './modules/settings/store'
+import { settingsStore, type RecorderSettings, type LogLevel } from './modules/settings/store'
+import { createDebugDump } from './modules/export/debug-dump'
 import {
   getActiveLogSession,
   initializeLogger,
@@ -344,6 +345,7 @@ function App() {
   const [mainListSyncLine, setMainListSyncLine] = useState<string | null>(null)
   const [liveSnipRecords, setLiveSnipRecords] = useState<SnipRecord[]>([])
   const [highlightedSessionId, setHighlightedSessionId] = useState<string | null>(null)
+  const [logStorageByPackage, setLogStorageByPackage] = useState<Map<string, { bytes: number; count: number }> | null>(null)
   const [isTranscriptionMounted, setTranscriptionMounted] = useState(false)
   const [isTranscriptionVisible, setTranscriptionVisible] = useState(false)
   const [chunkPlayingId, setChunkPlayingId] = useState<string | null>(null)
@@ -1023,6 +1025,15 @@ function App() {
     }
   }, [refreshTranscriptionPreviews, storageLimitBytes])
 
+  const loadLogStorage = useCallback(async () => {
+    try {
+      const storage = await manifestService.getLogStorageByPackage()
+      setLogStorageByPackage(storage)
+    } catch (error) {
+      console.error('Failed to load log storage:', error)
+    }
+  }, [])
+
   const runRetentionPass = useCallback(async (options?: { force?: boolean; reason?: string }) => {
     if (retentionInFlightRef.current) {
       return
@@ -1510,6 +1521,12 @@ function App() {
       setLogEntries([])
     }
   }, [developerMode])
+
+  useEffect(() => {
+    void loadLogStorage()
+    const interval = setInterval(() => void loadLogStorage(), 10000)
+    return () => clearInterval(interval)
+  }, [loadLogStorage])
 
   useEffect(() => {
     return () => {
@@ -3655,6 +3672,26 @@ function App() {
     await settingsStore.set({ developerMode: enabled })
   }
 
+  const handleLogLevelChange = async (packageId: string, level: LogLevel) => {
+    if (!settings) return
+    await settingsStore.set({
+      logLevels: {
+        ...settings.logLevels,
+        [packageId]: level,
+      },
+    })
+  }
+
+  const handleDebugDumpClick = async () => {
+    if (!selectedRecording) return
+    try {
+      await createDebugDump(selectedRecording.id)
+    } catch (error) {
+      console.error('Failed to create debug dump:', error)
+      alert(`Failed to create debug dump: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
   const handleGroqKeyChange = async (value: string) => {
     await settingsStore.set({ groqApiKey: value })
   }
@@ -4782,6 +4819,13 @@ function App() {
                       <div className="detail-doctor-actions">
                         <button
                           type="button"
+                          onClick={handleDebugDumpClick}
+                          title="Download session debug dump (metadata, logs, chunks, snips, transcripts)"
+                        >
+                          Debug dump ⬇
+                        </button>
+                        <button
+                          type="button"
                           onClick={async () => {
                             if (!selectedRecording) return
                             setDoctorCopyStatus(null)
@@ -5577,10 +5621,43 @@ function App() {
                     />
                   </label>
                   {developerMode ? (
-                    <div className="settings-labs">
-                      <span>Labs:</span>
-                      <a href="./recordings-list-v2-lab.html">Recordings list V2</a>
-                    </div>
+                    <>
+                      <div className="settings-subsection">
+                        <h4>Log Levels</h4>
+                        <p className="settings-help">
+                          Control logging verbosity per module. Higher levels include all lower levels.
+                          {logStorageByPackage ? (
+                            <> Total log storage: {formatDataSize(Array.from(logStorageByPackage.values()).reduce((sum, v) => sum + v.bytes, 0))}</>
+                          ) : null}
+                        </p>
+                        {settings && Object.keys(settings.logLevels).sort().map((packageId) => {
+                          const level = settings.logLevels[packageId] || 'info'
+                          const storage = logStorageByPackage?.get(packageId)
+                          return (
+                            <label key={packageId} className="settings-field">
+                              <span>
+                                {packageId}
+                                {storage ? ` (${formatDataSize(storage.bytes)}, ${storage.count} entries)` : ''}
+                              </span>
+                              <select
+                                value={level}
+                                onChange={(event) => void handleLogLevelChange(packageId, event.target.value as LogLevel)}
+                              >
+                                <option value="off">Off</option>
+                                <option value="error">Error</option>
+                                <option value="warn">Warn</option>
+                                <option value="info">Info</option>
+                                <option value="debug">Debug</option>
+                              </select>
+                            </label>
+                          )
+                        })}
+                      </div>
+                      <div className="settings-labs">
+                        <span>Labs:</span>
+                        <a href="./recordings-list-v2-lab.html">Recordings list V2</a>
+                      </div>
+                    </>
                   ) : null}
                 </section>
               </div>

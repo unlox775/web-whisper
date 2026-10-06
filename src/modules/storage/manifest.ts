@@ -2,6 +2,9 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb'
 import { markStartupMilestone } from '../logging/startup-milestones'
 import type { ChunkVolumeProfile } from './chunk-volume'
 import { DEFAULT_CHUNK_TIMING_STATUS, computeSequentialTimings } from './chunk-timing'
+import { createPackageLogger } from '../logging/package-logger'
+
+const storageLogger = createPackageLogger('storage')
 
 export type SessionStatus = 'recording' | 'ready' | 'error'
 export type ChunkTimingStatus = 'unverified' | 'verified'
@@ -230,7 +233,7 @@ interface DurableRecorderDB extends DBSchema {
   logEntries: {
     key: number
     value: LogEntryRecord
-    indexes: { 'by-session': string; 'by-timestamp': number }
+    indexes: { 'by-session': string; 'by-timestamp': number; 'by-package': string }
   }
 }
 
@@ -243,6 +246,7 @@ export interface LogSessionRecord {
 export interface LogEntryRecord {
   id?: number
   sessionId: string
+  packageId: string
   timestamp: number
   level: 'debug' | 'info' | 'warn' | 'error'
   message: string
@@ -250,8 +254,9 @@ export interface LogEntryRecord {
 }
 
 const DB_NAME = 'durable-audio-recorder'
-const DB_VERSION = 4
+const DB_VERSION = 5
 const MAX_LOG_SESSIONS = 50
+const MAX_LOG_AGE_MS = 7 * 24 * 60 * 60 * 1000
 
 let dbPromise: Promise<IDBPDatabase<DurableRecorderDB>> | null = null
 
@@ -259,7 +264,7 @@ async function getDB(): Promise<IDBPDatabase<DurableRecorderDB>> {
   if (!dbPromise) {
     markStartupMilestone('manifest: getDB openDB start')
     dbPromise = openDB<DurableRecorderDB>(DB_NAME, DB_VERSION, {
-      upgrade(db, oldVersion) {
+      upgrade(db, oldVersion, _newVersion, transaction) {
         if (oldVersion < 1) {
           const sessions = db.createObjectStore('sessions', { keyPath: 'id' })
           sessions.createIndex('by-updated', 'updatedAt')
@@ -284,6 +289,13 @@ async function getDB(): Promise<IDBPDatabase<DurableRecorderDB>> {
         if (oldVersion < 4) {
           const snips = db.createObjectStore('snips', { keyPath: 'id' })
           snips.createIndex('by-session', 'sessionId')
+        }
+
+        if (oldVersion < 5) {
+          const logEntries = transaction.objectStore('logEntries')
+          if (!logEntries.indexNames.contains('by-package')) {
+            logEntries.createIndex('by-package', 'packageId')
+          }
         }
       },
     }).then((db) => {
@@ -338,6 +350,12 @@ export interface ManifestService {
   listLogSessions(): Promise<LogSessionRecord[]>
   /** @param limit Max rows (default 250). Pass `Infinity` to load every entry for the session. */
   getLogEntries(sessionId: string, limit?: number): Promise<LogEntryRecord[]>
+  /** Get log entries within a time window (for session export). */
+  getLogEntriesInTimeRange(startTime: number, endTime: number): Promise<LogEntryRecord[]>
+  /** Get total bytes and count per package. */
+  getLogStorageByPackage(): Promise<Map<string, { bytes: number; count: number }>>
+  /** Purge old log entries to stay under storage cap. */
+  purgeOldLogs(options: { limitBytes: number; now?: number }): Promise<{ purgedCount: number; bytesFreed: number }>
 }
 
 class IndexedDBManifestService implements ManifestService {
@@ -394,6 +412,11 @@ class IndexedDBManifestService implements ManifestService {
     }
 
     await chunkStore.put(storedChunk)
+    
+    await storageLogger.debug(() => ({ 
+      message: 'Chunk written',
+      details: { sessionId: entry.sessionId, seq: entry.seq, byteLength: blob.size }
+    }))
 
     const session = await sessionStore.get(entry.sessionId)
     if (session) {
@@ -750,6 +773,14 @@ class IndexedDBManifestService implements ManifestService {
 
   async applyRetentionPolicy(options: { limitBytes: number; now?: number }): Promise<StorageRetentionResult> {
     const now = typeof options.now === 'number' ? options.now : Date.now()
+    
+    await storageLogger.info(() => ({ 
+      message: 'Retention pass starting',
+      details: { limitBytes: options.limitBytes }
+    }))
+    
+    await this.purgeOldLogs({ limitBytes: options.limitBytes, now })
+    
     const db = await getDB()
     const tx = db.transaction(['chunks', 'snips', 'sessions'], 'readwrite')
     const chunkStore = tx.objectStore('chunks')
@@ -778,6 +809,12 @@ class IndexedDBManifestService implements ManifestService {
     const limitBytes = Number.isFinite(options.limitBytes) ? Math.max(0, options.limitBytes) : beforeBytes
     if (totalBytes <= limitBytes) {
       await tx.done
+      
+      await storageLogger.info(() => ({ 
+        message: 'Retention pass completed (under limit)',
+        details: { beforeBytes, limitBytes, purgedChunks: 0, purgedSnips: 0 }
+      }))
+      
       return {
         limitBytes,
         beforeBytes,
@@ -970,6 +1007,19 @@ class IndexedDBManifestService implements ManifestService {
     }
 
     await tx.done
+    
+    await storageLogger.info(() => ({ 
+      message: 'Retention pass completed',
+      details: { 
+        limitBytes, 
+        beforeBytes, 
+        afterBytes: totalBytes, 
+        purgedChunks: purgedChunkIds.length,
+        purgedSnips: purgedSnipIds.size,
+        updatedSessions: updatedSessionIds.size
+      }
+    }))
+    
     return {
       limitBytes,
       beforeBytes,
@@ -1348,6 +1398,63 @@ class IndexedDBManifestService implements ManifestService {
       entries.push(cursor.value)
     }
     return entries.sort((a, b) => a.timestamp - b.timestamp)
+  }
+
+  async getLogEntriesInTimeRange(startTime: number, endTime: number): Promise<LogEntryRecord[]> {
+    const db = await getDB()
+    const index = db.transaction('logEntries').store.index('by-timestamp')
+    const range = IDBKeyRange.bound(startTime, endTime)
+    const entries: LogEntryRecord[] = []
+    for (let cursor = await index.openCursor(range); cursor; cursor = await cursor.continue()) {
+      entries.push(cursor.value)
+    }
+    return entries.sort((a, b) => a.timestamp - b.timestamp)
+  }
+
+  async getLogStorageByPackage(): Promise<Map<string, { bytes: number; count: number }>> {
+    const db = await getDB()
+    const entries = await db.transaction('logEntries').store.getAll()
+    const byPackage = new Map<string, { bytes: number; count: number }>()
+    
+    for (const entry of entries) {
+      const packageId = entry.packageId || 'unknown'
+      const existing = byPackage.get(packageId) || { bytes: 0, count: 0 }
+      const entrySize = new Blob([JSON.stringify(entry)]).size
+      byPackage.set(packageId, {
+        bytes: existing.bytes + entrySize,
+        count: existing.count + 1
+      })
+    }
+    
+    return byPackage
+  }
+
+  async purgeOldLogs(options: { limitBytes: number; now?: number }): Promise<{ purgedCount: number; bytesFreed: number }> {
+    const now = options.now || Date.now()
+    const cutoffTime = now - MAX_LOG_AGE_MS
+    
+    const db = await getDB()
+    const tx = db.transaction('logEntries', 'readwrite')
+    const store = tx.objectStore('logEntries')
+    const index = store.index('by-timestamp')
+    
+    let purgedCount = 0
+    let bytesFreed = 0
+    
+    for (let cursor = await index.openCursor(null, 'next'); cursor; cursor = await cursor.continue()) {
+      const entry = cursor.value
+      if (entry.timestamp < cutoffTime) {
+        const entrySize = new Blob([JSON.stringify(entry)]).size
+        await cursor.delete()
+        purgedCount++
+        bytesFreed += entrySize
+      } else {
+        break
+      }
+    }
+    
+    await tx.done
+    return { purgedCount, bytesFreed }
   }
 }
 

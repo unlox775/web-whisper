@@ -1,3 +1,7 @@
+import { createPackageLogger } from '../logging/package-logger'
+
+const transcriptionLogger = createPackageLogger('transcription')
+
 export interface TranscriptionJobRequest {
   jobId: string
   sessionId: string
@@ -189,6 +193,12 @@ class GroqTranscriptionService implements TranscriptionService {
           message = `${message}: ${rawBody}`
         }
       }
+      
+      await transcriptionLogger.error(() => ({ 
+        message: 'Transcription failed',
+        details: { status: response.status, error: message }
+      }))
+      
       throw new Error(message)
     }
 
@@ -199,12 +209,24 @@ class GroqTranscriptionService implements TranscriptionService {
         ? payload.text.trim()
         : segments.map((segment) => segment[1]).join(' ').trim()
 
-    return {
+    const result = {
       text,
       segments,
       model: request.model ?? DEFAULT_GROQ_MODEL,
       language: payload.language ?? request.language ?? null,
     }
+    
+    await transcriptionLogger.info(() => ({ 
+      message: 'Transcription completed',
+      details: { 
+        textLength: text.length, 
+        segmentCount: segments.length,
+        model: result.model,
+        language: result.language
+      }
+    }))
+    
+    return result
   }
 }
 

@@ -2,6 +2,9 @@ import { ensureMp3EncoderLoaded, getMp3EncoderCtor } from './mp3-encoder'
 import { computeChunkVolumeProfile } from '../storage/chunk-volume'
 import { manifestService, type SessionRecord, type SessionStatus } from '../storage/manifest'
 import { logDebug, logError, logInfo, logWarn } from '../logging/logger'
+import { createPackageLogger } from '../logging/package-logger'
+
+const captureLogger = createPackageLogger('capture')
 
 export type RecorderState = 'idle' | 'starting' | 'recording' | 'stopping' | 'error'
 
@@ -174,6 +177,11 @@ class PcmMp3CaptureController implements CaptureController {
 
     this.#setState({ state: 'starting', error: undefined, capturedMs: 0 })
     await manifestService.init()
+
+    await captureLogger.info(() => ({ 
+      message: 'Recording start requested',
+      details: { sessionId: options.sessionId, targetBitrate: options.targetBitrate, chunkDurationMs: options.chunkDurationMs }
+    }))
 
     await logInfo('Requesting microphone stream')
     const stream = await navigator.mediaDevices.getUserMedia(AUDIO_CONSTRAINTS)
@@ -411,6 +419,16 @@ class PcmMp3CaptureController implements CaptureController {
     if (this.#state.state !== 'recording') {
       return
     }
+    
+    await captureLogger.info(() => ({ 
+      message: 'Recording stop requested',
+      details: { 
+        sessionId: this.#state.sessionId,
+        capturedMs: this.#state.capturedMs,
+        chunksRecorded: this.#state.chunksRecorded
+      }
+    }))
+    
     this.#setState({ state: 'stopping' })
     this.#clearNoAudioTimer()
 
