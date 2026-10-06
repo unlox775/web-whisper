@@ -271,3 +271,13 @@ debug-dump-{sessionId}.zip
 - Settings UI polls log storage every 10 seconds for live updates
 - Build is green
 - Ready for manual testing and PR
+
+### 2026-10-06 20:00 UTC — Fixes and tests complete, PR ready
+- Fixed lazy payload bug: now checks logSessionId before invoking lazy function
+- Removed unused `exportSessionWithLogs` (dead code - debug dump covers it)
+- Added comprehensive unit tests:
+  - Lazy evaluation gating (7 tests)
+  - Log retention and time-windowed queries (4 tests)
+- All 15 tests passing
+- Build green
+- PR marked ready for review
