@@ -1,7 +1,8 @@
 # Transcription Stall & Status Correctness Fix
 
 **Branch:** `cursor/fix-transcription-stall-1767`  
-**Status:** 🚧 In Progress
+**PR:** https://github.com/unlox775/web-whisper/pull/28  
+**Status:** ✅ Ready for Review (draft PR created)
 
 ## Problem Summary
 
@@ -287,10 +288,10 @@ Helps diagnose if snip creation stalls during recording.
 - [x] No analysis-specific stall logs (would require deeper investigation if issue persists)
 
 ✅ **Build & Tests**:
-- [ ] `npm install` succeeds
-- [ ] `npm run build` succeeds (TypeScript clean)
-- [ ] No new console errors in dev
-- [ ] Manual test: 30+ minute recording with retention
+- [x] `npm install` succeeds
+- [x] `npm run build` succeeds (TypeScript clean)
+- [ ] No new console errors in dev (requires manual testing)
+- [ ] Manual test: 30+ minute recording with retention (requires user testing)
 
 ## Progress Log
 
@@ -306,4 +307,7 @@ Helps diagnose if snip creation stalls during recording.
 - Updated status calculation to detect incomplete transcription
 - Added UI messages for uncovered audio in list and detail views
 - Added comprehensive logging to retention and snip refresh paths
-- Ready to build and test
+- `npm install` and `npm run build` both succeed
+- Committed and pushed changes
+- Created draft PR #28: https://github.com/unlox775/web-whisper/pull/28
+- ✅ Ready for review and manual testing
